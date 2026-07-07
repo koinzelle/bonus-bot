@@ -161,8 +161,10 @@ async function scan() {
             let ath = 0, athTs = 0;
             for (const c of cs) if (c[2] > ath) { ath = c[2]; athTs = c[0]; }
             const athMc = ath * w.supply;
-            const athFresh = (now / 1000 - athTs) / 3600 < ATH_FRESH_H;
-            const armed = athMc > MC_MIN_ATH && athFresh;
+            // Armé = a fait un ATH > 250K dans sa vie (< 48h, déjà filtré à la découverte). PAS de
+            // fenêtre de fraîcheur : elle se refermait avant que le prix ait le temps de retracer vers
+            // la ST → 0 entrée. Le backtest à 96% WR armait ainsi (sans expiration) jusqu'au retracement.
+            const armed = athMc > MC_MIN_ATH;
             // entrée : tendance verte + la dernière bougie CLOS a touché la ligne ST
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
             const prevC = cs[cs.length - 2];
