@@ -150,10 +150,12 @@ async function scan() {
             const pos = state.positions[tok];
 
             if (pos) {
-                // gestion position papier : TP sur high, SL sur flip ST en clôture
-                if (lastC[2] >= pos.entry * (1 + TP_PCT)) {
+                // TP/SL uniquement sur les bougies qui commencent APRÈS l'entrée (sinon on compte
+                // le mouvement d'avant notre entrée = TP fantôme instantané). last = dernière bougie.
+                const candleAfterEntry = lastC[0] > (pos.entryCandleTs || 0);
+                if (candleAfterEntry && lastC[2] >= pos.entry * (1 + TP_PCT)) {
                     closePaper(tok, pos, pos.entry * (1 + TP_PCT), 'TP +6%');
-                } else if (last.trend === -1) {
+                } else if (candleAfterEntry && last.trend === -1) {
                     closePaper(tok, pos, lastC[4], `SL flip SuperTrend (${((lastC[4] / pos.entry - 1) * 100).toFixed(1)}%)`);
                 }
                 continue;
@@ -184,7 +186,7 @@ async function scan() {
             };
             if (armed && prevSt && prevSt.trend === 1 && nearST && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice; // fill au prix courant réel
-                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc) };
+                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), entryCandleTs: lastC[0] };
                 save();
                 const msg = `🎯 ENTRÉE ${w.symbol}\nprix: $${entry.toFixed(8)} (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)\nâge token: ${ageH.toFixed(1)}h | ATH MC: $${Math.round(athMc / 1000)}k\nTP: $${(entry * 1.06).toFixed(8)} (+6%) | SL: flip ST`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
