@@ -168,6 +168,13 @@ async function scan() {
             // entrée : tendance verte + la dernière bougie CLOS a touché la ligne ST
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
             const prevC = cs[cs.length - 2];
+            // diagnostic exposé dans /status : pourquoi ça n'entre pas (armé ? tendance ? distance à la ST)
+            w.diag = {
+                armed,
+                athMcK: Math.round(athMc / 1000),
+                trend: prevSt ? (prevSt.trend === 1 ? 'vert' : 'rouge') : '?',
+                distToST_pct: (prevSt && prevC && prevSt.line > 0) ? +(((prevC[3] / prevSt.line) - 1) * 100).toFixed(1) : null,
+            };
             if (armed && prevSt && prevSt.trend === 1 && prevC && prevC[3] <= prevSt.line && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = prevSt.line;
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc) };
@@ -209,6 +216,7 @@ http.createServer((req, res) => {
         winRate: state.trades.length ? Math.round(state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100) + '%' : null,
         pnlSolPaper: +tot.toFixed(4),
         lastTrades: state.trades.slice(-10),
+        watch: Object.entries(state.watch).map(([tok, w]) => ({ symbol: w.symbol, ...(w.diag || { pending: true }) })),
     }, null, 2));
 }).listen(process.env.PORT || 3000, () => console.log(`🌐 /status sur port ${process.env.PORT || 3000}`));
 
