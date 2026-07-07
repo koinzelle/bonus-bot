@@ -26,6 +26,8 @@ const STATE_FILE = path.join(DATA_DIR, 'bonus_paper.json');
 
 // ── Paramètres stratégie ──────────────────────────────────────
 const TP_PCT = 0.06;              // take profit +6%
+const NEAR_ST_PCT = 0.03;        // entrée si le prix ACTUEL est ≤ +3% au-dessus de la ligne ST (pullback proche)
+const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
 const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
 const AGE_MAX_H = 48;             // token < 2 jours
 const VOL_MIN_24H = 500_000;      // "good volume" — seuil prudent, à calibrer
@@ -165,21 +167,26 @@ async function scan() {
             // fenêtre de fraîcheur : elle se refermait avant que le prix ait le temps de retracer vers
             // la ST → 0 entrée. Le backtest à 96% WR armait ainsi (sans expiration) jusqu'au retracement.
             const armed = athMc > MC_MIN_ATH;
-            // entrée : tendance verte + la dernière bougie CLOS a touché la ligne ST
+            // Référence = dernière bougie CLOSE (ligne ST stable, tendance confirmée)
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
-            const prevC = cs[cs.length - 2];
-            // diagnostic exposé dans /status : pourquoi ça n'entre pas (armé ? tendance ? distance à la ST)
+            const line = prevSt ? prevSt.line : null;
+            const curPrice = lastC[4]; // prix ACTUEL (close de la dernière bougie) = fill réaliste
+            // "près de la ligne" = prix entre la ligne et +NEAR_ST_PCT au-dessus (pullback vers le support,
+            // pas déjà reparti en l'air). On entre au prix RÉEL, jamais à la ligne historique (sinon TP fantôme).
+            const nearST = line > 0 && curPrice >= line && curPrice <= line * (1 + NEAR_ST_PCT);
+            const onCooldown = w.cooldownUntil && now < w.cooldownUntil;
             w.diag = {
                 armed,
                 athMcK: Math.round(athMc / 1000),
                 trend: prevSt ? (prevSt.trend === 1 ? 'vert' : 'rouge') : '?',
-                distToST_pct: (prevSt && prevC && prevSt.line > 0) ? +(((prevC[3] / prevSt.line) - 1) * 100).toFixed(1) : null,
+                distToST_pct: (line > 0) ? +(((curPrice / line) - 1) * 100).toFixed(1) : null,
+                cooldown: !!onCooldown,
             };
-            if (armed && prevSt && prevSt.trend === 1 && prevC && prevC[3] <= prevSt.line && Object.keys(state.positions).length < MAX_POSITIONS) {
-                const entry = prevSt.line;
+            if (armed && prevSt && prevSt.trend === 1 && nearST && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+                const entry = curPrice; // fill au prix courant réel
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc) };
                 save();
-                const msg = `🎯 ENTRÉE ${w.symbol}\nprix: $${entry.toFixed(8)} (ligne ST 15m)\nâge token: ${ageH.toFixed(1)}h | ATH MC: $${Math.round(athMc / 1000)}k\nTP: $${(entry * 1.06).toFixed(8)} (+6%) | SL: flip ST`;
+                const msg = `🎯 ENTRÉE ${w.symbol}\nprix: $${entry.toFixed(8)} (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)\nâge token: ${ageH.toFixed(1)}h | ATH MC: $${Math.round(athMc / 1000)}k\nTP: $${(entry * 1.06).toFixed(8)} (+6%) | SL: flip ST`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
             }
         }
@@ -196,6 +203,7 @@ function closePaper(tok, pos, exitPrice, reason) {
     };
     state.trades.push(trade);
     delete state.positions[tok];
+    if (state.watch[tok]) state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS; // anti-boucle : pas de ré-entrée immédiate sur le même mouvement
     save();
     const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
     const wr = state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100;
