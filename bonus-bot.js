@@ -168,6 +168,50 @@ async function gmgnQualityOk(tok, sym) {
     }
 }
 
+// ── Indicateurs trigger (2026-07-19, grille backtest 15m : rec8h+stoch = 83% WR/+3.64%/trade
+// vs base 57%/+0.94 ; le 5m testé = TOUTES variantes négatives → 15m canonique confirmé) ──
+function stochK(cs) {
+    // Stoch RSI(14,14,3) %K par bougie (null tant que pas assez d'historique)
+    const closes = cs.map(c => c[4]); const n = closes.length;
+    const rsis = new Array(n).fill(null);
+    if (n >= 15) {
+        let g = 0, l = 0;
+        for (let i = 1; i <= 14; i++) { const ch = closes[i] - closes[i - 1]; g += Math.max(ch, 0); l += Math.max(-ch, 0); }
+        let ag = g / 14, al = l / 14;
+        rsis[14] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+        for (let i = 15; i < n; i++) {
+            const ch = closes[i] - closes[i - 1];
+            ag = (ag * 13 + Math.max(ch, 0)) / 14;
+            al = (al * 13 + Math.max(-ch, 0)) / 14;
+            rsis[i] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+        }
+    }
+    const raw = new Array(n).fill(null);
+    for (let i = 0; i < n; i++) {
+        if (rsis[i] == null) continue;
+        const win = [];
+        for (let j = Math.max(0, i - 13); j <= i; j++) if (rsis[j] != null) win.push(rsis[j]);
+        if (win.length < 14) continue;
+        const mn = Math.min(...win), mx = Math.max(...win);
+        raw[i] = mx === mn ? 0 : (rsis[i] - mn) / (mx - mn) * 100;
+    }
+    const sk = new Array(n).fill(null);
+    for (let i = 2; i < n; i++) {
+        if (raw[i] == null || raw[i - 1] == null || raw[i - 2] == null) continue;
+        sk[i] = (raw[i] + raw[i - 1] + raw[i - 2]) / 3;
+    }
+    return sk;
+}
+function ema100Last(cs) {
+    // EMA100 sur closes 15m (support alternatif des alertes EP) — null si < 100 bougies (token jeune)
+    const closes = cs.map(c => c[4]);
+    if (closes.length < 100) return null;
+    const k = 2 / 101;
+    let e = closes.slice(0, 100).reduce((s, v) => s + v, 0) / 100;
+    for (let i = 100; i < closes.length; i++) e = closes[i] * k + e * (1 - k);
+    return e;
+}
+
 // ── Boucle principale ─────────────────────────────────────────
 let scanning = false;
 async function scan() {
@@ -254,15 +298,30 @@ async function scan() {
             // pas déjà reparti en l'air). On entre au prix RÉEL, jamais à la ligne historique (sinon TP fantôme).
             const nearST = line > 0 && curPrice >= line && curPrice <= line * (1 + NEAR_ST_PCT);
             const onCooldown = w.cooldownUntil && now < w.cooldownUntil;
-            // ── Filtres 2026-07-15 (backtest univers bot 1 : base 50% WR/+0.14%/trade → fresh 83%/+4.21%) ──
-            // FRESH : prix d'entrée ≥ 65% de l'ATH de vie = le vrai sens du "just made new ATH" d'EP.
-            // Sans lui, "retracement vers la ST" sélectionne mécaniquement les cadavres en chute (un token
-            // à -80% sous son ATH restait "armé" → les 10 SL d'affilée du paper). Pire perte -4.8% vs -36.6%.
+            // ── TRIGGER COMPLET (2026-07-19, GO user — grille backtest 15m univers bot 1) ──────────
+            // rec8h + StochRSI ≤5 = 83% WR / +3.64%/trade vs base 57%/+0.94 ; dist65 = 43%/-0.81 (RETIRÉ) ;
+            // grille 5m = toutes variantes négatives → TF 15m confirmé.
+            // 1. FRAÎCHEUR ACTIVE = RÉCENCE : l'ATH date de < 8h ("just made new ATH" canonique EP).
+            const athAgeH = athTs > 0 ? (now / 1000 - (athTs > 1e12 ? athTs / 1000 : athTs)) / 3600 : null;
+            const athFresh = athAgeH != null && athAgeH <= 8;
+            // 2. Distance à l'ATH = SHADOW (tag mesuré sur les trades, ne bloque pas)
             const freshVsAth = ath > 0 ? curPrice / ath : 0;
-            // SHADOW (2026-07-19, GO user) : fresh-65% ne bloque PLUS — 0 trade en 4j et le diag du 19/07
-            // a montré que les vrais bloqueurs étaient ailleurs (slots morts, trend rouge). On MESURE :
-            // chaque trade porte freshPct → on jugera le seuil sur 50 trades papier (+ grille backtest).
             const isFresh = freshVsAth >= 0.65;
+            // 3. Stoch RSI(14,14,3) %K ≤ 5 : survente au plancher (alertes bot yunus, 87% WR live)
+            const sk = stochK(cs);
+            const stochNow = sk[sk.length - 1];
+            const stochOK = stochNow != null && stochNow <= 5;
+            // 4. Support alternatif EMA100 15m (alertes EP "EMA100 touched") — ±2% autour de la ligne
+            const ema = ema100Last(cs);
+            const nearEMA = ema != null && Math.abs(curPrice / ema - 1) <= 0.02;
+            // 5. "1 alert / ST flip cycle" : une seule entrée par run vert de la SuperTrend
+            let cycleTs = null;
+            if (prevSt && prevSt.trend === 1) {
+                let k = st.length - 2;
+                while (k > 0 && st[k - 1].trend === 1) k--;
+                cycleTs = cs[st[k].i] ? cs[st[k].i][0] : null;
+            }
+            const cycleUsed = cycleTs != null && w.lastEntryCycleTs === cycleTs;
             // MC ACTUELLE ≥ $250k (pas seulement l'ATH historique) — ferme le trou "cadavre armé".
             const curMc = curPrice * w.supply;
             const mcOk = curMc >= MC_MIN_ATH;
@@ -270,18 +329,24 @@ async function scan() {
                 armed,
                 athMcK: Math.round(athMc / 1000),
                 curMcK: Math.round(curMc / 1000),
-                freshPct: +(freshVsAth * 100).toFixed(0), // 100 = à l'ATH ; <65 = trop profond, bloqué
+                freshPct: +(freshVsAth * 100).toFixed(0),                // shadow (distance à l'ATH)
+                athAgeH: athAgeH != null ? +athAgeH.toFixed(1) : null,   // ACTIF : ≤ 8h requis
+                stochK: stochNow != null ? +stochNow.toFixed(1) : null,  // ACTIF : ≤ 5 requis
                 trend: prevSt ? (prevSt.trend === 1 ? 'vert' : 'rouge') : '?',
                 distToST_pct: (line > 0) ? +(((curPrice / line) - 1) * 100).toFixed(1) : null,
+                nearEMA100: nearEMA,
+                cycleUsed,
                 cooldown: !!onCooldown,
             };
-            if (armed && mcOk && prevSt && prevSt.trend === 1 && nearST && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && athFresh && stochOK && prevSt && prevSt.trend === 1 && (nearST || nearEMA) && !cycleUsed && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice; // fill au prix courant réel
                 const freshPct = +(freshVsAth * 100).toFixed(0);
-                if (!isFresh) console.log(`  ⚠️ [SHADOW fresh] entrée à ${freshPct}% de l'ATH (<65) — aurait été bloquée avant le 19/07`);
-                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, entryCandleTs: lastC[0] };
+                if (!isFresh) console.log(`  ⚠️ [SHADOW fresh-dist] entrée à ${freshPct}% de l'ATH (<65) — tag mesure`);
+                if (cycleTs != null) w.lastEntryCycleTs = cycleTs;
+                const support = nearST ? 'ST' : 'EMA100';
+                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: +stochNow.toFixed(1), support, entryCandleTs: lastC[0] };
                 save();
-                const msg = `🎯 ENTRÉE ${w.symbol}\nprix: $${entry.toFixed(8)} (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)\nâge token: ${ageH.toFixed(1)}h | ATH MC: $${Math.round(athMc / 1000)}k | fresh ${freshPct}%${isFresh ? '' : ' ⚠️'}\nTP: $${(entry * 1.06).toFixed(8)} (+6%) | SL: flip ST`;
+                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support})\nprix: $${entry.toFixed(8)}${line > 0 ? ` (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)` : ''}\nStochRSI ${stochNow.toFixed(1)} | ATH il y a ${athAgeH.toFixed(1)}h | fresh ${freshPct}%\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nTP: $${(entry * 1.06).toFixed(8)} (+6%) | SL: flip ST`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
             }
         }
@@ -293,7 +358,7 @@ function closePaper(tok, pos, exitPrice, reason) {
     const trade = {
         symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
-        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
+        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, stochK: pos.stochK ?? null, support: pos.support ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
