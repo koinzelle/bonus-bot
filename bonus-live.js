@@ -14,8 +14,12 @@
  *  [ ] Wallet DÉDIÉ bot 2 (BONUS_WALLET_KEY) — jamais celui de bot 1
  *  [ ] POSITION_SIZE_SOL=0.25 pour le front-test (comme l'auteur de la strat)
  *  [ ] Vérifier le shape : StrategyType.BidAsk existe dans la version du SDK (@meteora-ag/dlmm)
- *  [ ] Trancher "Double Bid-Ask full range" : ici implémenté = one-sided SOL sous le prix,
- *      shape BidAsk, profondeur RANGE_DOWN_PCT (défaut -50%). À comparer au zap 2-sided de la spec.
+ *  [ ] SPEC CANONIQUE TRANCHÉE (docs EP du 2026-07-19, screenshot Meteora UI) :
+ *      Bid-Ask, Bin Range Mode CUSTOM, Lower -34 / Higher +34 = 69 bins SYMÉTRIQUES autour du prix,
+ *      DOUBLE-SIDED (quote empilé vers le bas = achète le dip, base vers le haut = vend la montée),
+ *      pools bin step 100 / base fee 2%+. ⚠️ Le code ci-dessous = one-sided SOL sous le prix (-50%),
+ *      l'ancienne interprétation — À RÉÉCRIRE avant LIVE : swap ~moitié en token puis addLiquidity
+ *      2-sided [-34,+34] (ou zap). SL canonique = "sharp breakdown + hors range" (sous le bin -34).
  *  [ ] TP mesuré sur VALEUR DE POSITION (fees incluses) via getPosition — pas seulement le prix
  *  [ ] Dry-run sur devnet ou 1 seule position à 0.1 SOL d'abord
  */

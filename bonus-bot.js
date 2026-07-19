@@ -26,7 +26,9 @@ const STATE_FILE = path.join(DATA_DIR, 'bonus_paper.json');
 
 // ── Paramètres stratégie ──────────────────────────────────────
 const TP_PCT = 0.06;              // take profit +6%
-const NEAR_ST_PCT = 0.03;        // entrée si le prix ACTUEL est ≤ +3% au-dessus de la ligne ST (pullback proche)
+const NEAR_ST_PCT = 0.04;        // fenêtre pullback ≤ +4% au-dessus de la ligne ST — sweep 2026-07-19 :
+                                 // WR stable 79-80% de 3 à 4.5% ; 4% = meilleure moy (+3.86%/trade, +73% total,
+                                 // 19 trades vs 14 à 3%) sans nouvelle queue de perte ; 5% dégrade (-32.9% tail)
 const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
 const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
 const AGE_MAX_H = 48;             // token < 2 jours
@@ -92,6 +94,9 @@ async function dexInfo(token) {
         price, mc,
         supply: price > 0 && mc > 0 ? mc / price : null,
         vol24h: Math.max(...pairs.map(q => parseFloat((q.volume || {}).h24 || 0)), 0),
+        // Règle EP n°5 : "main supplier LEGIT" = profil DexScreener payé (image) + X (any pair)
+        hasTwitter: pairs.some(q => (q.info?.socials || []).some(s => s.type === 'twitter')),
+        hasImage: pairs.some(q => !!q.info?.imageUrl),
     };
 }
 
@@ -157,11 +162,26 @@ async function gmgnQualityOk(tok, sym) {
         const insiders = insRaw <= 1 ? insRaw * 100 : insRaw;
         const flags = JSON.stringify(sec.flags || []).toLowerCase();
         const dangerous = sec.is_honeypot || ['vamped', 'rapidlaunch', 'bundled_launch'].some(f => flags.includes(f));
+        // Règle EP n°1 (2026-07-19) : "demande réelle" = fees totales GMGN ≥ 30 SOL. Un token qui
+        // affiche $1M de volume avec < 30 SOL de fees = wash trading ("your neighbor is lying").
+        const totalFee = info.total_fee != null ? parseFloat(info.total_fee) : null;
+        // Règle EP n°3b : phishing wallets ≤ 20% (rugcheck, comme bot 1 mais seuil EP plus strict que 30%)
+        let phishPct = null;
+        try {
+            const rug = await axios.get(`https://api.rugcheck.xyz/v1/tokens/${tok}/report`, { timeout: 8000 });
+            const topHolders = rug.data?.topHolders || [];
+            const known = rug.data?.knownAccounts || {};
+            phishPct = topHolders.reduce((s, h) => known[h.owner]?.type === 'PHISHING' ? s + (h.pct || 0) : s, 0);
+        } catch (_) { /* rugcheck KO → fail-open sur ce critère */ }
         const fails = [];
         if (holders < 1000) fails.push(`holders ${holders}`);
         if (top10 > 30) fails.push(`top10 ${top10.toFixed(0)}%`);
         if (insiders > 10) fails.push(`insiders ${insiders.toFixed(0)}%`);
         if (dangerous) fails.push('honeypot/flag');
+        // fees ≥ 30 SOL : SHADOW (2026-07-19, décision user) — un token jeune n'a pas encore accumulé
+        // 30 SOL et le cache de rejet 6h lui ferait rater sa fenêtre rec8h. On logge, on ne bloque pas.
+        if (totalFee != null && totalFee < 30) console.log(`⚠️ [SHADOW fees] ${sym}: fees totales ${totalFee.toFixed(1)} SOL < 30 (demande fake ? — mesure seule)`);
+        if (phishPct != null && phishPct > 20) fails.push(`phishing ${phishPct.toFixed(0)}% > 20%`);
         if (fails.length) {
             gmgnRejected.set(tok, Date.now());
             console.log(`🚫 Qualité GMGN: ${sym} rejeté (${fails.join(', ')})`);
@@ -242,10 +262,14 @@ async function scan() {
                 if (!d || !d.birthMs || !d.supply) continue;
                 const ageH = (now - d.birthMs) / 3.6e6;
                 if (ageH >= AGE_MAX_H || d.vol24h < VOL_MIN_24H) continue;
+                // Règle EP n°5 (profil DexScreener payé + X) : SHADOW (2026-07-19, décision user) —
+                // on logge à l'ajout, on ne bloque pas. Le flag est posé sur le token → visible au diag.
+                const profilOk = d.hasTwitter && d.hasImage;
+                if (!profilOk) console.log(`⚠️ [SHADOW profil] ${d.symbol}: profil DexScreener incomplet (Twitter:${d.hasTwitter} image:${d.hasImage}) — mesure seule`);
                 // Filtre qualité GMGN (2026-07-15, copié de bot 1) : l'univers GT trending est pollué
                 // (paper 29% WR vs 46-50% sur l'univers bot 1 filtré). 1 appel à l'ajout seulement.
                 if (!(await gmgnQualityOk(tok, d.symbol))) continue;
-                state.watch[tok] = { symbol: d.symbol, pool: d.pool, birthMs: d.birthMs, supply: d.supply, addedAt: now };
+                state.watch[tok] = { symbol: d.symbol, pool: d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, addedAt: now };
                 console.log(`👀 Suivi: ${d.symbol} (âge ${ageH.toFixed(1)}h, vol $${Math.round(d.vol24h / 1000)}k)`);
             } catch (_) {}
         }
