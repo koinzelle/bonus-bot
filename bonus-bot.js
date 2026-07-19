@@ -57,6 +57,11 @@ const POSITION_SIZE_SOL = 1.0;    // taille papier (pour les stats en SOL)
 
 let state = { positions: {}, trades: [], watch: {} };
 try { if (fs.existsSync(STATE_FILE)) state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (_) {}
+// A/B trailing vs TP fixe (2026-07-19, demande user) : chaque entrée ouvre AUSSI une position OMBRE
+// "TP fixe +6% / SL flip ST" (l'ancienne règle) qui vit sa propre vie — elle peut fermer avant ou
+// après la vraie. Comparaison continue dans /status → vérification live du verdict backtest (×3).
+if (!state.fixedShadow) state.fixedShadow = {};
+if (!state.tradesFixed) state.tradesFixed = [];
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 async function tg(msg) {
@@ -118,15 +123,21 @@ async function candles15(pool, limit = 200) {
     return (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]); // [ts,o,h,l,c,v]
 }
 
-// ── SuperTrend (10, 3) — réplique bot.js, retourne [{i, trend, line}] ──
+// ── SuperTrend (10, 3) — ATR en RMA WILDER (2026-07-19, GO user) : c'est la formule
+// TradingView/DexScreener/GMGN — la ligne que l'équipe EP et le user regardent VRAIMENT.
+// L'ancienne moyenne simple (copiée de bot 1) divergeait fortement de leur ligne après un pump
+// (cas Agamemnon : touch visible sur DexScreener 15m, invisible pour nous). Retourne [{i, trend, line}].
 function superTrend(cs) {
     if (cs.length < 12) return [];
     const trs = [];
     for (let i = 1; i < cs.length; i++)
         trs.push(Math.max(cs[i][2] - cs[i][3], Math.abs(cs[i][2] - cs[i - 1][4]), Math.abs(cs[i][3] - cs[i - 1][4])));
-    const out = []; let prev = null;
+    const out = []; let prev = null; let rma = null;
     for (let i = 10; i < cs.length; i++) {
-        const atr = trs.slice(i - 10, i).reduce((s, v) => s + v, 0) / 10;
+        // RMA Wilder : seed = SMA des 10 premiers TR, puis rma = (rma×9 + TR)/10
+        if (rma == null) rma = trs.slice(i - 10, i).reduce((s, v) => s + v, 0) / 10;
+        else rma = (rma * 9 + trs[i - 1]) / 10;
+        const atr = rma;
         const hl2 = (cs[i][2] + cs[i][3]) / 2;
         const bu = hl2 + 3 * atr, bl = hl2 - 3 * atr;
         let fu = bu, fl = bl;
@@ -326,6 +337,13 @@ async function scan() {
             const lastC = cs[cs.length - 1];
             const pos = state.positions[tok];
 
+            // ── Ombre A/B "TP fixe +6%" : traitée indépendamment (peut survivre à la vraie position) ──
+            const fx = state.fixedShadow[tok];
+            if (fx && lastC[0] > (fx.entryCandleTs || 0)) {
+                if (lastC[2] >= fx.entry * 1.06) closeFixedShadow(tok, fx, fx.entry * 1.06, 'TP +6%');
+                else if (last.trend === -1) closeFixedShadow(tok, fx, lastC[4], 'SL flip ST');
+            }
+
             if (pos) {
                 // Sorties uniquement sur les bougies qui commencent APRÈS l'entrée (sinon on compte
                 // le mouvement d'avant notre entrée = TP fantôme instantané). last = dernière bougie.
@@ -406,6 +424,8 @@ async function scan() {
                 if (!isFresh) console.log(`  ⚠️ [SHADOW fresh-dist] entrée à ${freshPct}% de l'ATH (<65) — tag mesure`);
                 const support = nearST ? 'ST' : 'EMA100';
                 state.positions[tok] = { symbol: w.symbol, entry, hw: entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: +stochNow.toFixed(1), support, entryCandleTs: lastC[0] };
+                // ombre A/B : même entrée, sortie TP fixe +6%/flip ST (l'ancienne règle) — vit sa propre vie
+                state.fixedShadow[tok] = { symbol: w.symbol, entry, openedAt: now, entryCandleTs: lastC[0] };
                 save();
                 const msg = `🎯 ENTRÉE ${w.symbol} (support ${support})\nprix: $${entry.toFixed(8)}${line > 0 ? ` (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)` : ''}\nStochRSI ${stochNow.toFixed(1)} | ATH il y a ${athAgeH.toFixed(1)}h | fresh ${freshPct}%\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nTP: trailing (armé +5%, sortie top -1.5%) | SL: flip ST`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
@@ -422,6 +442,18 @@ async function scan() {
             }
         }
     } finally { scanning = false; save(); }
+}
+
+// clôture de l'ombre A/B "TP fixe" — comptabilité séparée (state.tradesFixed), pas de Telegram (anti-spam)
+function closeFixedShadow(tok, fx, exitPrice, reason) {
+    const pnlPct = exitPrice / fx.entry - 1;
+    state.tradesFixed.push({
+        symbol: fx.symbol, pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
+        durMin: Math.round((Date.now() - fx.openedAt) / 60000), closedAt: new Date().toISOString(), reason,
+    });
+    delete state.fixedShadow[tok];
+    save();
+    console.log(`👥 [A/B fixe] SORTIE ${fx.symbol} ${reason} → ${(pnlPct * 100).toFixed(1)}%`);
 }
 
 async function closePaper(tok, pos, exitPrice, reason) {
@@ -466,6 +498,13 @@ http.createServer((req, res) => {
         trades: state.trades.length,
         winRate: state.trades.length ? Math.round(state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100) + '%' : null,
         pnlSolPaper: +tot.toFixed(4),
+        // A/B live : trailing (réel) vs TP fixe +6% (ombre) sur les MÊMES entrées
+        abFixedVsTrailing: {
+            trailing: { n: state.trades.length, pnlSol: +tot.toFixed(4) },
+            fixed: { n: state.tradesFixed.length, pnlSol: +state.tradesFixed.reduce((s, t) => s + t.pnlSol, 0).toFixed(4),
+                     wr: state.tradesFixed.length ? Math.round(state.tradesFixed.filter(t => t.pnlSol > 0).length / state.tradesFixed.length * 100) + '%' : null },
+            shadowOpen: Object.keys(state.fixedShadow).length,
+        },
         lastTrades: state.trades.slice(-10),
         watch: Object.entries(state.watch).map(([tok, w]) => ({ symbol: w.symbol, ...(w.diag || { pending: true }) })),
     }, null, 2));
