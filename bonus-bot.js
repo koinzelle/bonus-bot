@@ -82,18 +82,27 @@ async function gtTrending() {
         'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
     ];
     if (gtScan++ % 3 === 2) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
+    // Retourne [{ tok, gtPool }] : on GARDE l'adresse de pool GT (garantie indexée pour les bougies —
+    // fix 19/07 : la pool DexScreener la plus liquide n'est parfois PAS sur GT → fetch bougies mort
+    // en boucle → purge → watch vide alors que le token est bon).
     const out = [];
+    const seen = new Set();
     for (const url of urls) {
         try {
             const r = await axios.get(url, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
             for (const p of r.data?.data || []) {
                 const base = p.relationships?.base_token?.data?.id || '';
                 const addr = base.includes('_') ? base.split('_').slice(1).join('_') : base;
-                if (addr && addr !== 'So11111111111111111111111111111111111111112') out.push(addr);
+                const poolId = p.id || '';
+                const gtPool = poolId.includes('_') ? poolId.split('_').slice(1).join('_') : null;
+                if (addr && addr !== 'So11111111111111111111111111111111111111112' && !seen.has(addr)) {
+                    seen.add(addr);
+                    out.push({ tok: addr, gtPool });
+                }
             }
         } catch (_) { /* une vue GT en échec ne bloque pas les autres */ }
     }
-    return [...new Set(out)];
+    return out;
 }
 
 async function dexInfo(token) {
@@ -275,7 +284,7 @@ async function scan() {
         // 1. découverte : nouveaux candidats < 48h (ticks complets uniquement)
         let discovered = [];
         if (!hotOnly) { try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); } }
-        for (const tok of discovered.slice(0, 40)) { // 2-3 vues GT fusionnées → fenêtre élargie (trending d'abord)
+        for (const { tok, gtPool } of discovered.slice(0, 40)) { // 2-3 vues GT fusionnées → fenêtre élargie (trending d'abord)
             if (state.watch[tok] || state.positions[tok]) continue;
             // cooldown re-add 60min après purge (sinon cycle purge→re-add sur les tokens trending morts)
             if (state.purgedAt[tok] && now - state.purgedAt[tok] < 60 * 60 * 1000) continue;
@@ -292,8 +301,9 @@ async function scan() {
                 // Filtre qualité GMGN (2026-07-15, copié de bot 1) : l'univers GT trending est pollué
                 // (paper 29% WR vs 46-50% sur l'univers bot 1 filtré). 1 appel à l'ajout seulement.
                 if (!(await gmgnQualityOk(tok, d.symbol))) continue;
-                state.watch[tok] = { symbol: d.symbol, pool: d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, addedAt: now };
-                console.log(`👀 Suivi: ${d.symbol} (âge ${ageH.toFixed(1)}h, vol $${Math.round(d.vol24h / 1000)}k)`);
+                // bougies : pool GT du trending (garantie indexée) en priorité, DexScreener en fallback
+                state.watch[tok] = { symbol: d.symbol, pool: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, addedAt: now };
+                console.log(`👀 Suivi: ${d.symbol} (âge ${ageH.toFixed(1)}h, vol $${Math.round(d.vol24h / 1000)}k, pool ${gtPool ? 'GT' : 'dex'})`);
             } catch (_) {}
         }
 
