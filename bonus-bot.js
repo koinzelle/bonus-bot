@@ -48,20 +48,26 @@ async function tg(msg) {
 }
 
 // ── Data ──────────────────────────────────────────────────────
-let gtView = 0;
+let gtScan = 0;
 async function gtTrending() {
+    // Priorité TRENDING (2026-07-19, demande user) : comme bot 1, la découverte lit les pools trending
+    // GeckoTerminal (24h + 1h) à CHAQUE scan — new_pools seulement 1 scan sur 3, en fin de liste
+    // (les candidats trending passent en premier quand les slots watch sont comptés).
     const urls = [
         'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1',
-        'https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1',
         'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
     ];
-    const url = urls[gtView++ % urls.length];
-    const r = await axios.get(url, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
+    if (gtScan++ % 3 === 2) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
     const out = [];
-    for (const p of r.data?.data || []) {
-        const base = p.relationships?.base_token?.data?.id || '';
-        const addr = base.includes('_') ? base.split('_').slice(1).join('_') : base;
-        if (addr && addr !== 'So11111111111111111111111111111111111111112') out.push(addr);
+    for (const url of urls) {
+        try {
+            const r = await axios.get(url, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
+            for (const p of r.data?.data || []) {
+                const base = p.relationships?.base_token?.data?.id || '';
+                const addr = base.includes('_') ? base.split('_').slice(1).join('_') : base;
+                if (addr && addr !== 'So11111111111111111111111111111111111111112') out.push(addr);
+            }
+        } catch (_) { /* une vue GT en échec ne bloque pas les autres */ }
     }
     return [...new Set(out)];
 }
@@ -171,7 +177,7 @@ async function scan() {
         // 1. découverte : nouveaux candidats < 48h
         let discovered = [];
         try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); }
-        for (const tok of discovered.slice(0, 25)) {
+        for (const tok of discovered.slice(0, 40)) { // 2-3 vues GT fusionnées → fenêtre élargie (trending d'abord)
             if (state.watch[tok] || state.positions[tok]) continue;
             if (Object.keys(state.watch).length >= 12) break; // cap suivi (rate limits)
             try {
@@ -253,6 +259,9 @@ async function scan() {
             // Sans lui, "retracement vers la ST" sélectionne mécaniquement les cadavres en chute (un token
             // à -80% sous son ATH restait "armé" → les 10 SL d'affilée du paper). Pire perte -4.8% vs -36.6%.
             const freshVsAth = ath > 0 ? curPrice / ath : 0;
+            // SHADOW (2026-07-19, GO user) : fresh-65% ne bloque PLUS — 0 trade en 4j et le diag du 19/07
+            // a montré que les vrais bloqueurs étaient ailleurs (slots morts, trend rouge). On MESURE :
+            // chaque trade porte freshPct → on jugera le seuil sur 50 trades papier (+ grille backtest).
             const isFresh = freshVsAth >= 0.65;
             // MC ACTUELLE ≥ $250k (pas seulement l'ATH historique) — ferme le trou "cadavre armé".
             const curMc = curPrice * w.supply;
@@ -266,11 +275,13 @@ async function scan() {
                 distToST_pct: (line > 0) ? +(((curPrice / line) - 1) * 100).toFixed(1) : null,
                 cooldown: !!onCooldown,
             };
-            if (armed && isFresh && mcOk && prevSt && prevSt.trend === 1 && nearST && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && prevSt && prevSt.trend === 1 && nearST && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice; // fill au prix courant réel
-                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), entryCandleTs: lastC[0] };
+                const freshPct = +(freshVsAth * 100).toFixed(0);
+                if (!isFresh) console.log(`  ⚠️ [SHADOW fresh] entrée à ${freshPct}% de l'ATH (<65) — aurait été bloquée avant le 19/07`);
+                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, entryCandleTs: lastC[0] };
                 save();
-                const msg = `🎯 ENTRÉE ${w.symbol}\nprix: $${entry.toFixed(8)} (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)\nâge token: ${ageH.toFixed(1)}h | ATH MC: $${Math.round(athMc / 1000)}k\nTP: $${(entry * 1.06).toFixed(8)} (+6%) | SL: flip ST`;
+                const msg = `🎯 ENTRÉE ${w.symbol}\nprix: $${entry.toFixed(8)} (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)\nâge token: ${ageH.toFixed(1)}h | ATH MC: $${Math.round(athMc / 1000)}k | fresh ${freshPct}%${isFresh ? '' : ' ⚠️'}\nTP: $${(entry * 1.06).toFixed(8)} (+6%) | SL: flip ST`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
             }
         }
@@ -282,7 +293,7 @@ function closePaper(tok, pos, exitPrice, reason) {
     const trade = {
         symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
-        ageH: pos.ageH, athMc: pos.athMc, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
+        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
