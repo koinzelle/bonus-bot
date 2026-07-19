@@ -33,7 +33,12 @@ const AGE_MAX_H = 48;             // token < 2 jours
 const VOL_MIN_24H = 500_000;      // "good volume" — seuil prudent, à calibrer
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
 const MAX_POSITIONS = 3;          // positions papier simultanées
-const SCAN_INTERVAL_MS = 60_000;
+// Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
+// tous les tokens, comme avant à 60s) ; l'autre tick = UNIQUEMENT les tokens "chauds" (4/5 conditions,
+// il ne manque que le retracement vers la ST) + positions ouvertes (TP/SL 2× plus réactifs). Le prix
+// peut traverser la fenêtre ±3% entre 2 checks à 60s — le tick chaud à 30s divise ce risque par 2,
+// sans doubler la charge API GT (les ticks chauds ne fetchent que 1-3 tokens).
+const SCAN_INTERVAL_MS = 30_000;
 const POSITION_SIZE_SOL = 1.0;    // taille papier (pour les stats en SOL)
 
 let state = { positions: {}, trades: [], watch: {} };
@@ -214,16 +219,24 @@ function ema100Last(cs) {
 
 // ── Boucle principale ─────────────────────────────────────────
 let scanning = false;
+let scanTick = 0;
 async function scan() {
     if (scanning) return; scanning = true;
     try {
         const now = Date.now();
-        // 1. découverte : nouveaux candidats < 48h
+        if (!state.purgedAt) state.purgedAt = {};
+        // Tick alterné (2026-07-19) : pair = scan COMPLET (découverte + tous les tokens, cadence 60s
+        // comme avant) ; impair = UNIQUEMENT tokens chauds (4/5 conditions) + positions → réactivité 30s
+        // là où ça compte, sans doubler la charge GT.
+        const hotOnly = (scanTick++ % 2) === 1;
+        // 1. découverte : nouveaux candidats < 48h (ticks complets uniquement)
         let discovered = [];
-        try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); }
+        if (!hotOnly) { try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); } }
         for (const tok of discovered.slice(0, 40)) { // 2-3 vues GT fusionnées → fenêtre élargie (trending d'abord)
             if (state.watch[tok] || state.positions[tok]) continue;
-            if (Object.keys(state.watch).length >= 12) break; // cap suivi (rate limits)
+            // cooldown re-add 60min après purge (sinon cycle purge→re-add sur les tokens trending morts)
+            if (state.purgedAt[tok] && now - state.purgedAt[tok] < 60 * 60 * 1000) continue;
+            if (Object.keys(state.watch).length >= 18) break; // cap suivi 12→18 (2026-07-19, budget GT ok avec ticks alternés)
             try {
                 const d = await dexInfo(tok);
                 if (!d || !d.birthMs || !d.supply) continue;
@@ -239,28 +252,35 @@ async function scan() {
 
         // 2. pour chaque token suivi : setup / entrée / gestion de position papier
         for (const [tok, w] of Object.entries(state.watch)) {
+            // tick chaud : ne traiter que les tokens à 4/5 conditions + les positions ouvertes
+            if (hotOnly && !w.hot && !state.positions[tok]) continue;
             const ageH = (now - w.birthMs) / 3.6e6;
             if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; }
             let cs;
-            try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; }
+            try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); }
             // Purge fetch cassé (2026-07-19) : 5/12 slots n'étaient JAMAIS évalués (bougies GT en échec
             // silencieux) → après 8 échecs consécutifs, on libère le slot. cs.length entre 1 et 14 =
             // token très jeune, légitime → on attend sans compter d'échec.
             if (!cs || cs.length === 0) {
                 if (!state.positions[tok]) {
                     w.fetchFails = (w.fetchFails || 0) + 1;
-                    if (w.fetchFails >= 8) { console.log(`🧹 Purge watch: ${w.symbol} (${w.fetchFails} échecs bougies consécutifs)`); delete state.watch[tok]; }
+                    if (w.fetchFails >= 8) {
+                        console.log(`🧹 Purge watch: ${w.symbol} (${w.fetchFails} échecs bougies consécutifs — ${w.lastFetchErr || 'réponse vide'})`);
+                        state.purgedAt[tok] = now;
+                        delete state.watch[tok];
+                    }
                 }
                 continue;
             }
             w.fetchFails = 0;
             if (cs.length < 15) continue;
             // Purge cadavres (2026-07-19, GO user) : MC courante < 200k → le token a dumpé depuis l'ajout,
-            // il ne repassera plus le filtre d'entrée (250k) et squatte un des 12 slots pour rien
+            // il ne repassera plus le filtre d'entrée (250k) et squatte un slot pour rien
             // (constat du 19/07 : HOUSEM 7k, Ricky 15k, SR20 21k occupaient la watch).
             const mcNow = cs[cs.length - 1][4] * w.supply;
             if (mcNow < 200_000 && !state.positions[tok]) {
                 console.log(`🧹 Purge watch: ${w.symbol} (MC $${Math.round(mcNow / 1000)}k < 200k)`);
+                state.purgedAt[tok] = now;
                 delete state.watch[tok];
                 continue;
             }
@@ -320,7 +340,10 @@ async function scan() {
             // MC ACTUELLE ≥ $250k (pas seulement l'ATH historique) — ferme le trou "cadavre armé".
             const curMc = curPrice * w.supply;
             const mcOk = curMc >= MC_MIN_ATH;
+            // "chaud" = toutes les conditions SAUF le retracement → re-check à 30s (tick alterné)
+            w.hot = !!(armed && mcOk && athFresh && stochOK && prevSt && prevSt.trend === 1);
             w.diag = {
+                hot: w.hot,
                 armed,
                 athMcK: Math.round(athMc / 1000),
                 curMcK: Math.round(curMc / 1000),
