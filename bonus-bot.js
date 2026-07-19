@@ -18,6 +18,18 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 
+// ── Capture des logs pour GET /logs (2026-07-20) : sur Railway, console.log part dans le flux
+// Railway — ce buffer donne l'accès distant aux rejets/purges/entrées (auto-diagnostic sans logs UI) ──
+const LOG_BUFFER = [];
+const _origLog = console.log.bind(console);
+console.log = (...a) => {
+    try {
+        LOG_BUFFER.push(`[${new Date().toISOString()}] ` + a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '));
+        if (LOG_BUFFER.length > 4000) LOG_BUFFER.shift();
+    } catch (_) {}
+    _origLog(...a);
+};
+
 const TELEGRAM_TOKEN = (process.env.TELEGRAM_TOKEN || '').trim();
 const CHAT_ID = (process.env.CHAT_ID || '').trim();
 
@@ -500,6 +512,12 @@ async function closePaper(tok, pos, exitPrice, reason) {
 // (sans port ouvert, le service reste "Deploying" indéfiniment) + expose les stats papier ──
 const http = require('http');
 http.createServer((req, res) => {
+    // GET /logs?tail=N — accès distant aux logs (rejets qualité, purges, entrées, shadow)
+    if ((req.url || '').startsWith('/logs')) {
+        const tail = parseInt(new URL(req.url, 'http://x').searchParams.get('tail') || '300', 10);
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end(LOG_BUFFER.slice(-tail).join('\n'));
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
     res.end(JSON.stringify({
