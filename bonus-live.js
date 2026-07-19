@@ -48,6 +48,46 @@ const BIN_RANGE = 34;              // ±34 bins = 69 bins — spec canonique EP 
 const TX_RESERVE_SOL = 0.02;
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
+// ── Découverte de pool Meteora DLMM on-chain (méthode bot 1 : getProgramAccounts + memcmp) ──
+const DLMM_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+const LBPAIR_DISCRIMINATOR = Buffer.from([33, 11, 49, 98, 181, 101, 177, 13]);
+const TOKEN_X_OFFSET = 88;
+const TOKEN_Y_OFFSET = 120;
+const OK_BIN_STEPS = [80, 100, 125, 160, 200, 250]; // canonique EP = 100 (préféré au tri)
+
+// Trouve la meilleure pool DLMM token/SOL : bin step 100 d'abord, puis base fee la plus haute,
+// puis réserve SOL la plus profonde. Retourne l'adresse (string) ou null.
+async function findMeteoraPool(tokenAddress) {
+    const programId = new PublicKey(DLMM_PROGRAM_ID);
+    const disc = bs58.encode(LBPAIR_DISCRIMINATOR);
+    const [p1, p2] = await Promise.all([
+        connection.getProgramAccounts(programId, { filters: [{ memcmp: { offset: 0, bytes: disc } }, { memcmp: { offset: TOKEN_X_OFFSET, bytes: tokenAddress } }, { memcmp: { offset: TOKEN_Y_OFFSET, bytes: SOL_MINT } }], dataSlice: { offset: 0, length: 0 } }),
+        connection.getProgramAccounts(programId, { filters: [{ memcmp: { offset: 0, bytes: disc } }, { memcmp: { offset: TOKEN_X_OFFSET, bytes: SOL_MINT } }, { memcmp: { offset: TOKEN_Y_OFFSET, bytes: tokenAddress } }], dataSlice: { offset: 0, length: 0 } }),
+    ]);
+    const addrs = [...p1, ...p2].map(p => p.pubkey);
+    console.log(`  ${addrs.length} pool(s) Meteora trouvée(s) pour ${tokenAddress.slice(0, 8)}`);
+    const candidates = [];
+    for (const addr of addrs) {
+        try {
+            const pool = await DLMM.create(connection, addr);
+            if (pool.tokenY.publicKey.toString() !== SOL_MINT) continue; // openBidAsk exige SOL en Y
+            const binStep = pool.lbPair.binStep;
+            if (!OK_BIN_STEPS.includes(binStep)) continue;
+            let baseFeePct = 0;
+            try { baseFeePct = parseFloat((await pool.getFeeInfo()).baseFeeRatePercentage?.toString() ?? 0); } catch (_) {}
+            let reserveSol = 0;
+            try { reserveSol = parseFloat((await connection.getTokenAccountBalance(pool.lbPair.reserveY)).value.uiAmount || 0); } catch (_) {}
+            if (reserveSol < 1) continue; // pool quasi vide → fills/SL irréalistes
+            candidates.push({ addr: addr.toString(), binStep, baseFeePct, reserveSol });
+        } catch (_) {}
+    }
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => (b.binStep === 100) - (a.binStep === 100) || b.baseFeePct - a.baseFeePct || b.reserveSol - a.reserveSol);
+    const best = candidates[0];
+    console.log(`  🏆 Pool: ${best.addr.slice(0, 8)}... | bin step ${best.binStep} | fee ${best.baseFeePct}% | réserve ${best.reserveSol.toFixed(1)} SOL`);
+    return best.addr;
+}
+
 // ── Confirmation robuste (pattern bot.js post-ELON) ───────────
 async function confirmTx(hash) {
     const res = await connection.confirmTransaction(hash, 'confirmed');
@@ -138,7 +178,10 @@ async function positionValueSol(pos) {
 }
 
 // ── Fermeture vérifiée (pattern bot.js post-world) + re-swap token→SOL ──
+// Retourne { ok, proceedsSol } : proceeds = SOL revenus au wallet (close + fees + re-swap), mesuré
+// flat-to-flat → PnL réel = proceedsSol - pos.depositedSol (fees INCLUSES — reporting, pas trigger).
 async function closeVerified(pos) {
+    const balBefore = await solBalance();
     const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
     const pubkey = new PublicKey(pos.positionKeypairPub);
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -166,13 +209,15 @@ async function closeVerified(pos) {
                     if (raw > 0n) { await jupSwap(pos.tokenMint, SOL_MINT, raw); console.log('  🔁 Token résiduel re-swappé en SOL'); }
                 } catch (e) { console.log(`  ⚠️ re-swap token→SOL échoué (${String(e.message).slice(0, 60)}) — résidu au wallet, PnL à corriger à la main`); }
             }
-            return true;
+            const balAfter = await solBalance();
+            const proceedsSol = (balAfter - balBefore) / LAMPORTS_PER_SOL;
+            return { ok: true, proceedsSol };
         } catch (e) {
             console.log(`  ⚠️ close tentative ${attempt}/3: ${String(e.message).slice(0, 80)}`);
-            if (attempt === 3) { console.log('  🚨 CLOSE INCOMPLET — garder le tracking, alerter, NE PAS logger de PnL'); return false; }
+            if (attempt === 3) { console.log('  🚨 CLOSE INCOMPLET — garder le tracking, alerter, NE PAS logger de PnL'); return { ok: false, proceedsSol: null }; }
             await new Promise(r => setTimeout(r, 4000));
         }
     }
 }
 
-module.exports = { enabled: true, openBidAsk, closeVerified, positionValueSol };
+module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol };

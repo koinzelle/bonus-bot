@@ -20,6 +20,13 @@ const path = require('path');
 
 const TELEGRAM_TOKEN = (process.env.TELEGRAM_TOKEN || '').trim();
 const CHAT_ID = (process.env.CHAT_ID || '').trim();
+
+// ── Couche LIVE (2026-07-19) : inerte tant que LIVE≠1 sur Railway. Avec LIVE=1 + BONUS_WALLET_KEY,
+// chaque entrée papier ouvre AUSSI la vraie position Bid-Ask ±34 double-sided (bonus-live.js), et
+// chaque sortie papier la ferme (closeVerified + re-swap). Triggers TP/SL = ceux du paper (validés
+// backtest, +6% PRIX) ; le PnL réel fees incluses est loggé À CÔTÉ (pnlSolLive) pour comparaison.
+let live = { enabled: false };
+try { live = require('./bonus-live'); } catch (e) { console.log('⚠️ bonus-live indisponible:', e.message, '— paper seulement'); }
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { if (DATA_DIR !== __dirname) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
 const STATE_FILE = path.join(DATA_DIR, 'bonus_paper.json');
@@ -319,9 +326,9 @@ async function scan() {
                 // le mouvement d'avant notre entrée = TP fantôme instantané). last = dernière bougie.
                 const candleAfterEntry = lastC[0] > (pos.entryCandleTs || 0);
                 if (candleAfterEntry && lastC[2] >= pos.entry * (1 + TP_PCT)) {
-                    closePaper(tok, pos, pos.entry * (1 + TP_PCT), 'TP +6%');
+                    await closePaper(tok, pos, pos.entry * (1 + TP_PCT), 'TP +6%');
                 } else if (candleAfterEntry && last.trend === -1) {
-                    closePaper(tok, pos, lastC[4], `SL flip SuperTrend (${((lastC[4] / pos.entry - 1) * 100).toFixed(1)}%)`);
+                    await closePaper(tok, pos, lastC[4], `SL flip SuperTrend (${((lastC[4] / pos.entry - 1) * 100).toFixed(1)}%)`);
                 }
                 continue;
             }
@@ -388,14 +395,35 @@ async function scan() {
                 save();
                 const msg = `🎯 ENTRÉE ${w.symbol} (support ${support})\nprix: $${entry.toFixed(8)}${line > 0 ? ` (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)` : ''}\nStochRSI ${stochNow.toFixed(1)} | ATH il y a ${athAgeH.toFixed(1)}h | fresh ${freshPct}%\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nTP: $${(entry * 1.06).toFixed(8)} (+6%) | SL: flip ST`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
+                // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
+                if (live.enabled) {
+                    try {
+                        const poolAddr = await live.findMeteoraPool(tok);
+                        if (poolAddr) {
+                            const lp = await live.openBidAsk(poolAddr);
+                            if (lp) { state.positions[tok].live = lp; save(); tg(`🟢 LIVE ${w.symbol}: position réelle ouverte — ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); }
+                        } else { console.log('  ⚠️ LIVE: aucune pool DLMM viable — trade papier seulement'); tg(`⚠️ LIVE ${w.symbol}: pas de pool DLMM viable, papier seulement`); }
+                    } catch (e) { console.log(`  ⚠️ LIVE open échoué: ${String(e.message).slice(0, 80)} — papier seulement`); tg(`⚠️ LIVE ${w.symbol}: open échoué (${String(e.message).slice(0, 50)})`); }
+                }
             }
         }
     } finally { scanning = false; save(); }
 }
 
-function closePaper(tok, pos, exitPrice, reason) {
+async function closePaper(tok, pos, exitPrice, reason) {
+    // ── LIVE : fermer la vraie position D'ABORD. Si le close réel échoue → on GARDE le tracking
+    // (pattern anti-world de bot 1 : jamais supprimer une position pas vidée on-chain).
+    let pnlSolLive = null;
+    if (pos.live && live.enabled) {
+        try {
+            const r = await live.closeVerified(pos.live);
+            if (!r || !r.ok) { tg(`🚨 LIVE ${pos.symbol}: close INCOMPLET — position GARDÉE en tracking, vérifier on-chain`); return; }
+            pnlSolLive = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
+        } catch (e) { tg(`🚨 LIVE ${pos.symbol}: close erreur (${String(e.message).slice(0, 60)}) — position GARDÉE`); return; }
+    }
     const pnlPct = exitPrice / pos.entry - 1;
     const trade = {
+        pnlSolLive, // PnL RÉEL fees incluses (null en paper pur) — à comparer au pnlSol prix
         symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, stochK: pos.stochK ?? null, support: pos.support ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
@@ -407,7 +435,8 @@ function closePaper(tok, pos, exitPrice, reason) {
     save();
     const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
     const wr = state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100;
-    const msg = `${pnlPct > 0 ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason}\nPnL: ${(pnlPct * 100).toFixed(1)}% (${trade.pnlSol > 0 ? '+' : ''}${trade.pnlSol} SOL papier, ${trade.durMin} min)\n📒 Total papier: ${state.trades.length} trades | WR ${wr.toFixed(0)}% | ${tot > 0 ? '+' : ''}${tot.toFixed(3)} SOL`;
+    const liveLine = pnlSolLive != null ? `\n💵 PnL RÉEL (fees incluses): ${pnlSolLive > 0 ? '+' : ''}${pnlSolLive} SOL` : '';
+    const msg = `${pnlPct > 0 ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason}\nPnL: ${(pnlPct * 100).toFixed(1)}% (${trade.pnlSol > 0 ? '+' : ''}${trade.pnlSol} SOL papier, ${trade.durMin} min)${liveLine}\n📒 Total papier: ${state.trades.length} trades | WR ${wr.toFixed(0)}% | ${tot > 0 ? '+' : ''}${tot.toFixed(3)} SOL`;
     console.log(msg.replace(/\n/g, ' | ')); tg(msg);
 }
 
