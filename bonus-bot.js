@@ -192,8 +192,28 @@ async function scan() {
             const ageH = (now - w.birthMs) / 3.6e6;
             if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; }
             let cs;
-            try { cs = await candles15(w.pool, 192); } catch (e) { continue; }
-            if (!cs || cs.length < 15) continue;
+            try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; }
+            // Purge fetch cassé (2026-07-19) : 5/12 slots n'étaient JAMAIS évalués (bougies GT en échec
+            // silencieux) → après 8 échecs consécutifs, on libère le slot. cs.length entre 1 et 14 =
+            // token très jeune, légitime → on attend sans compter d'échec.
+            if (!cs || cs.length === 0) {
+                if (!state.positions[tok]) {
+                    w.fetchFails = (w.fetchFails || 0) + 1;
+                    if (w.fetchFails >= 8) { console.log(`🧹 Purge watch: ${w.symbol} (${w.fetchFails} échecs bougies consécutifs)`); delete state.watch[tok]; }
+                }
+                continue;
+            }
+            w.fetchFails = 0;
+            if (cs.length < 15) continue;
+            // Purge cadavres (2026-07-19, GO user) : MC courante < 200k → le token a dumpé depuis l'ajout,
+            // il ne repassera plus le filtre d'entrée (250k) et squatte un des 12 slots pour rien
+            // (constat du 19/07 : HOUSEM 7k, Ricky 15k, SR20 21k occupaient la watch).
+            const mcNow = cs[cs.length - 1][4] * w.supply;
+            if (mcNow < 200_000 && !state.positions[tok]) {
+                console.log(`🧹 Purge watch: ${w.symbol} (MC $${Math.round(mcNow / 1000)}k < 200k)`);
+                delete state.watch[tok];
+                continue;
+            }
             const st = superTrend(cs);
             if (!st.length) continue;
             const last = st[st.length - 1];
