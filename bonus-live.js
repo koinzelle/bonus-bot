@@ -75,6 +75,9 @@ async function findMeteoraPool(tokenAddress) {
             if (!OK_BIN_STEPS.includes(binStep)) continue;
             let baseFeePct = 0;
             try { baseFeePct = parseFloat((await pool.getFeeInfo()).baseFeeRatePercentage?.toString() ?? 0); } catch (_) {}
+            // Canonique EP : pools 2-5% de base fee ("harvesting 2-5% fees on churn", MANLET = 2%).
+            // < 2% = pas assez de fees pour l'edge → pool écartée.
+            if (baseFeePct < 2) continue;
             let reserveSol = 0;
             try { reserveSol = parseFloat((await connection.getTokenAccountBalance(pool.lbPair.reserveY)).value.uiAmount || 0); } catch (_) {}
             if (reserveSol < 1) continue; // pool quasi vide → fills/SL irréalistes
@@ -82,7 +85,9 @@ async function findMeteoraPool(tokenAddress) {
         } catch (_) {}
     }
     if (!candidates.length) return null;
-    candidates.sort((a, b) => (b.binStep === 100) - (a.binStep === 100) || b.baseFeePct - a.baseFeePct || b.reserveSol - a.reserveSol);
+    // Priorité FEES d'abord (demande user, aligné bot 1 : "5% d'abord, descendre s'il n'y a rien") —
+    // une pool 5% bat toujours une 2% ; bin step 100 (canonique) puis réserve en départage.
+    candidates.sort((a, b) => b.baseFeePct - a.baseFeePct || (b.binStep === 100) - (a.binStep === 100) || b.reserveSol - a.reserveSol);
     const best = candidates[0];
     console.log(`  🏆 Pool: ${best.addr.slice(0, 8)}... | bin step ${best.binStep} | fee ${best.baseFeePct}% | réserve ${best.reserveSol.toFixed(1)} SOL`);
     return best.addr;
