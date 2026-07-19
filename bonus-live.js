@@ -3,25 +3,26 @@
  * ⛔ VERROUILLÉE : ne fait RIEN tant que LIVE=1 n'est pas défini dans l'environnement.
  * À n'activer qu'après validation du paper-trading (~50 trades, WR ≥ 70%, PnL net > 0).
  *
+ * SPEC CANONIQUE (docs EP du 2026-07-19, screenshot Meteora UI) — IMPLÉMENTÉE ci-dessous :
+ *  - Bid-Ask, Bin Range Mode CUSTOM, Lower -34 / Higher +34 = 69 bins SYMÉTRIQUES autour du prix
+ *  - DOUBLE-SIDED : ~moitié de la mise swappée en token (Jupiter) → côté haut (vend la montée),
+ *    l'autre moitié en SOL → côté bas (achète le dip). Pools bin step 100 / base fee 2%+.
+ *  - SL canonique = "sharp breakdown + hors range" (prix sous le bin -34), en plus du flip ST du paper.
+ *
  * Transplante les patterns ÉPROUVÉS de bot.js (leçons payées cash de la semaine du 04/07) :
  *  - confirmTx : vérifie value.err — une TX peut être "confirmée" EN ERREUR on-chain
  *    (bug chunk ELON Custom 6027 → 0.44 SOL fantômes). JAMAIS de send sans ce check.
- *  - dépôt réel MESURÉ par delta de solde (jamais le montant prévu) → PnL juste même si un dépôt rate.
+ *  - dépôt réel MESURÉ par delta de solde flat-to-flat, swap inclus (jamais le montant prévu).
  *  - close vérifié : re-check on-chain position vidée + retry, sinon on garde le tracking
- *    (bug world → perte fantôme -0.58 + liquidité orpheline).
+ *    (bug world → perte fantôme -0.58 + liquidité orpheline). Re-swap token→SOL après close.
  *
  * CHECKLIST avant le premier run LIVE (pour la prochaine session Claude ou le user) :
  *  [ ] Wallet DÉDIÉ bot 2 (BONUS_WALLET_KEY) — jamais celui de bot 1
  *  [ ] POSITION_SIZE_SOL=0.25 pour le front-test (comme l'auteur de la strat)
- *  [ ] Vérifier le shape : StrategyType.BidAsk existe dans la version du SDK (@meteora-ag/dlmm)
- *  [ ] SPEC CANONIQUE TRANCHÉE (docs EP du 2026-07-19, screenshot Meteora UI) :
- *      Bid-Ask, Bin Range Mode CUSTOM, Lower -34 / Higher +34 = 69 bins SYMÉTRIQUES autour du prix,
- *      DOUBLE-SIDED (quote empilé vers le bas = achète le dip, base vers le haut = vend la montée),
- *      pools bin step 100 / base fee 2%+. ⚠️ Le code ci-dessous = one-sided SOL sous le prix (-50%),
- *      l'ancienne interprétation — À RÉÉCRIRE avant LIVE : swap ~moitié en token puis addLiquidity
- *      2-sided [-34,+34] (ou zap). SL canonique = "sharp breakdown + hors range" (sous le bin -34).
- *  [ ] TP mesuré sur VALEUR DE POSITION (fees incluses) via getPosition — pas seulement le prix
- *  [ ] Dry-run sur devnet ou 1 seule position à 0.1 SOL d'abord
+ *  [ ] Vérifier StrategyType.BidAsk dans la version du SDK (@meteora-ag/dlmm) : console.log(DLMM.StrategyType)
+ *  [ ] TP sur VALEUR DE POSITION via positionValueSol() (implémenté : X+Y+fees convertis en SOL)
+ *  [ ] Dry-run : 1 seule position à 0.1 SOL d'abord, vérifier sur Meteora UI que la shape = Bid-Ask
+ *      2-sided [-34,+34] identique au screenshot EP, et que closeVerified re-swappe bien le token
  */
 
 require('dotenv').config();
@@ -32,18 +33,20 @@ if (process.env.LIVE !== '1') {
     return;
 }
 
-const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction } = require('@solana/web3.js');
 const DLMM = require('@meteora-ag/dlmm').default;
 const BN = require('bn.js');
 const bs58 = require('bs58');
+const axios = require('axios');
 
 const RPC_URL = process.env.RPC_URL || 'https://api.mainnet-beta.solana.com';
 const connection = new Connection(RPC_URL, 'confirmed');
 const keypair = Keypair.fromSecretKey(bs58.decode((process.env.BONUS_WALLET_KEY || '').trim()));
 
 const POSITION_SIZE_SOL = parseFloat(process.env.POSITION_SIZE_SOL || '0.25');
-const RANGE_DOWN_PCT = parseFloat(process.env.RANGE_DOWN_PCT || '0.50'); // profondeur sous l'entrée
+const BIN_RANGE = 34;              // ±34 bins = 69 bins — spec canonique EP (screenshot Meteora UI 19/07)
 const TX_RESERVE_SOL = 0.02;
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // ── Confirmation robuste (pattern bot.js post-ELON) ───────────
 async function confirmTx(hash) {
@@ -53,28 +56,57 @@ async function confirmTx(hash) {
 
 async function solBalance() { return await connection.getBalance(keypair.publicKey); }
 
-// ── Ouverture : position DLMM one-sided SOL, shape Bid-Ask, sous le prix ──
-// Retourne { positionKeypairPub, poolAddress, depositedSol, lowerBinId, upperBinId } ou null.
+async function tokenBalanceRaw(mint) {
+    const accs = await connection.getParsedTokenAccountsByOwner(keypair.publicKey, { mint: new PublicKey(mint) });
+    let total = 0n;
+    for (const a of accs.value) total += BigInt(a.account.data.parsed.info.tokenAmount.amount);
+    return total; // unités brutes
+}
+
+// ── Swap Jupiter v6 (générique in→out, montant en unités brutes) ──
+async function jupSwap(inputMint, outputMint, rawAmount) {
+    const quote = await axios.get('https://quote-api.jup.ag/v6/quote', {
+        params: { inputMint, outputMint, amount: rawAmount.toString(), slippageBps: 300 }, timeout: 12000,
+    });
+    const swap = await axios.post('https://quote-api.jup.ag/v6/swap', {
+        quoteResponse: quote.data, userPublicKey: keypair.publicKey.toString(), wrapAndUnwrapSol: true,
+    }, { timeout: 12000 });
+    const tx = VersionedTransaction.deserialize(Buffer.from(swap.data.swapTransaction, 'base64'));
+    tx.sign([keypair]);
+    const h = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    await confirmTx(h);
+    return h;
+}
+
+// ── Ouverture : Bid-Ask DOUBLE-SIDED ±34 bins (spec canonique EP) ──
+// Retourne { positionKeypairPub, poolAddress, depositedSol, lowerBinId, upperBinId, tokenMint } ou null.
 async function openBidAsk(poolAddress) {
     const balBefore = await solBalance();
     const amountSol = Math.min(POSITION_SIZE_SOL, balBefore / LAMPORTS_PER_SOL - TX_RESERVE_SOL);
     if (amountSol < 0.05) { console.log('❌ solde insuffisant'); return null; }
 
     const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
+    const xMint = dlmmPool.tokenX.publicKey.toString();
+    const yMint = dlmmPool.tokenY.publicKey.toString();
+    if (yMint !== SOL_MINT) { console.log('❌ pool non SOL-quote (tokenY ≠ WSOL) — non géré'); return null; }
     const activeBin = await dlmmPool.getActiveBin();
-    const binStep = dlmmPool.lbPair.binStep;
-    // nombre de bins pour couvrir RANGE_DOWN_PCT : (1 + step/10000)^n = 1/(1-range)
-    const nBins = Math.min(Math.ceil(Math.log(1 / (1 - RANGE_DOWN_PCT)) / Math.log(1 + binStep / 10000)), 232);
-    const upperBinId = activeBin.binId;            // borne haute = bin actif (entrée au support ST)
-    const lowerBinId = upperBinId - nBins;
+    const minBinId = activeBin.binId - BIN_RANGE;
+    const maxBinId = activeBin.binId + BIN_RANGE;
+
+    // ~moitié de la mise en token → côté HAUT du Bid-Ask (base vendue pendant la montée)
+    const halfLamports = Math.floor((amountSol / 2) * LAMPORTS_PER_SOL);
+    console.log(`  🔁 Swap ${(halfLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL → token (côté haut)...`);
+    await jupSwap(SOL_MINT, xMint, halfLamports);
+    const tokenRaw = await tokenBalanceRaw(xMint);
+    if (tokenRaw <= 0n) { console.log('❌ swap confirmé mais 0 token reçu — abandon'); return null; }
 
     const positionKeypair = Keypair.generate();
     const tx = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
         positionPubKey: positionKeypair.publicKey,
         user: keypair.publicKey,
-        totalXAmount: new BN(0),                                        // 0 token
-        totalYAmount: new BN(Math.floor(amountSol * LAMPORTS_PER_SOL)), // SOL one-sided
-        strategy: { minBinId: lowerBinId, maxBinId: upperBinId, strategyType: DLMM.StrategyType.BidAsk },
+        totalXAmount: new BN(tokenRaw.toString()),   // token → bins hauts (ask)
+        totalYAmount: new BN(halfLamports),          // SOL → bins bas (bid)
+        strategy: { minBinId, maxBinId, strategyType: DLMM.StrategyType.BidAsk },
         slippage: 100,
     });
     for (const t of Array.isArray(tx) ? tx : [tx]) {
@@ -82,31 +114,35 @@ async function openBidAsk(poolAddress) {
         await confirmTx(h);
         console.log(`  ✅ TX ouverture: https://solscan.io/tx/${h}`);
     }
-    // dépôt RÉEL mesuré (pattern bot.js post-ELON) — jamais le montant prévu
+    // dépôt RÉEL mesuré flat-to-flat, swap inclus (pattern bot.js post-ELON)
     const balAfter = await solBalance();
     const depositedSol = (balBefore - balAfter) / LAMPORTS_PER_SOL;
-    console.log(`  💰 Déposé réel: ${depositedSol.toFixed(4)} SOL | bins [${lowerBinId}→${upperBinId}] BidAsk`);
-    return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, lowerBinId, upperBinId };
+    console.log(`  💰 Déposé réel: ${depositedSol.toFixed(4)} SOL | bins [${minBinId}→${maxBinId}] (±${BIN_RANGE}) Bid-Ask 2-sided`);
+    return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint };
 }
 
-// ── Valeur de position (pour TP sur PnL réel, fees incluses) ──
-async function positionValueSol(pos, solPriceUsd) {
+// ── Valeur de position en SOL (X + Y + fees, pour TP sur PnL réel fees incluses) ──
+async function positionValueSol(pos) {
     const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
     const p = await dlmmPool.getPosition(new PublicKey(pos.positionKeypairPub));
     const d = p.positionData;
-    // NOTE successeur : convertir amounts X (token) + Y (SOL) + fees en SOL — voir bot.js ~2540
-    // (côté token via prix live / solPriceUsd ; côté Y direct en lamports). À implémenter avant LIVE.
-    throw new Error('positionValueSol: à finaliser (cf bot.js FEE-VEL block) avant tout run LIVE');
+    const xDec = dlmmPool.tokenX.decimal ?? dlmmPool.tokenX.mint?.decimals ?? 6;
+    const yDec = dlmmPool.tokenY.decimal ?? dlmmPool.tokenY.mint?.decimals ?? 9;
+    const activeBin = await dlmmPool.getActiveBin();
+    const priceYperX = parseFloat(activeBin.pricePerToken); // SOL par token (unités humaines)
+    const xHuman = Number(d.totalXAmount?.toString() ?? 0) / 10 ** xDec;
+    const yHuman = Number(d.totalYAmount?.toString() ?? 0) / 10 ** yDec;
+    const feeX = Number(d.feeX?.toString() ?? 0) / 10 ** xDec;
+    const feeY = Number(d.feeY?.toString() ?? 0) / 10 ** yDec;
+    return yHuman + feeY + (xHuman + feeX) * priceYperX; // tout en SOL
 }
 
-// ── Fermeture vérifiée (pattern bot.js post-world) ────────────
+// ── Fermeture vérifiée (pattern bot.js post-world) + re-swap token→SOL ──
 async function closeVerified(pos) {
     const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
     const pubkey = new PublicKey(pos.positionKeypairPub);
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const p = await dlmmPool.getPosition(pubkey);
-            const binData = p.positionData?.positionBinData || [];
             const tx = await dlmmPool.removeLiquidity({
                 position: pubkey, user: keypair.publicKey,
                 fromBinId: pos.lowerBinId, toBinId: pos.upperBinId,
@@ -123,6 +159,13 @@ async function closeVerified(pos) {
                 const remaining = (check.positionData?.positionBinData || []).some(b => parseFloat(b.positionLiquidity || 0) > 0);
                 if (remaining) throw new Error('liquidité restante après remove');
             } catch (e) { if (String(e.message).includes('restante')) throw e; /* position introuvable = vidée ✓ */ }
+            // re-swap du token récupéré → SOL (sinon PnL faussé + poussière qui traîne)
+            if (pos.tokenMint) {
+                try {
+                    const raw = await tokenBalanceRaw(pos.tokenMint);
+                    if (raw > 0n) { await jupSwap(pos.tokenMint, SOL_MINT, raw); console.log('  🔁 Token résiduel re-swappé en SOL'); }
+                } catch (e) { console.log(`  ⚠️ re-swap token→SOL échoué (${String(e.message).slice(0, 60)}) — résidu au wallet, PnL à corriger à la main`); }
+            }
             return true;
         } catch (e) {
             console.log(`  ⚠️ close tentative ${attempt}/3: ${String(e.message).slice(0, 80)}`);
