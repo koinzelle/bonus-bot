@@ -32,7 +32,12 @@ try { if (DATA_DIR !== __dirname) fs.mkdirSync(DATA_DIR, { recursive: true }); }
 const STATE_FILE = path.join(DATA_DIR, 'bonus_paper.json');
 
 // ── Paramètres stratégie ──────────────────────────────────────
-const TP_PCT = 0.06;              // take profit +6%
+// TP TRAILING (2026-07-19, idée user + backtest : +247%/+239% total vs +84% en TP fixe +6%, WR 80% vs 85%,
+// pires pertes identiques) : une fois le high-water ≥ +5% depuis l'entrée, plus de plafond — on suit le
+// pump et on sort quand le prix retombe de 1.5% sous le plus-haut. Avant l'armement : SL flip ST inchangé.
+const TRAIL_ARM_PCT = 0.05;       // armé quand le high-water atteint +5%
+const TRAIL_GAP_PCT = 0.015;      // sortie à high-water -1.5% (1% marginalement mieux en backtest,
+                                  // 1.5% plus robuste au polling 30s réel sur memecoin)
 const NEAR_ST_PCT = 0.04;        // fenêtre pullback ≤ +4% au-dessus de la ligne ST — sweep 2026-07-19 :
                                  // WR stable 79-80% de 3 à 4.5% ; 4% = meilleure moy (+3.86%/trade, +73% total,
                                  // 19 trades vs 14 à 3%) sans nouvelle queue de perte ; 5% dégrade (-32.9% tail)
@@ -322,13 +327,22 @@ async function scan() {
             const pos = state.positions[tok];
 
             if (pos) {
-                // TP/SL uniquement sur les bougies qui commencent APRÈS l'entrée (sinon on compte
+                // Sorties uniquement sur les bougies qui commencent APRÈS l'entrée (sinon on compte
                 // le mouvement d'avant notre entrée = TP fantôme instantané). last = dernière bougie.
                 const candleAfterEntry = lastC[0] > (pos.entryCandleTs || 0);
-                if (candleAfterEntry && lastC[2] >= pos.entry * (1 + TP_PCT)) {
-                    await closePaper(tok, pos, pos.entry * (1 + TP_PCT), 'TP +6%');
-                } else if (candleAfterEntry && last.trend === -1) {
-                    await closePaper(tok, pos, lastC[4], `SL flip SuperTrend (${((lastC[4] / pos.entry - 1) * 100).toFixed(1)}%)`);
+                if (candleAfterEntry) {
+                    // TP TRAILING (backtest 2026-07-19 : +247% vs +84% en TP fixe) — même modèle conservateur
+                    // que le backtest : le stop se juge sur le high-water d'AVANT la bougie courante.
+                    const hwPrev = pos.hw || pos.entry;
+                    const trailArmed = hwPrev >= pos.entry * (1 + TRAIL_ARM_PCT);
+                    const stop = hwPrev * (1 - TRAIL_GAP_PCT);
+                    if (trailArmed && lastC[3] <= stop) {
+                        await closePaper(tok, pos, stop, `TP trailing (HW +${((hwPrev / pos.entry - 1) * 100).toFixed(1)}%, sortie -${(TRAIL_GAP_PCT * 100).toFixed(1)}% sous le top)`);
+                    } else if (last.trend === -1) {
+                        await closePaper(tok, pos, lastC[4], `SL flip SuperTrend (${((lastC[4] / pos.entry - 1) * 100).toFixed(1)}%)`);
+                    } else {
+                        pos.hw = Math.max(hwPrev, lastC[2]); // maj high-water APRÈS les checks (conservateur)
+                    }
                 }
                 continue;
             }
@@ -391,9 +405,9 @@ async function scan() {
                 const freshPct = +(freshVsAth * 100).toFixed(0);
                 if (!isFresh) console.log(`  ⚠️ [SHADOW fresh-dist] entrée à ${freshPct}% de l'ATH (<65) — tag mesure`);
                 const support = nearST ? 'ST' : 'EMA100';
-                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: +stochNow.toFixed(1), support, entryCandleTs: lastC[0] };
+                state.positions[tok] = { symbol: w.symbol, entry, hw: entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: +stochNow.toFixed(1), support, entryCandleTs: lastC[0] };
                 save();
-                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support})\nprix: $${entry.toFixed(8)}${line > 0 ? ` (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)` : ''}\nStochRSI ${stochNow.toFixed(1)} | ATH il y a ${athAgeH.toFixed(1)}h | fresh ${freshPct}%\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nTP: $${(entry * 1.06).toFixed(8)} (+6%) | SL: flip ST`;
+                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support})\nprix: $${entry.toFixed(8)}${line > 0 ? ` (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)` : ''}\nStochRSI ${stochNow.toFixed(1)} | ATH il y a ${athAgeH.toFixed(1)}h | fresh ${freshPct}%\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nTP: trailing (armé +5%, sortie top -1.5%) | SL: flip ST`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
                 if (live.enabled) {
