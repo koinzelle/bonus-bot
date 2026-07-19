@@ -314,14 +314,9 @@ async function scan() {
             // 4. Support alternatif EMA100 15m (alertes EP "EMA100 touched") — ±2% autour de la ligne
             const ema = ema100Last(cs);
             const nearEMA = ema != null && Math.abs(curPrice / ema - 1) <= 0.02;
-            // 5. "1 alert / ST flip cycle" : une seule entrée par run vert de la SuperTrend
-            let cycleTs = null;
-            if (prevSt && prevSt.trend === 1) {
-                let k = st.length - 2;
-                while (k > 0 && st[k - 1].trend === 1) k--;
-                cycleTs = cs[st[k].i] ? cs[st[k].i][0] : null;
-            }
-            const cycleUsed = cycleTs != null && w.lastEntryCycleTs === cycleTs;
+            // (règle "1 entrée/cycle ST" RETIRÉE le 2026-07-19, remarque user : le backtest 83% WR
+            //  autorisait les ré-entrées avec cooldown 30min seul — le "1 alert/cycle" du bot yunus
+            //  est de l'anti-spam d'alertes humaines, pas une règle de trading validée)
             // MC ACTUELLE ≥ $250k (pas seulement l'ATH historique) — ferme le trou "cadavre armé".
             const curMc = curPrice * w.supply;
             const mcOk = curMc >= MC_MIN_ATH;
@@ -335,14 +330,12 @@ async function scan() {
                 trend: prevSt ? (prevSt.trend === 1 ? 'vert' : 'rouge') : '?',
                 distToST_pct: (line > 0) ? +(((curPrice / line) - 1) * 100).toFixed(1) : null,
                 nearEMA100: nearEMA,
-                cycleUsed,
                 cooldown: !!onCooldown,
             };
-            if (armed && mcOk && athFresh && stochOK && prevSt && prevSt.trend === 1 && (nearST || nearEMA) && !cycleUsed && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && athFresh && stochOK && prevSt && prevSt.trend === 1 && (nearST || nearEMA) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice; // fill au prix courant réel
                 const freshPct = +(freshVsAth * 100).toFixed(0);
                 if (!isFresh) console.log(`  ⚠️ [SHADOW fresh-dist] entrée à ${freshPct}% de l'ATH (<65) — tag mesure`);
-                if (cycleTs != null) w.lastEntryCycleTs = cycleTs;
                 const support = nearST ? 'ST' : 'EMA100';
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: +stochNow.toFixed(1), support, entryCandleTs: lastC[0] };
                 save();
