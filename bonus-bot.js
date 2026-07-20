@@ -183,6 +183,7 @@ const GMGN_AGENT = new https.Agent({ family: 4 });
 const GMGN_BASE = 'https://openapi.gmgn.ai';
 const GMGN_KEY = (process.env.GMGN_API_KEY || '').trim();
 const gmgnRejected = new Map(); // tok -> ts (ne pas re-tester un rejeté à chaque scan GT)
+const profilWarned = new Set(); // tok déjà loggé [SHADOW profil] — anti-spam (RACY 60×/h le 20/07)
 let gmgnKeyWarned = false;
 async function gmgnQualityOk(tok, sym) {
     if (!GMGN_KEY) {
@@ -307,9 +308,12 @@ async function scan() {
                 const ageH = (now - d.birthMs) / 3.6e6;
                 if (ageH >= AGE_MAX_H || d.vol24h < VOL_MIN_24H) continue;
                 // Règle EP n°5 (profil DexScreener payé + X) : SHADOW (2026-07-19, décision user) —
-                // on logge à l'ajout, on ne bloque pas. Le flag est posé sur le token → visible au diag.
+                // on logge UNE FOIS par token (anti-spam : RACY loggé 60×/h le 20/07), on ne bloque pas.
                 const profilOk = d.hasTwitter && d.hasImage;
-                if (!profilOk) console.log(`⚠️ [SHADOW profil] ${d.symbol}: profil DexScreener incomplet (Twitter:${d.hasTwitter} image:${d.hasImage}) — mesure seule`);
+                if (!profilOk && !profilWarned.has(tok)) {
+                    profilWarned.add(tok);
+                    console.log(`⚠️ [SHADOW profil] ${d.symbol}: profil DexScreener incomplet (Twitter:${d.hasTwitter} image:${d.hasImage}) — mesure seule`);
+                }
                 // Filtre qualité GMGN (2026-07-15, copié de bot 1) : l'univers GT trending est pollué
                 // (paper 29% WR vs 46-50% sur l'univers bot 1 filtré). 1 appel à l'ajout seulement.
                 if (!(await gmgnQualityOk(tok, d.symbol))) continue;
@@ -425,31 +429,53 @@ async function scan() {
             // MC ACTUELLE ≥ $250k (pas seulement l'ATH historique) — ferme le trou "cadavre armé".
             const curMc = curPrice * w.supply;
             const mcOk = curMc >= MC_MIN_ATH;
-            // "chaud" = toutes les conditions SAUF le retracement → re-check à 30s (tick alterné)
-            w.hot = !!(armed && mcOk && athFresh && stochOK && prevSt && prevSt.trend === 1);
+            // ── StochRSI ≤5 = BONUS, plus une condition DURE (2026-07-20, décision user) : combiné à
+            // rec8h + dist≤4% + green, le triple simultané était quasi-impossible (repli profond →
+            // stoch bas arrive souvent quand l'ATH n'est plus <8h). Le cœur = proche ST + vert + ATH frais.
+            const stochBonus = stochNow != null && stochNow <= 5;
+            // "chaud" = tout SAUF le retracement (sans stoch désormais) → re-check à 30s (tick alterné)
+            w.hot = !!(armed && mcOk && athFresh && prevSt && prevSt.trend === 1);
+            // ── DIAGNOSTIC (2026-07-20) : 1re condition qui bloque + compteur global + "plus proche
+            // approché" de la ligne ST → sur quelques heures on saura LE goulot au lieu de deviner ──
+            const distNow = (line > 0) ? ((curPrice / line) - 1) * 100 : null;
+            if (distNow != null && (w.minDistST == null || distNow < w.minDistST)) w.minDistST = +distNow.toFixed(1);
+            let block = null;
+            if (!armed) block = 'not-armed';
+            else if (!mcOk) block = 'MC<250k';
+            else if (!(prevSt && prevSt.trend === 1)) block = 'ST-rouge';
+            else if (!athFresh) block = 'athAge>8h';
+            else if (!(nearST || nearEMA)) block = 'dist>4%';
+            else if (onCooldown) block = 'cooldown';
+            else block = 'ENTRÉE';
+            state.blockCount = state.blockCount || {};
+            state.blockCount[block] = (state.blockCount[block] || 0) + 1;
             w.diag = {
                 hot: w.hot,
+                block,
                 armed,
                 athMcK: Math.round(athMc / 1000),
                 curMcK: Math.round(curMc / 1000),
                 freshPct: +(freshVsAth * 100).toFixed(0),                // shadow (distance à l'ATH)
                 athAgeH: athAgeH != null ? +athAgeH.toFixed(1) : null,   // ACTIF : ≤ 8h requis
-                stochK: stochNow != null ? +stochNow.toFixed(1) : null,  // ACTIF : ≤ 5 requis
+                stochK: stochNow != null ? +stochNow.toFixed(1) : null,  // BONUS (loggé, plus requis)
+                stochBonus,
                 trend: prevSt ? (prevSt.trend === 1 ? 'vert' : 'rouge') : '?',
                 distToST_pct: (line > 0) ? +(((curPrice / line) - 1) * 100).toFixed(1) : null,
+                minDistST_pct: w.minDistST ?? null,                      // plus proche jamais approché de la ligne ST
+                emaAvail: ema != null,
                 nearEMA100: nearEMA,
                 cooldown: !!onCooldown,
             };
-            if (armed && mcOk && athFresh && stochOK && prevSt && prevSt.trend === 1 && (nearST || nearEMA) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && athFresh && prevSt && prevSt.trend === 1 && (nearST || nearEMA) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice; // fill au prix courant réel
                 const freshPct = +(freshVsAth * 100).toFixed(0);
                 if (!isFresh) console.log(`  ⚠️ [SHADOW fresh-dist] entrée à ${freshPct}% de l'ATH (<65) — tag mesure`);
                 const support = nearST ? 'ST' : 'EMA100';
-                state.positions[tok] = { symbol: w.symbol, entry, hw: entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: +stochNow.toFixed(1), support, entryCandleTs: lastC[0] };
+                state.positions[tok] = { symbol: w.symbol, entry, hw: entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: stochNow != null ? +stochNow.toFixed(1) : null, stochBonus, support, entryCandleTs: lastC[0] };
                 // ombre A/B : même entrée, sortie TP fixe +6%/flip ST (l'ancienne règle) — vit sa propre vie
                 state.fixedShadow[tok] = { symbol: w.symbol, entry, openedAt: now, entryCandleTs: lastC[0] };
                 save();
-                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support})\nprix: $${entry.toFixed(8)}${line > 0 ? ` (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)` : ''}\nStochRSI ${stochNow.toFixed(1)} | ATH il y a ${athAgeH.toFixed(1)}h | fresh ${freshPct}%\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nTP: trailing (armé +5%, sortie top -1.5%) | SL: flip ST`;
+                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support})\nprix: $${entry.toFixed(8)}${line > 0 ? ` (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)` : ''}\nStochRSI ${stochNow != null ? stochNow.toFixed(1) : '?'}${stochBonus ? ' 🎯bonus≤5' : ''} | ATH il y a ${athAgeH.toFixed(1)}h | fresh ${freshPct}%\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nTP: trailing (armé +5%, sortie top -1.5%) | SL: flip ST`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
                 if (live.enabled) {
@@ -494,7 +520,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         pnlSolLive, // PnL RÉEL fees incluses (null en paper pur) — à comparer au pnlSol prix
         symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
-        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, stochK: pos.stochK ?? null, support: pos.support ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
+        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
@@ -527,6 +553,7 @@ http.createServer((req, res) => {
         winRate: state.trades.length ? Math.round(state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100) + '%' : null,
         pnlSolPaper: +tot.toFixed(4),
         // A/B live : trailing (réel) vs TP fixe +6% (ombre) sur les MÊMES entrées
+        blockCount: state.blockCount || {}, // compteur cumulé des raisons de non-entrée → voir le vrai goulot
         abFixedVsTrailing: {
             trailing: { n: state.trades.length, pnlSol: +tot.toFixed(4) },
             fixed: { n: state.tradesFixed.length, pnlSol: +state.tradesFixed.reduce((s, t) => s + t.pnlSol, 0).toFixed(4),
