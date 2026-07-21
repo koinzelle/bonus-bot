@@ -272,15 +272,16 @@ function stochK(cs) {
     }
     return sk;
 }
-function ema100Last(cs) {
-    // EMA100 sur closes 15m (support alternatif des alertes EP) — null si < 100 bougies (token jeune)
+function emaLast(cs, n) {
+    // EMA(n) sur closes 15m — null si < n bougies. Seed = SMA des n premières, puis EMA classique.
     const closes = cs.map(c => c[4]);
-    if (closes.length < 100) return null;
-    const k = 2 / 101;
-    let e = closes.slice(0, 100).reduce((s, v) => s + v, 0) / 100;
-    for (let i = 100; i < closes.length; i++) e = closes[i] * k + e * (1 - k);
+    if (closes.length < n) return null;
+    const k = 2 / (n + 1);
+    let e = closes.slice(0, n).reduce((s, v) => s + v, 0) / n;
+    for (let i = n; i < closes.length; i++) e = closes[i] * k + e * (1 - k);
     return e;
 }
+const ema100Last = cs => emaLast(cs, 100); // support des alertes EP (25h d'historique — souvent null)
 
 // ── Boucle principale ─────────────────────────────────────────
 let scanning = false;
@@ -423,6 +424,11 @@ async function scan() {
             // 4. Support alternatif EMA100 15m (alertes EP "EMA100 touched") — ±2% autour de la ligne
             const ema = ema100Last(cs);
             const nearEMA = ema != null && Math.abs(curPrice / ema - 1) <= 0.02;
+            // 4bis. Support EMA34 ±4% (branché EN PARALLÈLE le 2026-07-21, backtest : 147 trades/89% WR/
+            // +470% vs ST-line 32/72%/+73% — l'EMA34 est bien plus atteignable ET plus prédictive que la
+            // ligne ST qui traîne 30-70% sous le prix sur ces tokens volatils ; dispo dès 8.5h d'historique)
+            const ema34 = emaLast(cs, 34);
+            const nearEMA34 = ema34 != null && Math.abs(curPrice / ema34 - 1) <= 0.04;
             // (règle "1 entrée/cycle ST" RETIRÉE le 2026-07-19, remarque user : le backtest 83% WR
             //  autorisait les ré-entrées avec cooldown 30min seul — le "1 alert/cycle" du bot yunus
             //  est de l'anti-spam d'alertes humaines, pas une règle de trading validée)
@@ -444,7 +450,7 @@ async function scan() {
             else if (!mcOk) block = 'MC<250k';
             else if (!(prevSt && prevSt.trend === 1)) block = 'ST-rouge';
             else if (!athFresh) block = 'athAge>8h';
-            else if (!(nearST || nearEMA)) block = 'dist>4%';
+            else if (!(nearST || nearEMA || nearEMA34)) block = 'dist>4%';
             else if (onCooldown) block = 'cooldown';
             else block = 'ENTRÉE';
             state.blockCount = state.blockCount || {};
@@ -464,13 +470,15 @@ async function scan() {
                 minDistST_pct: w.minDistST ?? null,                      // plus proche jamais approché de la ligne ST
                 emaAvail: ema != null,
                 nearEMA100: nearEMA,
+                distEMA34_pct: ema34 != null ? +(((curPrice / ema34) - 1) * 100).toFixed(1) : null,
+                nearEMA34,
                 cooldown: !!onCooldown,
             };
-            if (armed && mcOk && athFresh && prevSt && prevSt.trend === 1 && (nearST || nearEMA) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && athFresh && prevSt && prevSt.trend === 1 && (nearST || nearEMA || nearEMA34) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice; // fill au prix courant réel
                 const freshPct = +(freshVsAth * 100).toFixed(0);
                 if (!isFresh) console.log(`  ⚠️ [SHADOW fresh-dist] entrée à ${freshPct}% de l'ATH (<65) — tag mesure`);
-                const support = nearST ? 'ST' : 'EMA100';
+                const support = nearST ? 'ST' : nearEMA ? 'EMA100' : 'EMA34';
                 state.positions[tok] = { symbol: w.symbol, entry, hw: entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: stochNow != null ? +stochNow.toFixed(1) : null, stochBonus, support, entryCandleTs: lastC[0] };
                 // ombre A/B : même entrée, sortie TP fixe +6%/flip ST (l'ancienne règle) — vit sa propre vie
                 state.fixedShadow[tok] = { symbol: w.symbol, entry, openedAt: now, entryCandleTs: lastC[0] };
