@@ -326,13 +326,23 @@ async function gmgnQualityOk(tok, sym) {
         // Règle EP n°1 (2026-07-19) : "demande réelle" = fees totales GMGN ≥ 30 SOL. Un token qui
         // affiche $1M de volume avec < 30 SOL de fees = wash trading ("your neighbor is lying").
         const totalFee = info.total_fee != null ? parseFloat(info.total_fee) : null;
-        // Règle EP n°3b : phishing wallets ≤ 20% (rugcheck, comme bot 1 mais seuil EP plus strict que 30%)
-        let phishPct = null;
+        // Règle EP n°3b : phishing wallets ≤ 20% (rugcheck) + CLUSTERS "virus" (2026-07-22, demande user)
+        // = insiderNetworks de rugcheck = les paquets de wallets connectés (équivalent des "virus clusters"
+        // bubblemaps qu'EP refuse à l'œil). Règle : plus gros cluster ≥ 10% (le "12-14% cluster" d'EP) OU
+        // total réseaux insiders ≥ 40% → rejet. (GMEBULL : plus gros 2.9%, total 14% → passe, comme EP.)
+        let phishPct = null, maxClusterPct = null, totalInsiderPct = null;
         try {
             const rug = await axios.get(`https://api.rugcheck.xyz/v1/tokens/${tok}/report`, { timeout: 8000 });
             const topHolders = rug.data?.topHolders || [];
             const known = rug.data?.knownAccounts || {};
             phishPct = topHolders.reduce((s, h) => known[h.owner]?.type === 'PHISHING' ? s + (h.pct || 0) : s, 0);
+            const nets = rug.data?.insiderNetworks || [];
+            const supplyRaw = parseFloat(rug.data?.token?.supply || 0);
+            if (supplyRaw > 0 && nets.length) {
+                const pcts = nets.map(n => 100 * (n.tokenAmount || 0) / supplyRaw);
+                maxClusterPct = Math.max(...pcts);
+                totalInsiderPct = pcts.reduce((s, v) => s + v, 0);
+            }
         } catch (_) { /* rugcheck KO → fail-open sur ce critère */ }
         const fails = [];
         if (holders < 1000) fails.push(`holders ${holders}`);
@@ -344,6 +354,10 @@ async function gmgnQualityOk(tok, sym) {
         // (post-1er-dump), qui ont eu le temps d'accumuler → gate légitime.
         if (totalFee != null && totalFee < 30) fails.push(`fees ${totalFee.toFixed(0)} SOL < 30`);
         if (phishPct != null && phishPct > 20) fails.push(`phishing ${phishPct.toFixed(0)}% > 20%`);
+        // Clusters "virus" (rugcheck insiderNetworks) EN SHADOW (2026-07-22, demande user) : on mesure,
+        // on ne bloque pas. Seuils candidats : plus gros cluster ≥ 10% OU total insiders ≥ 40%.
+        if (maxClusterPct != null && (maxClusterPct >= 10 || totalInsiderPct >= 40))
+            console.log(`⚠️ [SHADOW clusters] ${sym}: plus gros ${maxClusterPct.toFixed(1)}% | total insiders ${totalInsiderPct.toFixed(0)}% — mesure seule (ne bloque pas)`);
         if (fails.length) {
             gmgnRejected.set(tok, Date.now());
             console.log(`🚫 Qualité GMGN: ${sym} rejeté (${fails.join(', ')})`);
