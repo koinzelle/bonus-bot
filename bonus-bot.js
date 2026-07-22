@@ -624,11 +624,12 @@ async function scan() {
             // RÉCENT (EP entre après le dip d'un sommet frais, cas FOMO). Sans ça, un coin qualifié il y a
             // 3 mois et à -80% depuis serait "dd≥40%" en permanence = entrée sur qualification fossile.
             const athRecent = athAgeH != null && athAgeH <= 14 * 24;
-            // Garde-fou GMGN (2026-07-22, remarque user) : les bougies GT sont PAR POOL — si la pool est
-            // plus jeune que le token (migration), notre "ATH de vie" rate l'historique d'avant et un pump
-            // local sous le VRAI ATH passerait pour un nouvel ATH. L'ath_price GMGN (token-level) arbitre :
-            // l'ATH bougies doit atteindre ≥90% du vrai ATH de vie, sinon le token n'a pas cassé son ATH.
-            const brokeTrueAth = !w.athGmgn || ath >= w.athGmgn * 0.90;
+            // Garde-fou ANTI-ZOMBIE GMGN (2026-07-22, seuil 30% = choix user) : en temps normal ATH bougies
+            // ≈ ath_price GMGN (même data, à la mèche près). Le check ne mord que si la pool est plus jeune
+            // que le token (migration) ET que le cycle visible reste écrasé sous la gloire passée (<30% du
+            // vrai ATH de vie = revival zombie / "infinity scam loop") → blocage 'sous-ATH-vie'. Un revival
+            // sérieux type FOMO/HeavyPulp (cycle ≥30% du top historique) passe.
+            const brokeTrueAth = !w.athGmgn || ath >= w.athGmgn * 0.30;
             w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
