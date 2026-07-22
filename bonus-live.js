@@ -147,6 +147,40 @@ async function jupSwap(inputMint, outputMint, rawAmount) {
     return h;
 }
 
+// ── Sweep : reswappe tout token résiduel (orphelin d'un open avorté) → SOL ──────────────────────
+// @solana/spl-token pas installé → IDs des programmes token en dur.
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+
+async function sweepToken(mint) {
+    const raw = await tokenBalanceRaw(mint);
+    if (raw <= 0n) return false;
+    console.log(`  🧹 Sweep ${mint.slice(0, 8)}: ${raw} unités → SOL...`);
+    try { await jupSwap(mint, SOL_MINT, raw); console.log('  ✅ sweep OK'); return true; }
+    catch (e) { console.log(`  ⚠️ sweep échoué: ${String(e.message).slice(0, 60)}`); return false; }
+}
+
+// Balaye tous les tokens loose du wallet (hors WSOL) → SOL. Appelé au démarrage : récupère les orphelins
+// d'opens avortés. Sûr : la liquidité d'une position LIVE est verrouillée dans la position DLMM, pas en
+// solde SPL loose → seuls les résidus sont balayés.
+async function sweepOrphans() {
+    try {
+        const [a, a2] = await Promise.all([
+            connection.getParsedTokenAccountsByOwner(keypair.publicKey, { programId: TOKEN_PROGRAM_ID }),
+            connection.getParsedTokenAccountsByOwner(keypair.publicKey, { programId: TOKEN_2022_PROGRAM_ID }),
+        ]);
+        const mints = new Set();
+        for (const acc of [...a.value, ...a2.value]) {
+            const info = acc.account.data.parsed.info;
+            if (info.mint === SOL_MINT) continue;
+            if (BigInt(info.tokenAmount.amount) > 0n) mints.add(info.mint);
+        }
+        if (!mints.size) { console.log('🧹 sweep: aucun token orphelin'); return; }
+        console.log(`🧹 sweep: ${mints.size} token(s) orphelin(s) à récupérer`);
+        for (const m of mints) { await sweepToken(m); await new Promise(r => setTimeout(r, 1500)); }
+    } catch (e) { console.log(`⚠️ sweepOrphans: ${String(e.message).slice(0, 60)}`); }
+}
+
 // ── Ouverture : Bid-Ask DOUBLE-SIDED ±34 bins (spec canonique EP) ──
 // Retourne { positionKeypairPub, poolAddress, depositedSol, lowerBinId, upperBinId, tokenMint } ou null.
 async function openBidAsk(poolAddress) {
@@ -177,18 +211,25 @@ async function openBidAsk(poolAddress) {
     if (tokenRaw <= 0n) { console.log('❌ swap confirmé mais 0 token reçu après 12s — abandon'); return null; }
 
     const positionKeypair = Keypair.generate();
-    const tx = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-        positionPubKey: positionKeypair.publicKey,
-        user: keypair.publicKey,
-        totalXAmount: new BN(tokenRaw.toString()),   // token → bins hauts (ask)
-        totalYAmount: new BN(halfLamports),          // SOL → bins bas (bid)
-        strategy: { minBinId, maxBinId, strategyType: DLMM.StrategyType.BidAsk },
-        slippage: 100,
-    });
-    for (const t of Array.isArray(tx) ? tx : [tx]) {
-        const h = await connection.sendTransaction(t, [keypair, positionKeypair]);
-        await confirmTx(h);
-        console.log(`  ✅ TX ouverture: https://solscan.io/tx/${h}`);
+    try {
+        const tx = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+            positionPubKey: positionKeypair.publicKey,
+            user: keypair.publicKey,
+            totalXAmount: new BN(tokenRaw.toString()),   // token → bins hauts (ask)
+            totalYAmount: new BN(halfLamports),          // SOL → bins bas (bid)
+            strategy: { minBinId, maxBinId, strategyType: DLMM.StrategyType.BidAsk },
+            slippage: 100,
+        });
+        for (const t of Array.isArray(tx) ? tx : [tx]) {
+            const h = await connection.sendTransaction(t, [keypair, positionKeypair]);
+            await confirmTx(h);
+            console.log(`  ✅ TX ouverture: https://solscan.io/tx/${h}`);
+        }
+    } catch (e) {
+        // Dépôt échoué APRÈS le swap → les tokens sont orphelins : on les reswappe tout de suite en SOL.
+        console.log(`  ⚠️ dépôt LP échoué (${String(e.message).slice(0, 60)}) — sweep du token swappé...`);
+        await sweepToken(xMint);
+        return null;
     }
     // dépôt RÉEL mesuré flat-to-flat, swap inclus (pattern bot.js post-ELON)
     const balAfter = await solBalance();
@@ -256,4 +297,4 @@ async function closeVerified(pos) {
     }
 }
 
-module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol };
+module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, sweepToken, sweepOrphans };

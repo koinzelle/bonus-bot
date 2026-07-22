@@ -39,8 +39,17 @@ const CHAT_ID = (process.env.CHAT_ID || '').trim();
 // backtest, +6% PRIX) ; le PnL réel fees incluses est loggé À CÔTÉ (pnlSolLive) pour comparaison.
 let live = { enabled: false };
 try { live = require('./bonus-live'); } catch (e) { console.log('⚠️ bonus-live indisponible:', e.message, '— paper seulement'); }
-if (live.enabled) console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_SOL || '0.25'} SOL | max ${process.env.MAX_LIVE_POSITIONS || '1'} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
-else console.log('🧪 Mode PAPER (LIVE≠1 ou bonus-live KO) — aucun ordre réel');
+if (live.enabled) {
+    console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_SOL || '0.25'} SOL | max ${process.env.MAX_LIVE_POSITIONS || '1'} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
+    if (live.sweepOrphans) live.sweepOrphans().catch(e => console.log('⚠️ sweep démarrage:', String(e.message).slice(0, 60)));
+} else console.log('🧪 Mode PAPER (LIVE≠1 ou bonus-live KO) — aucun ordre réel');
+
+// ── Filet anti-crash GLOBAL (2026-07-22) : un bot LIVE ne doit JAMAIS mourir sur une erreur transitoire
+// (RPC 429, rejet réseau, await non catché) — sinon il oublie le tracking de la position live = danger.
+// On LOGGE (stack complète pour diagnostiquer) et on SURVIT. L'état est persisté sur /data, chaque tick
+// est indépendant → continuer est bien plus sûr que crasher.
+process.on('unhandledRejection', (e) => console.log('⚠️ unhandledRejection (survécu):', String(e?.stack || e?.message || e).slice(0, 300)));
+process.on('uncaughtException', (e) => console.log('⚠️ uncaughtException (survécu):', String(e?.stack || e?.message || e).slice(0, 300)));
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { if (DATA_DIR !== __dirname) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
 const STATE_FILE = path.join(DATA_DIR, 'bonus_paper.json');
@@ -649,5 +658,7 @@ http.createServer((req, res) => {
 
 console.log('🧪 Bonus Stage PAPER bot démarré — aucun ordre réel ne sera passé.');
 tg('🚀 Bot démarré (paper-trading). Setups: token <48h, ATH>$250K frais, entrée au retracement ST 15m, TP +6% / SL flip ST.');
-setInterval(scan, SCAN_INTERVAL_MS);
-scan();
+// scan() enveloppé : un rejet dans un tick est loggé, jamais propagé en unhandledRejection.
+const safeScan = () => scan().catch(e => console.log('⚠️ scan tick (survécu):', String(e?.stack || e?.message || e).slice(0, 200)));
+setInterval(safeScan, SCAN_INTERVAL_MS);
+safeScan();
