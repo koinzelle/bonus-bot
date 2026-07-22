@@ -66,7 +66,7 @@ const NEAR_ST_PCT = 0.04;        // fenêtre pullback ≤ +4% au-dessus de la li
                                  // 19 trades vs 14 à 3%) sans nouvelle queue de perte ; 5% dégrade (-32.9% tail)
 const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
 const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
-const AGE_MAX_H = 240;            // token < 10 jours (2026-07-22) : aligné sur la data dispo — 1000 bougies 15m GT = 10.4 j. Au-delà on n'a plus l'historique complet → pattern/ATH faux.
+const AGE_MAX_H = 24 * 365;       // garde-fou zombies 1 an (2026-07-22, GO user) — l'âge n'est PLUS un critère (EP: "no minimum age") : paliers de TF (15m/1H/daily) + ATH récent ≤14j font le travail.
 const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener exact d'EP (aligné 2026-07-22, avant 500k)
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
 const MAX_POSITIONS = 8;          // positions papier simultanées (EP : beaucoup de petites positions, pas all-in)
@@ -202,7 +202,7 @@ async function candles15(pool, limit = 200) {
 // Utilisé pour les tokens ≥ 48h (les <48h ont toute leur vie dans les 192×15m).
 const candle1hCache = new Map();
 const CANDLE1H_TTL_MS = 10 * 60 * 1000;
-async function candles1h(pool, limit = 240) {
+async function candles1h(pool, limit = 720) {
     const c = candle1hCache.get(pool);
     if (c && Date.now() - c.ts < CANDLE1H_TTL_MS) return c.cs;
     const url = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/ohlcv/hour?aggregate=1&before_timestamp=${Math.floor(Date.now() / 1000)}&limit=${limit}`;
@@ -210,6 +210,24 @@ async function candles1h(pool, limit = 240) {
         const r = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
         const cs = (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]);
         if (cs.length) candle1hCache.set(pool, { cs, ts: Date.now() });
+        return cs;
+    } catch (e) {
+        if (c) return c.cs;
+        throw e;
+    }
+}
+
+// Bougies DAILY (2026-07-22) : tokens > 30j — 1000×1j ≈ 3 ans = vie entière. Cache 30 min (macro lent).
+const candleDayCache = new Map();
+const CANDLE_DAY_TTL_MS = 30 * 60 * 1000;
+async function candlesDay(pool, limit = 1000) {
+    const c = candleDayCache.get(pool);
+    if (c && Date.now() - c.ts < CANDLE_DAY_TTL_MS) return c.cs;
+    const url = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/ohlcv/day?aggregate=1&before_timestamp=${Math.floor(Date.now() / 1000)}&limit=${limit}`;
+    try {
+        const r = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
+        const cs = (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]);
+        if (cs.length) candleDayCache.set(pool, { cs, ts: Date.now() });
         return cs;
     } catch (e) {
         if (c) return c.cs;
@@ -470,8 +488,7 @@ async function scan() {
                 const d = await dexInfo(tok);
                 if (!d || !d.birthMs || !d.supply) continue;
                 const ageH = (now - d.birthMs) / 3.6e6;
-                // Cap d'âge 2 semaines (2026-07-22) : EP fait des coins PLUS VIEUX (post-1er-dump) mais
-                // pas des reliques de 1-12 mois (revival/CTO = piège) → borne à 336h.
+                // L'âge n'est plus un critère (paliers TF + ATH≤14j) — juste le garde-fou zombies 1 an.
                 if (ageH >= AGE_MAX_H || d.vol24h < VOL_MIN_24H) continue;
                 // MC EN PREMIER (2026-07-22, demande user) : MC pas bonne → skip IMMÉDIAT, avant l'appel
                 // qualité GMGN (comme bot 1). Seuil = MC_MIN_ATH (250k), identique à l'entrée : un token
@@ -499,7 +516,7 @@ async function scan() {
             // tick chaud : ne traiter que les tokens à 4/5 conditions + les positions ouvertes
             if (hotOnly && !w.hot && !state.positions[tok]) continue;
             const ageH = (now - w.birthMs) / 3.6e6;
-            if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; } // purge > 10j
+            if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; } // garde-fou zombies 1 an
             if (rl429 >= 2 && !state.positions[tok]) continue; // backoff : GT sature, on réessaie au prochain tick
             let cs;
             try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); } // 192×15m=48h : support/sortie (le macro vit sur les 1H, cf plus bas)
@@ -568,14 +585,18 @@ async function scan() {
             // (breakup→breakdown→nouvel ATH = ruggers sortis), entrer quand le prix a retracé ≥40% sous
             // l'ATH courant ET touche un support (ligne ST / bande basse Bollinger / EMA34). PAS d'exigence
             // ST verte : on entre sur le DIP (ST souvent rouge à -40/-50%), en pariant sur le rebound.
-            // ── MACRO (ATH de vie, pattern, drawdown) — hybride (2026-07-22, idée user) : <48h → les
-            // 192×15m couvrent toute la vie ; ≥48h → 240×1H (10j, cache 10min, 1 appel léger) ; et
-            // ath_price GMGN (ATH officiel de vie, capturé au check qualité) sert de plancher.
+            // ── MACRO (ATH, pattern, drawdown) — PALIERS de timeframe selon l'âge (2026-07-22, GO user) :
+            // comme un humain qui zoome. <48h → 192×15m (toute la vie) ; 48h-30j → 720×1H ; >30j →
+            // daily×1000 (~3 ans). L'ÂGE N'EST PLUS UN CRITÈRE (EP : "no minimum age", il a ouvert FOMO
+            // sur un chart daily en live) — le travail est fait par pattern + ATH récent ≤14j.
             let ms = cs;
-            if (ageH >= 48) { try { const hs = await candles1h(w.pool, 240); if (hs && hs.length >= 12) ms = hs; } catch (_) { /* fallback cs */ } }
-            let ath = w.athGmgn || 0, athTs = 0;
+            if (ageH >= 720) { try { const ds = await candlesDay(w.pool, 1000); if (ds && ds.length >= 12) ms = ds; } catch (_) { /* fallback cs */ } }
+            else if (ageH >= 48) { try { const hs = await candles1h(w.pool, 720); if (hs && hs.length >= 12) ms = hs; } catch (_) { /* fallback cs */ } }
+            // ATH du cycle = bougies (sert drawdown + récence) ; ATH GMGN = plancher pour "armed" seulement
+            // (sinon un wick GMGN au-dessus de nos bougies rendrait athTs inconnu et le dd faux).
+            let ath = 0, athTs = 0;
             for (const c of ms) if (c[2] > ath) { ath = c[2]; athTs = c[0]; }
-            const athMc = ath * w.supply;
+            const athMc = Math.max(ath, w.athGmgn || 0) * w.supply;
             const armed = athMc > MC_MIN_ATH;                       // a fait un ATH > 250K dans sa vie
             // GATE DUR pattern EP — qualification COLLANTE (2026-07-22) : une fois validé (ruggers sortis),
             // c'est ACQUIS ("by that time they already out"). Sans ça, la fenêtre de bougies glissante
@@ -599,12 +620,17 @@ async function scan() {
             const atSupport = nearST || nearEMA34 || nearBBlo;
             const onCooldown = w.cooldownUntil && now < w.cooldownUntil;
             const athAgeH = athTs > 0 ? (now / 1000 - (athTs > 1e12 ? athTs / 1000 : athTs)) / 3600 : null;
+            // ATH RÉCENT ≤14j (2026-07-22, remplace le cap d'âge) : on n'entre que sur le retrace d'un TOP
+            // RÉCENT (EP entre après le dip d'un sommet frais, cas FOMO). Sans ça, un coin qualifié il y a
+            // 3 mois et à -80% depuis serait "dd≥40%" en permanence = entrée sur qualification fossile.
+            const athRecent = athAgeH != null && athAgeH <= 14 * 24;
             w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
             else if (!patOk) block = 'pattern-KO';
+            else if (!athRecent) block = 'ATH>14j';
             else if (!ddOk) block = 'dd<40%';
             else if (!atSupport) block = 'no-support';
             else if (onCooldown) block = 'cooldown';
@@ -622,7 +648,7 @@ async function scan() {
                 distEMA34_pct: ema34 != null ? +(((curPrice / ema34) - 1) * 100).toFixed(1) : null,
                 nearST, nearEMA34, nearBBlo, atSupport, cooldown: !!onCooldown,
             };
-            if (armed && mcOk && patOk && ddOk && atSupport && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && patOk && athRecent && ddOk && atSupport && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
                 const support = nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, entryCandleTs: lastC[0] };
