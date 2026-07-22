@@ -600,11 +600,15 @@ async function closePaper(tok, pos, exitPrice, reason) {
     // (pattern anti-world de bot 1 : jamais supprimer une position pas vidée on-chain).
     let pnlSolLive = null;
     if (pos.live && live.enabled) {
+        // anti-spam Telegram : la sortie se re-déclenche à chaque tick tant que la position est GARDÉE
+        // (close en échec) → on n'alerte qu'une fois / 15 min par position, mais on RE-TENTE le close à
+        // chaque tick (silencieusement) jusqu'à ce qu'il passe.
+        const alertThrottled = (msg) => { const n = Date.now(); if (!pos.lastCloseAlert || n - pos.lastCloseAlert > 15 * 60 * 1000) { tg(msg); pos.lastCloseAlert = n; } };
         try {
             const r = await live.closeVerified(pos.live);
-            if (!r || !r.ok) { tg(`🚨 LIVE ${pos.symbol}: close INCOMPLET — position GARDÉE en tracking, vérifier on-chain`); return; }
+            if (!r || !r.ok) { alertThrottled(`🚨 LIVE ${pos.symbol}: close INCOMPLET — position GARDÉE, re-tentée à chaque tick, vérifier on-chain`); return; }
             pnlSolLive = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
-        } catch (e) { tg(`🚨 LIVE ${pos.symbol}: close erreur (${String(e.message).slice(0, 60)}) — position GARDÉE`); return; }
+        } catch (e) { alertThrottled(`🚨 LIVE ${pos.symbol}: close erreur (${String(e.message).slice(0, 60)}) — position GARDÉE`); return; }
     }
     const pnlPct = exitPrice / pos.entry - 1;
     const trade = {

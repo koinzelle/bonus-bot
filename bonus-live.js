@@ -260,25 +260,40 @@ async function positionValueSol(pos) {
 async function closeVerified(pos) {
     const balBefore = await solBalance();
     const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
-    const pubkey = new PublicKey(pos.positionKeypairPub);
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const tx = await dlmmPool.removeLiquidity({
-                position: pubkey, user: keypair.publicKey,
-                fromBinId: pos.lowerBinId, toBinId: pos.upperBinId,
-                bps: new BN(10000), shouldClaimAndClose: true,
-            });
-            for (const t of Array.isArray(tx) ? tx : [tx]) {
-                const h = await connection.sendTransaction(t, [keypair]);
-                await confirmTx(h);
-                console.log(`  ✅ TX fermeture: https://solscan.io/tx/${h}`);
+            // Position RÉELLE via getPositionsByUserAndLbPair (charge les bin arrays — sinon removeLiquidity
+            // lit .data sur un compte null = "Cannot read properties of null"). Modèle éprouvé bot 1.
+            const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(keypair.publicKey);
+            const p = userPositions.find(u => u.publicKey.toString() === pos.positionKeypairPub);
+            if (!p) { // introuvable = déjà vidée on-chain → close réussi
+                console.log('  ✓ position introuvable on-chain = déjà fermée');
+                return { ok: true, proceedsSol: (await solBalance() - balBefore) / LAMPORTS_PER_SOL };
             }
-            // vérif on-chain : position réellement vidée ? (anti-world)
+            const fromBinId = Number(p.positionData.lowerBinId);
+            const toBinId = Number(p.positionData.upperBinId);
+            let removeTxs;
             try {
-                const check = await dlmmPool.getPosition(pubkey);
-                const remaining = (check.positionData?.positionBinData || []).some(b => parseFloat(b.positionLiquidity || 0) > 0);
-                if (remaining) throw new Error('liquidité restante après remove');
-            } catch (e) { if (String(e.message).includes('restante')) throw e; /* position introuvable = vidée ✓ */ }
+                removeTxs = await dlmmPool.removeLiquidity({
+                    position: p.publicKey, user: keypair.publicKey,
+                    fromBinId, toBinId, bps: new BN(10000), shouldClaimAndClose: true,
+                });
+            } catch (removeErr) {
+                console.log(`  ⚠️ removeLiquidity échoué (${String(removeErr.message).slice(0, 50)}) — fallback closePosition`);
+                removeTxs = [];
+            }
+            const txList = Array.isArray(removeTxs) ? removeTxs : (removeTxs ? [removeTxs] : []);
+            if (txList.length === 0) {
+                const closeTx = await dlmmPool.closePosition({ owner: keypair.publicKey, position: p });
+                const h = await connection.sendTransaction(closeTx, [keypair]); await confirmTx(h);
+                console.log(`  ✅ TX closePosition: https://solscan.io/tx/${h}`);
+            } else {
+                for (const t of txList) {
+                    const h = await connection.sendTransaction(t, [keypair]);
+                    await confirmTx(h);
+                    console.log(`  ✅ TX fermeture: https://solscan.io/tx/${h}`);
+                }
+            }
             // re-swap du token récupéré → SOL (sinon PnL faussé + poussière qui traîne)
             if (pos.tokenMint) {
                 try {
@@ -286,8 +301,7 @@ async function closeVerified(pos) {
                     if (raw > 0n) { await jupSwap(pos.tokenMint, SOL_MINT, raw); console.log('  🔁 Token résiduel re-swappé en SOL'); }
                 } catch (e) { console.log(`  ⚠️ re-swap token→SOL échoué (${String(e.message).slice(0, 60)}) — résidu au wallet, PnL à corriger à la main`); }
             }
-            const balAfter = await solBalance();
-            const proceedsSol = (balAfter - balBefore) / LAMPORTS_PER_SOL;
+            const proceedsSol = (await solBalance() - balBefore) / LAMPORTS_PER_SOL;
             return { ok: true, proceedsSol };
         } catch (e) {
             console.log(`  ⚠️ close tentative ${attempt}/3: ${String(e.message).slice(0, 80)}`);
