@@ -39,6 +39,8 @@ const CHAT_ID = (process.env.CHAT_ID || '').trim();
 // backtest, +6% PRIX) ; le PnL réel fees incluses est loggé À CÔTÉ (pnlSolLive) pour comparaison.
 let live = { enabled: false };
 try { live = require('./bonus-live'); } catch (e) { console.log('⚠️ bonus-live indisponible:', e.message, '— paper seulement'); }
+if (live.enabled) console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_SOL || '0.25'} SOL | max ${process.env.MAX_LIVE_POSITIONS || '1'} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
+else console.log('🧪 Mode PAPER (LIVE≠1 ou bonus-live KO) — aucun ordre réel');
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { if (DATA_DIR !== __dirname) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
 const STATE_FILE = path.join(DATA_DIR, 'bonus_paper.json');
