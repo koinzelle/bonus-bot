@@ -36,7 +36,7 @@ if (process.env.LIVE !== '1') {
 const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction } = require('@solana/web3.js');
 const DLMM = require('@meteora-ag/dlmm').default;
 const BN = require('bn.js');
-const bs58 = require('bs58');
+let bs58 = require('bs58'); if (bs58.default) bs58 = bs58.default; // bs58 v6 : fns sous .default
 const axios = require('axios');
 
 const RPC_URL = process.env.RPC_URL || 'https://api.mainnet-beta.solana.com';
