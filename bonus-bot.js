@@ -66,7 +66,7 @@ const NEAR_ST_PCT = 0.04;        // fenêtre pullback ≤ +4% au-dessus de la li
                                  // 19 trades vs 14 à 3%) sans nouvelle queue de perte ; 5% dégrade (-32.9% tail)
 const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
 const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
-const AGE_MAX_H = 48;             // token < 2 jours
+const AGE_MAX_H = 336;            // token < 2 semaines (2026-07-22) : capte les coins post-1er-dump d'EP sans les reliques 1-12 mois (CTO/revival = piège)
 const VOL_MIN_24H = 500_000;      // "good volume" — seuil prudent, à calibrer
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
 const MAX_POSITIONS = 8;          // positions papier simultanées (EP : beaucoup de petites positions, pas all-in)
@@ -438,9 +438,9 @@ async function scan() {
                 const d = await dexInfo(tok);
                 if (!d || !d.birthMs || !d.supply) continue;
                 const ageH = (now - d.birthMs) / 3.6e6;
-                // Cap d'âge SUPPRIMÉ (2026-07-22, demande user) : EP fait des coins PLUS VIEUX (post-1er-
-                // dump) — « no minimum age, only whether it breaks ATH ». Le vrai filtre = le pattern.
-                if (d.vol24h < VOL_MIN_24H) continue;
+                // Cap d'âge 2 semaines (2026-07-22) : EP fait des coins PLUS VIEUX (post-1er-dump) mais
+                // pas des reliques de 1-12 mois (revival/CTO = piège) → borne à 336h.
+                if (ageH >= AGE_MAX_H || d.vol24h < VOL_MIN_24H) continue;
                 // MC EN PREMIER (2026-07-22, demande user) : MC pas bonne → skip IMMÉDIAT, avant l'appel
                 // qualité GMGN (comme bot 1). Seuil = MC_MIN_ATH (250k), identique à l'entrée : un token
                 // < 250k ne peut PAS entrer, inutile de le suivre.
@@ -466,7 +466,7 @@ async function scan() {
             // tick chaud : ne traiter que les tokens à 4/5 conditions + les positions ouvertes
             if (hotOnly && !w.hot && !state.positions[tok]) continue;
             const ageH = (now - w.birthMs) / 3.6e6;
-            // (purge par âge SUPPRIMÉE 2026-07-22 — plus de cap d'âge ; la purge cadavre MC<250k reste)
+            if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; } // purge > 2 semaines
             let cs;
             try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); }
             // Purge fetch cassé (2026-07-19) : 5/12 slots n'étaient JAMAIS évalués (bougies GT en échec
