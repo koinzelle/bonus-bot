@@ -166,8 +166,15 @@ async function openBidAsk(poolAddress) {
     const halfLamports = Math.floor((amountSol / 2) * LAMPORTS_PER_SOL);
     console.log(`  🔁 Swap ${(halfLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL → token (côté haut)...`);
     await jupSwap(SOL_MINT, xMint, halfLamports);
-    const tokenRaw = await tokenBalanceRaw(xMint);
-    if (tokenRaw <= 0n) { console.log('❌ swap confirmé mais 0 token reçu — abandon'); return null; }
+    // Propagation RPC (2026-07-22) : le solde token n'est PAS visible instantanément après le confirm
+    // → lecture immédiate = 0 → abandon à tort (alors que le swap a réussi = tokens orphelins). Bot 1
+    // attend 2s ; ici on poll jusqu'à ~12s pour être robuste avant d'abandonner.
+    let tokenRaw = 0n;
+    for (let attempt = 0; attempt < 6 && tokenRaw <= 0n; attempt++) {
+        await new Promise(r => setTimeout(r, 2000));
+        tokenRaw = await tokenBalanceRaw(xMint);
+    }
+    if (tokenRaw <= 0n) { console.log('❌ swap confirmé mais 0 token reçu après 12s — abandon'); return null; }
 
     const positionKeypair = Keypair.generate();
     const tx = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
