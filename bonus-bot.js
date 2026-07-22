@@ -342,17 +342,18 @@ async function scan() {
         if (!hotOnly) { try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); } }
         for (const { tok, gtPool } of discovered.slice(0, 60)) { // 4-6 sources fusionnées (GT p1-3 + 1h + new + DexScreener) — trending d'abord
             if (state.watch[tok] || state.positions[tok]) continue;
-            // cooldown re-add 60min après purge (sinon cycle purge→re-add sur les tokens trending morts)
-            if (state.purgedAt[tok] && now - state.purgedAt[tok] < 60 * 60 * 1000) continue;
+            // cooldown re-add 30min après purge (sinon cycle purge→re-add sur les tokens trending morts)
+            if (state.purgedAt[tok] && now - state.purgedAt[tok] < 30 * 60 * 1000) continue;
             if (Object.keys(state.watch).length >= 18) break; // cap suivi 12→18 (2026-07-19, budget GT ok avec ticks alternés)
             try {
                 const d = await dexInfo(tok);
                 if (!d || !d.birthMs || !d.supply) continue;
                 const ageH = (now - d.birthMs) / 3.6e6;
                 if (ageH >= AGE_MAX_H || d.vol24h < VOL_MIN_24H) continue;
-                // MC EN PREMIER (2026-07-22, demande user) : MC pas bonne → skip IMMÉDIAT, on ne gaspille
-                // pas l'appel qualité GMGN (comme bot 1). Seuil 200k = marge sous les 250k requis à l'entrée.
-                if (d.mc < 200_000) continue;
+                // MC EN PREMIER (2026-07-22, demande user) : MC pas bonne → skip IMMÉDIAT, avant l'appel
+                // qualité GMGN (comme bot 1). Seuil = MC_MIN_ATH (250k), identique à l'entrée : un token
+                // < 250k ne peut PAS entrer, inutile de le suivre.
+                if (d.mc < MC_MIN_ATH) continue;
                 // Règle EP n°5 (profil DexScreener payé + X) : SHADOW (2026-07-19, décision user) —
                 // on logge UNE FOIS par token (anti-spam : RACY loggé 60×/h le 20/07), on ne bloque pas.
                 const profilOk = d.hasTwitter && d.hasImage;
@@ -393,11 +394,10 @@ async function scan() {
             }
             w.fetchFails = 0;
             if (cs.length < 15) continue;
-            // Purge cadavres (2026-07-19, GO user) : MC courante < 200k → le token a dumpé depuis l'ajout,
-            // il ne repassera plus le filtre d'entrée (250k) et squatte un slot pour rien
-            // (constat du 19/07 : HOUSEM 7k, Ricky 15k, SR20 21k occupaient la watch).
+            // Purge cadavres (2026-07-19) : MC courante < MC_MIN_ATH (250k, aligné entrée 2026-07-22) →
+            // le token ne peut plus entrer et squatte un slot. Cooldown re-add 60min évite l'oscillation.
             const mcNow = cs[cs.length - 1][4] * w.supply;
-            if (mcNow < 200_000 && !state.positions[tok]) {
+            if (mcNow < MC_MIN_ATH && !state.positions[tok]) {
                 console.log(`🧹 Purge watch: ${w.symbol} (MC $${Math.round(mcNow / 1000)}k < 200k)`);
                 state.purgedAt[tok] = now;
                 delete state.watch[tok];
