@@ -92,11 +92,16 @@ async function gtTrending() {
     // Priorité TRENDING (2026-07-19, demande user) : comme bot 1, la découverte lit les pools trending
     // GeckoTerminal (24h + 1h) à CHAQUE scan — new_pools seulement 1 scan sur 3, en fin de liste
     // (les candidats trending passent en premier quand les slots watch sont comptés).
+    // Découverte élargie (2026-07-22, demande user) : trending 24h pages 1-3 + 1h page 1 ; new_pools
+    // 1 scan/3 ; DexScreener boosts (tokens mis en avant) 1 scan/2. Plus de candidats → plus de chances
+    // qu'un token retrace sur l'EMA34 pendant qu'on le surveille.
     const urls = [
         'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1',
+        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=2',
+        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=3',
         'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
     ];
-    if (gtScan++ % 3 === 2) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
+    if (gtScan % 3 === 2) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
     // Retourne [{ tok, gtPool }] : on GARDE l'adresse de pool GT (garantie indexée pour les bougies —
     // fix 19/07 : la pool DexScreener la plus liquide n'est parfois PAS sur GT → fetch bougies mort
     // en boucle → purge → watch vide alors que le token est bon).
@@ -116,7 +121,26 @@ async function gtTrending() {
                 }
             }
         } catch (_) { /* une vue GT en échec ne bloque pas les autres */ }
+        await new Promise(r => setTimeout(r, 150)); // léger espacement anti-429 GeckoTerminal
     }
+    // DexScreener boosts (1 scan/2) : tokens mis en avant/promus = souvent actifs. Pas de gtPool → la
+    // watch retombera sur la pool DexScreener (candles15 essaie GT dessus ; purge si non indexé).
+    if (gtScan % 2 === 0) {
+        for (const bu of ['https://api.dexscreener.com/token-boosts/top/v1', 'https://api.dexscreener.com/token-boosts/latest/v1']) {
+            try {
+                const r = await axios.get(bu, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
+                for (const b of r.data || []) {
+                    if (b.chainId !== 'solana') continue;
+                    const addr = b.tokenAddress;
+                    if (addr && addr !== 'So11111111111111111111111111111111111111112' && !seen.has(addr)) {
+                        seen.add(addr);
+                        out.push({ tok: addr, gtPool: null });
+                    }
+                }
+            } catch (_) { /* boosts KO → non bloquant */ }
+        }
+    }
+    gtScan++;
     return out;
 }
 
@@ -301,7 +325,7 @@ async function scan() {
         // 1. découverte : nouveaux candidats < 48h (ticks complets uniquement)
         let discovered = [];
         if (!hotOnly) { try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); } }
-        for (const { tok, gtPool } of discovered.slice(0, 40)) { // 2-3 vues GT fusionnées → fenêtre élargie (trending d'abord)
+        for (const { tok, gtPool } of discovered.slice(0, 60)) { // 4-6 sources fusionnées (GT p1-3 + 1h + new + DexScreener) — trending d'abord
             if (state.watch[tok] || state.positions[tok]) continue;
             // cooldown re-add 60min après purge (sinon cycle purge→re-add sur les tokens trending morts)
             if (state.purgedAt[tok] && now - state.purgedAt[tok] < 60 * 60 * 1000) continue;
