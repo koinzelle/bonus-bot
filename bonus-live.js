@@ -57,7 +57,9 @@ function loadKeypair(raw) {
     if (dec.length === 32) return Keypair.fromSeed(dec);
     throw new Error(`clé base58 décodée = ${dec.length} octets (attendu 64 ou 32) — clé tronquée ou mauvaise valeur ?`);
 }
-const keypair = loadKeypair(process.env.BONUS_WALLET_KEY);
+// BONUS_WALLET_KEY prioritaire ; fallback WALLET_PRIVATE_KEY (le user réutilise le wallet de bot 1,
+// bot 1 étant éteint → pas de conflit). ⚠️ Ne PAS rallumer bot 1 tant que le bonus tourne sur ce wallet.
+const keypair = loadKeypair(process.env.BONUS_WALLET_KEY || process.env.WALLET_PRIVATE_KEY);
 console.log(`  🔑 Wallet live: ${keypair.publicKey.toString()}`);
 
 const POSITION_SIZE_SOL = parseFloat(process.env.POSITION_SIZE_SOL || '0.25');
