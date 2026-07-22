@@ -34,7 +34,7 @@ if (process.env.LIVE !== '1') {
 }
 
 const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction } = require('@solana/web3.js');
-const DLMM = require('@meteora-ag/dlmm').default;
+const DLMM = require('@meteora-ag/dlmm'); // v1.9.9 : export direct (PAS .default → sinon undefined → create() plante)
 const BN = require('bn.js');
 let bs58 = require('bs58'); if (bs58.default) bs58 = bs58.default; // bs58 v6 : fns sous .default
 const axios = require('axios');
@@ -96,9 +96,10 @@ async function findMeteoraPool(tokenAddress) {
             if (!OK_BIN_STEPS.includes(binStep)) continue;
             let baseFeePct = 0;
             try { baseFeePct = parseFloat((await pool.getFeeInfo()).baseFeeRatePercentage?.toString() ?? 0); } catch (_) {}
-            // Canonique EP : pools 2-5% de base fee ("harvesting 2-5% fees on churn", MANLET = 2%).
-            // < 2% = pas assez de fees pour l'edge → pool écartée.
-            if (baseFeePct < 2) continue;
+            // Plancher fee 0.5% (2026-07-22) : le « 2-5% » canonique EP est trop strict — les bonnes
+            // pools bin-step-100 profondes sont souvent à 1% (ex GMEBULL 3Qj4RbLE : 1% fee, 723 SOL de
+            // réserve). On garde le tri fee décroissante (« 5% d'abord ») mais on accepte jusqu'à 0.5%.
+            if (baseFeePct < 0.5) continue;
             let reserveSol = 0;
             try { reserveSol = parseFloat((await connection.getTokenAccountBalance(pool.lbPair.reserveY)).value.uiAmount || 0); } catch (_) {}
             if (reserveSol < 1) continue; // pool quasi vide → fills/SL irréalistes
