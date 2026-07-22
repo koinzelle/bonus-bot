@@ -95,13 +95,14 @@ async function gtTrending() {
     // Découverte élargie (2026-07-22, demande user) : trending 24h pages 1-3 + 1h page 1 ; new_pools
     // 1 scan/3 ; DexScreener boosts (tokens mis en avant) 1 scan/2. Plus de candidats → plus de chances
     // qu'un token retrace sur l'EMA34 pendant qu'on le surveille.
-    const urls = [
-        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1',
-        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=2',
-        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=3',
-        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
-    ];
-    if (gtScan % 3 === 2) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
+    // Découverte ALLÉGÉE (2026-07-22, fix 429) : page 1 toujours + UNE des pages 2/3/1h en rotation
+    // (au lieu de toutes à chaque scan qui saturait GeckoTerminal) → 2 appels GT/scan. new_pools 1/4.
+    const urls = ['https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1'];
+    const rot = gtScan % 3;
+    if (rot === 0) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=2');
+    else if (rot === 1) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=3');
+    else urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1');
+    if (gtScan % 4 === 0) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
     // Retourne [{ tok, gtPool }] : on GARDE l'adresse de pool GT (garantie indexée pour les bougies —
     // fix 19/07 : la pool DexScreener la plus liquide n'est parfois PAS sur GT → fetch bougies mort
     // en boucle → purge → watch vide alors que le token est bon).
@@ -165,10 +166,24 @@ async function dexInfo(token) {
     };
 }
 
+// Cache bougies 15m (2026-07-22) : une bougie 15m ne change pas toutes les 30s → cache 100s par pool.
+// Divise ~×4 les appels GeckoTerminal (cause des 429 → purges en masse). Sur 429, on renvoie le
+// cache périmé plutôt que rien (évite la purge d'un token pendant un pic de rate-limit).
+const candleCache = new Map(); // pool -> { cs, ts }
+const CANDLE_TTL_MS = 100 * 1000;
 async function candles15(pool, limit = 200) {
+    const c = candleCache.get(pool);
+    if (c && Date.now() - c.ts < CANDLE_TTL_MS) return c.cs;
     const url = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/ohlcv/minute?aggregate=15&before_timestamp=${Math.floor(Date.now() / 1000)}&limit=${limit}`;
-    const r = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
-    return (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]); // [ts,o,h,l,c,v]
+    try {
+        const r = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
+        const cs = (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]); // [ts,o,h,l,c,v]
+        if (cs.length) candleCache.set(pool, { cs, ts: Date.now() });
+        return cs;
+    } catch (e) {
+        if (c) return c.cs; // 429/timeout → cache périmé plutôt que faux échec (pas de purge injustifiée)
+        throw e;
+    }
 }
 
 // ── SuperTrend (10, 3) — ATR en RMA WILDER (2026-07-19, GO user) : c'est la formule
