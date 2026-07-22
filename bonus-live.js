@@ -130,13 +130,15 @@ async function tokenBalanceRaw(mint) {
     return total; // unités brutes
 }
 
-// ── Swap Jupiter v6 (générique in→out, montant en unités brutes) ──
+// ── Swap Jupiter (générique in→out, montant en unités brutes) ──
+// Endpoint lite-api v1 (2026-07-22) : quote-api.jup.ag/v6 est déprécié → ENOTFOUND. Aligné sur bot 1.
 async function jupSwap(inputMint, outputMint, rawAmount) {
-    const quote = await axios.get('https://quote-api.jup.ag/v6/quote', {
+    const quote = await axios.get('https://lite-api.jup.ag/swap/v1/quote', {
         params: { inputMint, outputMint, amount: rawAmount.toString(), slippageBps: 300 }, timeout: 12000,
     });
-    const swap = await axios.post('https://quote-api.jup.ag/v6/swap', {
+    const swap = await axios.post('https://lite-api.jup.ag/swap/v1/swap', {
         quoteResponse: quote.data, userPublicKey: keypair.publicKey.toString(), wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true, prioritizationFeeLamports: 'auto',
     }, { timeout: 12000 });
     const tx = VersionedTransaction.deserialize(Buffer.from(swap.data.swapTransaction, 'base64'));
     tx.sign([keypair]);
