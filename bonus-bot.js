@@ -592,11 +592,12 @@ async function scan() {
             let ms = cs;
             if (ageH >= 720) { try { const ds = await candlesDay(w.pool, 1000); if (ds && ds.length >= 12) ms = ds; } catch (_) { /* fallback cs */ } }
             else if (ageH >= 48) { try { const hs = await candles1h(w.pool, 720); if (hs && hs.length >= 12) ms = hs; } catch (_) { /* fallback cs */ } }
-            // ATH du cycle = bougies (sert drawdown + récence) ; ATH GMGN = plancher pour "armed" seulement
-            // (sinon un wick GMGN au-dessus de nos bougies rendrait athTs inconnu et le dd faux).
+            // ATH = celui des BOUGIES (2026-07-23, décision user) : avec les paliers de TF (daily pour les
+            // vieux coins ≈ 3 ans), l'ATH bougies EST l'ATH de vie. Plus de dépendance à GMGN (souvent None
+            // sur les vieux coins). Le gate ATH-récent ≤14j gère les zombies : ATH ancien = bloqué.
             let ath = 0, athTs = 0;
             for (const c of ms) if (c[2] > ath) { ath = c[2]; athTs = c[0]; }
-            const athMc = Math.max(ath, w.athGmgn || 0) * w.supply;
+            const athMc = ath * w.supply;
             const armed = athMc > MC_MIN_ATH;                       // a fait un ATH > 250K dans sa vie
             // GATE DUR pattern EP — qualification COLLANTE (2026-07-22) : une fois validé (ruggers sortis),
             // c'est ACQUIS ("by that time they already out"). Sans ça, la fenêtre de bougies glissante
@@ -625,22 +626,15 @@ async function scan() {
             // RÉCENT (EP entre après le dip d'un sommet frais, cas FOMO). Sans ça, un coin qualifié il y a
             // 3 mois et à -80% depuis serait "dd≥40%" en permanence = entrée sur qualification fossile.
             const athRecent = athAgeH != null && athAgeH <= 14 * 24;
-            // Garde-fou ANTI-ZOMBIE GMGN (2026-07-22, seuil 30% = choix user) : en temps normal ATH bougies
-            // ≈ ath_price GMGN (même data, à la mèche près). Le check ne mord que si la pool est plus jeune
-            // que le token (migration) ET que le cycle visible reste écrasé sous la gloire passée (<30% du
-            // vrai ATH de vie = revival zombie / "infinity scam loop") → blocage 'sous-ATH-vie'. Un revival
-            // sérieux type FOMO/HeavyPulp (cycle ≥30% du top historique) passe.
-            const brokeTrueAth = !w.athGmgn || ath >= w.athGmgn * 0.30;
             w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
             else if (!patOk) block = 'pattern-KO';
-            else if (!brokeTrueAth) block = 'sous-ATH-vie';
             else if (!athRecent) block = 'ATH>14j';
-            else if (!ddOk) block = 'dd<35%';
-            else if (!atSupport) block = 'no-support';
+            else if (drawdown < 0.35) block = 'dd<35%';
+            else if (drawdown < 0.50 && !atSupport) block = 'no-support(35-50%)';
             else if (onCooldown) block = 'cooldown';
             else if (Object.keys(state.positions).length >= MAX_POSITIONS) block = 'max-pos';
             else block = 'ENTRÉE';
@@ -663,9 +657,14 @@ async function scan() {
                 console.log(`  · [SHADOW dd30] ${w.symbol} : entrerait à -${(drawdown * 100).toFixed(0)}% (support ${nearST ? 'ST' : nearBBlo ? 'BB' : 'EMA34'}) — bloqué par seuil 35% (mesure)`);
             }
             if (ddOk) w.dd30Logged = false; // reset quand on repasse au-dessus (nouveau cycle de dip)
-            if (armed && mcOk && patOk && brokeTrueAth && athRecent && ddOk && atSupport && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            // ENTRÉE (2026-07-23, remarque user HeavyPulp -54%) : la PROFONDEUR suffit chez EP ("after
+            // 40-50% down" tout court). Retrace ≥50% = on entre sur le dip seul ; 35-50% = on exige encore
+            // un support (dip moins profond = plus de risque de couteau). Le support 15m ratait HeavyPulp
+            // (analysé en daily) — la profondeur le rattrape.
+            const deepRetrace = drawdown >= 0.50;
+            if (armed && mcOk && patOk && athRecent && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
-                const support = nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
+                const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, entryCandleTs: lastC[0] };
                 save();
                 const msg = `🎯 ENTRÉE ${w.symbol} (support ${support}, pattern ✓)\nprix: $${entry.toFixed(8)} | retrace -${(drawdown * 100).toFixed(0)}% sous ATH\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: RSI(2)>90 + BB/MACD | pas de SL (coupe-temps 24h)`;
