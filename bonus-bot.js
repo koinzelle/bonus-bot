@@ -339,9 +339,10 @@ async function gmgnQualityOk(tok, sym) {
         if (top10 > 30) fails.push(`top10 ${top10.toFixed(0)}%`);
         if (insiders > 10) fails.push(`insiders ${insiders.toFixed(0)}%`);
         if (dangerous) fails.push('honeypot/flag');
-        // fees ≥ 30 SOL : SHADOW (2026-07-19, décision user) — un token jeune n'a pas encore accumulé
-        // 30 SOL et le cache de rejet 6h lui ferait rater sa fenêtre rec8h. On logge, on ne bloque pas.
-        if (totalFee != null && totalFee < 30) console.log(`⚠️ [SHADOW fees] ${sym}: fees totales ${totalFee.toFixed(1)} SOL < 30 (demande fake ? — mesure seule)`);
+        // fees ≥ 30 SOL EN DUR (2026-07-22, demande user) : EP l'exige (« demande réelle », anti-wash).
+        // Le souci "token jeune pas encore 30 SOL" tombe : on cible désormais des coins PLUS VIEUX
+        // (post-1er-dump), qui ont eu le temps d'accumuler → gate légitime.
+        if (totalFee != null && totalFee < 30) fails.push(`fees ${totalFee.toFixed(0)} SOL < 30`);
         if (phishPct != null && phishPct > 20) fails.push(`phishing ${phishPct.toFixed(0)}% > 20%`);
         if (fails.length) {
             gmgnRejected.set(tok, Date.now());
@@ -423,7 +424,9 @@ async function scan() {
                 const d = await dexInfo(tok);
                 if (!d || !d.birthMs || !d.supply) continue;
                 const ageH = (now - d.birthMs) / 3.6e6;
-                if (ageH >= AGE_MAX_H || d.vol24h < VOL_MIN_24H) continue;
+                // Cap d'âge SUPPRIMÉ (2026-07-22, demande user) : EP fait des coins PLUS VIEUX (post-1er-
+                // dump) — « no minimum age, only whether it breaks ATH ». Le vrai filtre = le pattern.
+                if (d.vol24h < VOL_MIN_24H) continue;
                 // MC EN PREMIER (2026-07-22, demande user) : MC pas bonne → skip IMMÉDIAT, avant l'appel
                 // qualité GMGN (comme bot 1). Seuil = MC_MIN_ATH (250k), identique à l'entrée : un token
                 // < 250k ne peut PAS entrer, inutile de le suivre.
@@ -449,7 +452,7 @@ async function scan() {
             // tick chaud : ne traiter que les tokens à 4/5 conditions + les positions ouvertes
             if (hotOnly && !w.hot && !state.positions[tok]) continue;
             const ageH = (now - w.birthMs) / 3.6e6;
-            if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; }
+            // (purge par âge SUPPRIMÉE 2026-07-22 — plus de cap d'âge ; la purge cadavre MC<250k reste)
             let cs;
             try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); }
             // Purge fetch cassé (2026-07-19) : 5/12 slots n'étaient JAMAIS évalués (bougies GT en échec
