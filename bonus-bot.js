@@ -216,6 +216,26 @@ function superTrend(cs) {
     return out;
 }
 
+// ── Pattern de sélection EP (transcript live 2h, 2026-07-22) — SHADOW, ne bloque RIEN ──────────────
+// "break up la SuperTrend → 1er break down (là où snipers/bundlers/insiders/devs dumpent) → nouvel ATH
+// APRÈS" = ruggers sortis, holders restants sérieux → coin safe pour bonus stage. On mesure sur l'univers
+// réel (avec les rugs) le WR pattern-OK vs pattern-KO, avant d'envisager d'en faire un gate dur.
+// Backtest offline (univers bot 1 présélectionné, donc sans rugs) : 2/23 tokens, 100% WR mais volume ×5
+// plus faible → non concluant, d'où la mesure live.
+function patternOk(cs, st) {
+    let ath = 0, brokeUp = false, athAtBd = null, ok = false;
+    for (const p of st) {
+        const h = cs[p.i][2];
+        if (h > ath) {
+            ath = h;
+            if (brokeUp && athAtBd != null && ath > athAtBd) ok = true; // nouvel ATH après le breakdown
+        }
+        if (p.trend === 1) brokeUp = true;                              // ST passée verte (breakup)
+        if (p.trend === -1 && brokeUp && athAtBd == null) athAtBd = ath; // 1er breakdown : fige l'ATH
+    }
+    return ok;
+}
+
 // ── Filtre qualité GMGN (2026-07-15) — mêmes seuils que bot 1 : holders ≥ 1000, top10 ≤ 30%,
 // insiders ≤ 10%, honeypot/flags dangereux. Appelé UNE fois par token, à l'ajout en watch.
 // Fail-open si GMGN_API_KEY absente ou API en erreur (on ne rend pas le bot aveugle sur un 429).
@@ -445,6 +465,7 @@ async function scan() {
             // fenêtre de fraîcheur : elle se refermait avant que le prix ait le temps de retracer vers
             // la ST → 0 entrée. Le backtest à 96% WR armait ainsi (sans expiration) jusqu'au retracement.
             const armed = athMc > MC_MIN_ATH;
+            const patOk = patternOk(cs, st); // SHADOW : pattern EP breakup→breakdown→newATH (ne bloque pas)
             // Référence = dernière bougie CLOSE (ligne ST stable, tendance confirmée)
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
             const line = prevSt ? prevSt.line : null;
@@ -518,13 +539,15 @@ async function scan() {
                 distEMA34_pct: ema34 != null ? +(((curPrice / ema34) - 1) * 100).toFixed(1) : null,
                 nearEMA34,
                 cooldown: !!onCooldown,
+                patternOk: patOk,                                        // SHADOW : pattern EP validé (mesure)
             };
             if (armed && mcOk && athFresh && prevSt && prevSt.trend === 1 && (nearST || nearEMA || nearEMA34) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice; // fill au prix courant réel
                 const freshPct = +(freshVsAth * 100).toFixed(0);
                 if (!isFresh) console.log(`  ⚠️ [SHADOW fresh-dist] entrée à ${freshPct}% de l'ATH (<65) — tag mesure`);
+                console.log(`  ${patOk ? '✓ [SHADOW pattern-OK]' : '· [SHADOW pattern-KO]'} ${w.symbol} : breakup→breakdown→newATH ${patOk ? 'validé' : 'non validé'} (mesure, ne bloque pas)`);
                 const support = nearST ? 'ST' : nearEMA ? 'EMA100' : 'EMA34';
-                state.positions[tok] = { symbol: w.symbol, entry, hw: entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: stochNow != null ? +stochNow.toFixed(1) : null, stochBonus, support, entryCandleTs: lastC[0] };
+                state.positions[tok] = { symbol: w.symbol, entry, hw: entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: stochNow != null ? +stochNow.toFixed(1) : null, stochBonus, support, patternOk: patOk, entryCandleTs: lastC[0] };
                 // ombre A/B : même entrée, sortie TP fixe +6%/flip ST (l'ancienne règle) — vit sa propre vie
                 state.fixedShadow[tok] = { symbol: w.symbol, entry, openedAt: now, entryCandleTs: lastC[0] };
                 save();
@@ -579,7 +602,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         pnlSolLive, // PnL RÉEL fees incluses (null en paper pur) — à comparer au pnlSol prix
         symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
-        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
+        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
