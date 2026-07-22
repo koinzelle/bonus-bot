@@ -624,12 +624,18 @@ async function scan() {
             // RÉCENT (EP entre après le dip d'un sommet frais, cas FOMO). Sans ça, un coin qualifié il y a
             // 3 mois et à -80% depuis serait "dd≥40%" en permanence = entrée sur qualification fossile.
             const athRecent = athAgeH != null && athAgeH <= 14 * 24;
+            // Garde-fou GMGN (2026-07-22, remarque user) : les bougies GT sont PAR POOL — si la pool est
+            // plus jeune que le token (migration), notre "ATH de vie" rate l'historique d'avant et un pump
+            // local sous le VRAI ATH passerait pour un nouvel ATH. L'ath_price GMGN (token-level) arbitre :
+            // l'ATH bougies doit atteindre ≥90% du vrai ATH de vie, sinon le token n'a pas cassé son ATH.
+            const brokeTrueAth = !w.athGmgn || ath >= w.athGmgn * 0.90;
             w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
             else if (!patOk) block = 'pattern-KO';
+            else if (!brokeTrueAth) block = 'sous-ATH-vie';
             else if (!athRecent) block = 'ATH>14j';
             else if (!ddOk) block = 'dd<40%';
             else if (!atSupport) block = 'no-support';
@@ -648,7 +654,7 @@ async function scan() {
                 distEMA34_pct: ema34 != null ? +(((curPrice / ema34) - 1) * 100).toFixed(1) : null,
                 nearST, nearEMA34, nearBBlo, atSupport, cooldown: !!onCooldown,
             };
-            if (armed && mcOk && patOk && athRecent && ddOk && atSupport && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && patOk && brokeTrueAth && athRecent && ddOk && atSupport && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
                 const support = nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, entryCandleTs: lastC[0] };
