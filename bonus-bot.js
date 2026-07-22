@@ -197,6 +197,26 @@ async function candles15(pool, limit = 200) {
     }
 }
 
+// Bougies 1H (2026-07-22, idée user) : la STRUCTURE macro (ATH de vie, pattern breakup→breakdown→newATH,
+// drawdown) n'a pas besoin de 15m — 240×1H = 10j en UN appel léger, cache 10 min (ça bouge lentement).
+// Utilisé pour les tokens ≥ 48h (les <48h ont toute leur vie dans les 192×15m).
+const candle1hCache = new Map();
+const CANDLE1H_TTL_MS = 10 * 60 * 1000;
+async function candles1h(pool, limit = 240) {
+    const c = candle1hCache.get(pool);
+    if (c && Date.now() - c.ts < CANDLE1H_TTL_MS) return c.cs;
+    const url = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/ohlcv/hour?aggregate=1&before_timestamp=${Math.floor(Date.now() / 1000)}&limit=${limit}`;
+    try {
+        const r = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
+        const cs = (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]);
+        if (cs.length) candle1hCache.set(pool, { cs, ts: Date.now() });
+        return cs;
+    } catch (e) {
+        if (c) return c.cs;
+        throw e;
+    }
+}
+
 // ── SuperTrend (10, 3) — ATR en RMA WILDER (2026-07-19, GO user) : c'est la formule
 // TradingView/DexScreener/GMGN — la ligne que l'équipe EP et le user regardent VRAIMENT.
 // L'ancienne moyenne simple (copiée de bot 1) divergeait fortement de leur ligne après un pump
@@ -308,6 +328,7 @@ const GMGN_AGENT = new https.Agent({ family: 4 });
 const GMGN_BASE = 'https://openapi.gmgn.ai';
 const GMGN_KEY = (process.env.GMGN_API_KEY || '').trim();
 const gmgnRejected = new Map(); // tok -> ts (ne pas re-tester un rejeté à chaque scan GT)
+const gmgnAthPrice = new Map(); // tok -> ath_price GMGN (ATH de vie officiel, capturé au check qualité)
 const profilWarned = new Set(); // tok déjà loggé [SHADOW profil] — anti-spam (RACY 60×/h le 20/07)
 let gmgnKeyWarned = false;
 async function gmgnQualityOk(tok, sym) {
@@ -325,6 +346,8 @@ async function gmgnQualityOk(tok, sym) {
         ]);
         const info = infoR.data?.data, sec = secR.data?.data;
         if (!info || !sec) return true; // data manquante → fail-open
+        // ATH de vie officiel GMGN (2026-07-22, idée user) — capturé ici (0 appel en plus), lu à l'ajout watch
+        if (info.ath_price) gmgnAthPrice.set(tok, parseFloat(info.ath_price));
         const holders = info.holder_count || 0;
         const top10raw = sec.top_10_holder_rate ?? 0;
         const top10 = top10raw <= 1 ? top10raw * 100 : top10raw;
@@ -465,23 +488,27 @@ async function scan() {
                 // (paper 29% WR vs 46-50% sur l'univers bot 1 filtré). 1 appel à l'ajout seulement.
                 if (!(await gmgnQualityOk(tok, d.symbol))) continue;
                 // bougies : pool GT du trending (garantie indexée) en priorité, DexScreener en fallback
-                state.watch[tok] = { symbol: d.symbol, pool: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, addedAt: now };
+                state.watch[tok] = { symbol: d.symbol, pool: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now };
                 console.log(`👀 Suivi: ${d.symbol} (âge ${ageH.toFixed(1)}h, vol $${Math.round(d.vol24h / 1000)}k, pool ${gtPool ? 'GT' : 'dex'})`);
             } catch (_) {}
         }
 
         // 2. pour chaque token suivi : setup / entrée / gestion de position papier
+        let rl429 = 0; // 429 vus ce tick — au 2e, on arrête de fetch (backoff global, le cache sert le reste)
         for (const [tok, w] of Object.entries(state.watch)) {
             // tick chaud : ne traiter que les tokens à 4/5 conditions + les positions ouvertes
             if (hotOnly && !w.hot && !state.positions[tok]) continue;
             const ageH = (now - w.birthMs) / 3.6e6;
-            if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; } // purge > 2 semaines
+            if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; } // purge > 10j
+            if (rl429 >= 2 && !state.positions[tok]) continue; // backoff : GT sature, on réessaie au prochain tick
             let cs;
-            try { cs = await candles15(w.pool, 1000); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); } // 1000 = max GT ≈ 10.4 j — couvre AGE_MAX_H (le pattern/ATH voient toute la vie)
-            // Purge fetch cassé (2026-07-19) : 5/12 slots n'étaient JAMAIS évalués (bougies GT en échec
-            // silencieux) → après 8 échecs consécutifs, on libère le slot. cs.length entre 1 et 14 =
-            // token très jeune, légitime → on attend sans compter d'échec.
+            try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); } // 192×15m=48h : support/sortie (le macro vit sur les 1H, cf plus bas)
+            await new Promise(r => setTimeout(r, 300)); // espacement anti-rafale GT
+            // Purge fetch cassé (2026-07-19) : après 8 échecs consécutifs, on libère le slot — MAIS un 429
+            // (rate-limit) n'est PAS une pool morte (2026-07-22 : les purges 429 tuaient des tokens
+            // QUALIFIÉS comme Jimothy911) → le 429 ne compte plus comme échec, il déclenche le backoff.
             if (!cs || cs.length === 0) {
+                if (/429/.test(w.lastFetchErr || '')) { rl429++; continue; }
                 if (!state.positions[tok]) {
                     w.fetchFails = (w.fetchFails || 0) + 1;
                     if (w.fetchFails >= 8) {
@@ -541,14 +568,19 @@ async function scan() {
             // (breakup→breakdown→nouvel ATH = ruggers sortis), entrer quand le prix a retracé ≥40% sous
             // l'ATH courant ET touche un support (ligne ST / bande basse Bollinger / EMA34). PAS d'exigence
             // ST verte : on entre sur le DIP (ST souvent rouge à -40/-50%), en pariant sur le rebound.
-            let ath = 0, athTs = 0;
-            for (const c of cs) if (c[2] > ath) { ath = c[2]; athTs = c[0]; }
+            // ── MACRO (ATH de vie, pattern, drawdown) — hybride (2026-07-22, idée user) : <48h → les
+            // 192×15m couvrent toute la vie ; ≥48h → 240×1H (10j, cache 10min, 1 appel léger) ; et
+            // ath_price GMGN (ATH officiel de vie, capturé au check qualité) sert de plancher.
+            let ms = cs;
+            if (ageH >= 48) { try { const hs = await candles1h(w.pool, 240); if (hs && hs.length >= 12) ms = hs; } catch (_) { /* fallback cs */ } }
+            let ath = w.athGmgn || 0, athTs = 0;
+            for (const c of ms) if (c[2] > ath) { ath = c[2]; athTs = c[0]; }
             const athMc = ath * w.supply;
             const armed = athMc > MC_MIN_ATH;                       // a fait un ATH > 250K dans sa vie
             // GATE DUR pattern EP — qualification COLLANTE (2026-07-22) : une fois validé (ruggers sortis),
             // c'est ACQUIS ("by that time they already out"). Sans ça, la fenêtre de bougies glissante
             // dé-qualifiait un token quand le breakup/breakdown sortait de la fenêtre.
-            const pInfo = patternInfo(cs, st);
+            const pInfo = patternInfo(ms, ms === cs ? st : superTrend(ms));
             if (pInfo.ok && !w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} (dump -${pInfo.dumpDepthPct}% puis nouvel ATH) — qualification acquise`); }
             const patOk = !!w.patternValidated;
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
