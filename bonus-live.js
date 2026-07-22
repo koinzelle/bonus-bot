@@ -39,7 +39,9 @@ const BN = require('bn.js');
 let bs58 = require('bs58'); if (bs58.default) bs58 = bs58.default; // bs58 v6 : fns sous .default
 const axios = require('axios');
 
-const RPC_URL = process.env.RPC_URL || 'https://api.mainnet-beta.solana.com';
+// RPC_URL prioritaire ; fallback HELIUS_RPC_URL (nom de variable de bot 1, déjà présent sur le service).
+// Sans RPC dédié → mainnet-beta public qui rate-limite (429) → getProgramAccounts/txns échouent.
+const RPC_URL = process.env.RPC_URL || process.env.HELIUS_RPC_URL || 'https://api.mainnet-beta.solana.com';
 const connection = new Connection(RPC_URL, 'confirmed');
 // Chargement robuste de la clé (2026-07-22) : accepte base58 (Phantom, 64o), tableau JSON
 // [n,n,...] (solana-keygen), ou seed 32o. Erreur claire avec la taille (sans exposer la clé).
