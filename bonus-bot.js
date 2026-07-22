@@ -610,7 +610,8 @@ async function scan() {
             const curMc = curPrice * w.supply;
             const mcOk = curMc >= MC_MIN_ATH;
             const drawdown = ath > 0 ? 1 - curPrice / ath : 0;      // retracement depuis l'ATH courant
-            const ddOk = drawdown >= 0.40;                          // EP : "after 40-50% down"
+            const ddOk = drawdown >= 0.35;                          // EP : "30-40% down" (35% dur, 2026-07-23)
+            const ddShadow30 = drawdown >= 0.30 && drawdown < 0.35; // SHADOW : ce que 30% donnerait en plus
             // supports (±4% = NOTRE calibration ; EP dit juste "near support")
             const nearST = line > 0 && Math.abs(curPrice / line - 1) <= 0.04;
             const ema34 = emaLast(cs, 34);
@@ -638,7 +639,7 @@ async function scan() {
             else if (!patOk) block = 'pattern-KO';
             else if (!brokeTrueAth) block = 'sous-ATH-vie';
             else if (!athRecent) block = 'ATH>14j';
-            else if (!ddOk) block = 'dd<40%';
+            else if (!ddOk) block = 'dd<35%';
             else if (!atSupport) block = 'no-support';
             else if (onCooldown) block = 'cooldown';
             else if (Object.keys(state.positions).length >= MAX_POSITIONS) block = 'max-pos';
@@ -655,6 +656,13 @@ async function scan() {
                 distEMA34_pct: ema34 != null ? +(((curPrice / ema34) - 1) * 100).toFixed(1) : null,
                 nearST, nearEMA34, nearBBlo, atSupport, cooldown: !!onCooldown,
             };
+            // SHADOW dd30 (2026-07-23) : setup complet SAUF que le retrace est à 30-35% → mesure ce que le
+            // seuil 30% déclencherait en plus (1 log par token/cycle, anti-spam via w.dd30Logged).
+            if (armed && mcOk && patOk && brokeTrueAth && athRecent && ddShadow30 && atSupport && !onCooldown && !w.dd30Logged) {
+                w.dd30Logged = true;
+                console.log(`  · [SHADOW dd30] ${w.symbol} : entrerait à -${(drawdown * 100).toFixed(0)}% (support ${nearST ? 'ST' : nearBBlo ? 'BB' : 'EMA34'}) — bloqué par seuil 35% (mesure)`);
+            }
+            if (ddOk) w.dd30Logged = false; // reset quand on repasse au-dessus (nouveau cycle de dip)
             if (armed && mcOk && patOk && brokeTrueAth && athRecent && ddOk && atSupport && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
                 const support = nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
