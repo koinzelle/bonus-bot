@@ -59,6 +59,7 @@ const AGE_MAX_H = 48;             // token < 2 jours
 const VOL_MIN_24H = 500_000;      // "good volume" — seuil prudent, à calibrer
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
 const MAX_POSITIONS = 3;          // positions papier simultanées
+const MAX_LIVE_POSITIONS = parseInt(process.env.MAX_LIVE_POSITIONS || '1', 10); // positions RÉELLES max (dry-run = 1)
 // Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
 // tous les tokens, comme avant à 60s) ; l'autre tick = UNIQUEMENT les tokens "chauds" (4/5 conditions,
 // il ne manque que le retracement vers la ST) + positions ouvertes (TP/SL 2× plus réactifs). Le prix
@@ -486,7 +487,13 @@ async function scan() {
                 const msg = `🎯 ENTRÉE ${w.symbol} (support ${support})\nprix: $${entry.toFixed(8)}${line > 0 ? ` (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)` : ''}\nStochRSI ${stochNow != null ? stochNow.toFixed(1) : '?'}${stochBonus ? ' 🎯bonus≤5' : ''} | ATH il y a ${athAgeH.toFixed(1)}h | fresh ${freshPct}%\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nTP: trailing (armé +5%, sortie top -1.5%) | SL: flip ST`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
-                if (live.enabled) {
+                // Cap MAX_LIVE_POSITIONS (défaut 1, 2026-07-22) : limite le blast radius en dry-run —
+                // le paper peut suivre jusqu'à MAX_POSITIONS, mais on n'ouvre au réel qu'une position
+                // à la fois tant qu'on valide l'exécution. Réglable par env quand la validation est faite.
+                const liveOpenCount = Object.values(state.positions).filter(p => p.live).length;
+                if (live.enabled && liveOpenCount >= MAX_LIVE_POSITIONS) {
+                    console.log(`  ⏸️ LIVE: ${liveOpenCount}/${MAX_LIVE_POSITIONS} position(s) réelle(s) déjà ouverte(s) — ${w.symbol} en papier seulement`);
+                } else if (live.enabled) {
                     try {
                         const poolAddr = await live.findMeteoraPool(tok);
                         if (poolAddr) {
