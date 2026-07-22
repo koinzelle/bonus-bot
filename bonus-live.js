@@ -41,7 +41,24 @@ const axios = require('axios');
 
 const RPC_URL = process.env.RPC_URL || 'https://api.mainnet-beta.solana.com';
 const connection = new Connection(RPC_URL, 'confirmed');
-const keypair = Keypair.fromSecretKey(bs58.decode((process.env.BONUS_WALLET_KEY || '').trim()));
+// Chargement robuste de la clé (2026-07-22) : accepte base58 (Phantom, 64o), tableau JSON
+// [n,n,...] (solana-keygen), ou seed 32o. Erreur claire avec la taille (sans exposer la clé).
+function loadKeypair(raw) {
+    const s = (raw || '').trim().replace(/^["']|["']$/g, '');
+    if (!s) throw new Error('BONUS_WALLET_KEY vide');
+    if (s.startsWith('[')) {
+        const arr = Uint8Array.from(JSON.parse(s));
+        if (arr.length === 64) return Keypair.fromSecretKey(arr);
+        if (arr.length === 32) return Keypair.fromSeed(arr);
+        throw new Error(`tableau JSON de ${arr.length} octets (attendu 64 ou 32)`);
+    }
+    const dec = bs58.decode(s);
+    if (dec.length === 64) return Keypair.fromSecretKey(dec);
+    if (dec.length === 32) return Keypair.fromSeed(dec);
+    throw new Error(`clé base58 décodée = ${dec.length} octets (attendu 64 ou 32) — clé tronquée ou mauvaise valeur ?`);
+}
+const keypair = loadKeypair(process.env.BONUS_WALLET_KEY);
+console.log(`  🔑 Wallet live: ${keypair.publicKey.toString()}`);
 
 const POSITION_SIZE_SOL = parseFloat(process.env.POSITION_SIZE_SOL || '0.25');
 const BIN_RANGE = 34;              // ±34 bins = 69 bins — spec canonique EP (screenshot Meteora UI 19/07)
