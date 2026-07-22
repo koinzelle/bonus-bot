@@ -69,7 +69,7 @@ const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
 const AGE_MAX_H = 48;             // token < 2 jours
 const VOL_MIN_24H = 500_000;      // "good volume" — seuil prudent, à calibrer
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
-const MAX_POSITIONS = 3;          // positions papier simultanées
+const MAX_POSITIONS = 8;          // positions papier simultanées (EP : beaucoup de petites positions, pas all-in)
 const MAX_LIVE_POSITIONS = parseInt(process.env.MAX_LIVE_POSITIONS || '1', 10); // positions RÉELLES max (dry-run = 1)
 // Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
 // tous les tokens, comme avant à 60s) ; l'autre tick = UNIQUEMENT les tokens "chauds" (4/5 conditions,
@@ -243,6 +243,51 @@ function patternOk(cs, st) {
         if (p.trend === -1 && brokeUp && athAtBd == null) athAtBd = ath; // 1er breakdown : fige l'ATH
     }
     return ok;
+}
+
+// ── Indicateurs de SORTIE evil panda = bonus stage (copiés de bot 1, éprouvés) ────────────────────
+// Sortie EP : RSI(2) > 90 ET (prix > BB sup OU 1re barre verte MACD) ET PnL > 0.
+function calculateRSI(closes, period = 2) {
+    if (closes.length < period + 1) return null;
+    let avgGain = 0, avgLoss = 0;
+    for (let i = 1; i <= period; i++) {
+        const ch = closes[i] - closes[i - 1];
+        if (ch > 0) avgGain += ch; else avgLoss += Math.abs(ch);
+    }
+    avgGain /= period; avgLoss /= period;
+    for (let i = period + 1; i < closes.length; i++) {
+        const ch = closes[i] - closes[i - 1];
+        avgGain = (avgGain * (period - 1) + Math.max(ch, 0)) / period;
+        avgLoss = (avgLoss * (period - 1) + Math.max(-ch, 0)) / period;
+    }
+    if (avgLoss === 0) return 100;
+    return 100 - (100 / (1 + avgGain / avgLoss));
+}
+function calculateEMA(values, period) {
+    if (values.length < period) return null;
+    const k = 2 / (period + 1);
+    let e = values.slice(0, period).reduce((s, v) => s + v, 0) / period;
+    for (let i = period; i < values.length; i++) e = values[i] * k + e * (1 - k);
+    return e;
+}
+function calculateMACD(closes) {
+    if (closes.length < 35) return null;
+    const mv = [];
+    for (let i = 26; i <= closes.length; i++) {
+        const s = closes.slice(0, i); const e12 = calculateEMA(s, 12), e26 = calculateEMA(s, 26);
+        if (e12 !== null && e26 !== null) mv.push(e12 - e26);
+    }
+    if (mv.length < 9) return null;
+    const cM = mv[mv.length - 1], pM = mv[mv.length - 2];
+    const cS = calculateEMA(mv, 9), pS = calculateEMA(mv.slice(0, -1), 9);
+    if (cS === null || pS === null) return null;
+    return { histogram: cM - cS, histogramTurnsGreen: (pM - pS) <= 0 && (cM - cS) > 0 };
+}
+function bollinger(closes, n = 20, k = 2) {
+    if (closes.length < n) return null;
+    const w = closes.slice(-n); const sma = w.reduce((s, v) => s + v, 0) / n;
+    const sd = Math.sqrt(w.reduce((s, v) => s + (v - sma) ** 2, 0) / n);
+    return { upper: sma + k * sd, lower: sma - k * sd, sma };
 }
 
 // ── Filtre qualité GMGN (2026-07-15) — mêmes seuils que bot 1 : holders ≥ 1000, top10 ≤ 30%,
@@ -446,121 +491,82 @@ async function scan() {
             }
 
             if (pos) {
-                // Sorties uniquement sur les bougies qui commencent APRÈS l'entrée (sinon on compte
-                // le mouvement d'avant notre entrée = TP fantôme instantané). last = dernière bougie.
+                // ── SORTIE EP CANONIQUE (2026-07-22) : RSI(2)>90 ET (prix>BB sup OU 1re verte MACD) ET PnL>0.
+                // PAS de SL (EP tient pour le rebond ; le backtest a montré qu'un SL dur détruit l'edge —
+                // c'est le filtre pattern à l'entrée qui protège). Coupe-temps 24h = règle EP anti-slot bloqué.
                 const candleAfterEntry = lastC[0] > (pos.entryCandleTs || 0);
                 if (candleAfterEntry) {
-                    // TP TRAILING (backtest 2026-07-19 : +247% vs +84% en TP fixe) — même modèle conservateur
-                    // que le backtest : le stop se juge sur le high-water d'AVANT la bougie courante.
-                    const hwPrev = pos.hw || pos.entry;
-                    const trailArmed = hwPrev >= pos.entry * (1 + TRAIL_ARM_PCT);
-                    const stop = hwPrev * (1 - TRAIL_GAP_PCT);
-                    if (trailArmed && lastC[3] <= stop) {
-                        await closePaper(tok, pos, stop, `TP trailing (HW +${((hwPrev / pos.entry - 1) * 100).toFixed(1)}%, sortie -${(TRAIL_GAP_PCT * 100).toFixed(1)}% sous le top)`);
-                    } else if (last.trend === -1) {
-                        await closePaper(tok, pos, lastC[4], `SL flip SuperTrend (${((lastC[4] / pos.entry - 1) * 100).toFixed(1)}%)`);
-                    } else {
-                        pos.hw = Math.max(hwPrev, lastC[2]); // maj high-water APRÈS les checks (conservateur)
+                    const clz = cs.map(c => c[4]);
+                    const rsi2 = calculateRSI(clz, 2);
+                    const macd = calculateMACD(clz);
+                    const bb = bollinger(clz);
+                    const px = lastC[4];
+                    const aboveBB = bb && px > bb.upper;
+                    const macdGreen = macd && macd.histogramTurnsGreen;
+                    const heldH = (now - pos.openedAt) / 3.6e6;
+                    if (rsi2 != null && rsi2 > 90 && (aboveBB || macdGreen) && px > pos.entry) {
+                        await closePaper(tok, pos, px, `SORTIE EP (RSI2 ${rsi2.toFixed(0)}>90${aboveBB ? ' +BB' : ''}${macdGreen ? ' +MACD' : ''}, +${((px / pos.entry - 1) * 100).toFixed(1)}%)`);
+                    } else if (heldH >= 24) {
+                        await closePaper(tok, pos, px, `coupe-temps 24h — pas de rebond (${((px / pos.entry - 1) * 100).toFixed(1)}%)`);
                     }
                 }
                 continue;
             }
 
-            // détection setup : ATH de vie (bougies couvrent toute la vie du token < 48h)
+            // ── SETUP EP BONUS STAGE (2026-07-22, refonte) : sur un coin QUALIFIÉ par le pattern
+            // (breakup→breakdown→nouvel ATH = ruggers sortis), entrer quand le prix a retracé ≥40% sous
+            // l'ATH courant ET touche un support (ligne ST / bande basse Bollinger / EMA34). PAS d'exigence
+            // ST verte : on entre sur le DIP (ST souvent rouge à -40/-50%), en pariant sur le rebound.
             let ath = 0, athTs = 0;
             for (const c of cs) if (c[2] > ath) { ath = c[2]; athTs = c[0]; }
             const athMc = ath * w.supply;
-            // Armé = a fait un ATH > 250K dans sa vie (< 48h, déjà filtré à la découverte). PAS de
-            // fenêtre de fraîcheur : elle se refermait avant que le prix ait le temps de retracer vers
-            // la ST → 0 entrée. Le backtest à 96% WR armait ainsi (sans expiration) jusqu'au retracement.
-            const armed = athMc > MC_MIN_ATH;
-            const patOk = patternOk(cs, st); // SHADOW : pattern EP breakup→breakdown→newATH (ne bloque pas)
-            // Référence = dernière bougie CLOSE (ligne ST stable, tendance confirmée)
+            const armed = athMc > MC_MIN_ATH;                       // a fait un ATH > 250K dans sa vie
+            const patOk = patternOk(cs, st);                        // GATE DUR : pattern EP (protège des rugs)
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
             const line = prevSt ? prevSt.line : null;
-            const curPrice = lastC[4]; // prix ACTUEL (close de la dernière bougie) = fill réaliste
-            // "près de la ligne" = prix entre la ligne et +NEAR_ST_PCT au-dessus (pullback vers le support,
-            // pas déjà reparti en l'air). On entre au prix RÉEL, jamais à la ligne historique (sinon TP fantôme).
-            const nearST = line > 0 && curPrice >= line && curPrice <= line * (1 + NEAR_ST_PCT);
-            const onCooldown = w.cooldownUntil && now < w.cooldownUntil;
-            // ── TRIGGER COMPLET (2026-07-19, GO user — grille backtest 15m univers bot 1) ──────────
-            // rec8h + StochRSI ≤5 = 83% WR / +3.64%/trade vs base 57%/+0.94 ; dist65 = 43%/-0.81 (RETIRÉ) ;
-            // grille 5m = toutes variantes négatives → TF 15m confirmé.
-            // 1. FRAÎCHEUR ACTIVE = RÉCENCE : l'ATH date de < 8h ("just made new ATH" canonique EP).
-            const athAgeH = athTs > 0 ? (now / 1000 - (athTs > 1e12 ? athTs / 1000 : athTs)) / 3600 : null;
-            const athFresh = athAgeH != null && athAgeH <= 8;
-            // 2. Distance à l'ATH = SHADOW (tag mesuré sur les trades, ne bloque pas)
-            const freshVsAth = ath > 0 ? curPrice / ath : 0;
-            const isFresh = freshVsAth >= 0.65;
-            // 3. Stoch RSI(14,14,3) %K ≤ 5 : survente au plancher (alertes bot yunus, 87% WR live)
-            const sk = stochK(cs);
-            const stochNow = sk[sk.length - 1];
-            const stochOK = stochNow != null && stochNow <= 5;
-            // 4. Support alternatif EMA100 15m (alertes EP "EMA100 touched") — ±2% autour de la ligne
-            const ema = ema100Last(cs);
-            const nearEMA = ema != null && Math.abs(curPrice / ema - 1) <= 0.02;
-            // 4bis. Support EMA34 ±4% (branché EN PARALLÈLE le 2026-07-21, backtest : 147 trades/89% WR/
-            // +470% vs ST-line 32/72%/+73% — l'EMA34 est bien plus atteignable ET plus prédictive que la
-            // ligne ST qui traîne 30-70% sous le prix sur ces tokens volatils ; dispo dès 8.5h d'historique)
-            const ema34 = emaLast(cs, 34);
-            const nearEMA34 = ema34 != null && Math.abs(curPrice / ema34 - 1) <= 0.04;
-            // (règle "1 entrée/cycle ST" RETIRÉE le 2026-07-19, remarque user : le backtest 83% WR
-            //  autorisait les ré-entrées avec cooldown 30min seul — le "1 alert/cycle" du bot yunus
-            //  est de l'anti-spam d'alertes humaines, pas une règle de trading validée)
-            // MC ACTUELLE ≥ $250k (pas seulement l'ATH historique) — ferme le trou "cadavre armé".
+            const curPrice = lastC[4];
             const curMc = curPrice * w.supply;
             const mcOk = curMc >= MC_MIN_ATH;
-            // ── StochRSI ≤5 = BONUS, plus une condition DURE (2026-07-20, décision user) : combiné à
-            // rec8h + dist≤4% + green, le triple simultané était quasi-impossible (repli profond →
-            // stoch bas arrive souvent quand l'ATH n'est plus <8h). Le cœur = proche ST + vert + ATH frais.
-            const stochBonus = stochNow != null && stochNow <= 5;
-            // "chaud" = tout SAUF le retracement (sans stoch désormais) → re-check à 30s (tick alterné)
-            w.hot = !!(armed && mcOk && athFresh && prevSt && prevSt.trend === 1);
-            // ── DIAGNOSTIC (2026-07-20) : 1re condition qui bloque + compteur global + "plus proche
-            // approché" de la ligne ST → sur quelques heures on saura LE goulot au lieu de deviner ──
-            const distNow = (line > 0) ? ((curPrice / line) - 1) * 100 : null;
-            if (distNow != null && (w.minDistST == null || distNow < w.minDistST)) w.minDistST = +distNow.toFixed(1);
+            const drawdown = ath > 0 ? 1 - curPrice / ath : 0;      // retracement depuis l'ATH courant
+            const ddOk = drawdown >= 0.40;                          // EP : "after 40-50% down"
+            // supports (±4% = NOTRE calibration ; EP dit juste "near support")
+            const nearST = line > 0 && Math.abs(curPrice / line - 1) <= 0.04;
+            const ema34 = emaLast(cs, 34);
+            const nearEMA34 = ema34 != null && Math.abs(curPrice / ema34 - 1) <= 0.04;
+            const bbNow = bollinger(cs.map(c => c[4]));
+            const nearBBlo = bbNow != null && curPrice <= bbNow.lower * 1.02;  // à/sous la bande basse = survente
+            const atSupport = nearST || nearEMA34 || nearBBlo;
+            const onCooldown = w.cooldownUntil && now < w.cooldownUntil;
+            const athAgeH = athTs > 0 ? (now / 1000 - (athTs > 1e12 ? athTs / 1000 : athTs)) / 3600 : null;
+            w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
+            // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
-            else if (!(prevSt && prevSt.trend === 1)) block = 'ST-rouge';
-            else if (!athFresh) block = 'athAge>8h';
-            else if (!(nearST || nearEMA || nearEMA34)) block = 'dist>4%';
+            else if (!patOk) block = 'pattern-KO';
+            else if (!ddOk) block = 'dd<40%';
+            else if (!atSupport) block = 'no-support';
             else if (onCooldown) block = 'cooldown';
+            else if (Object.keys(state.positions).length >= MAX_POSITIONS) block = 'max-pos';
             else block = 'ENTRÉE';
             state.blockCount = state.blockCount || {};
             state.blockCount[block] = (state.blockCount[block] || 0) + 1;
             w.diag = {
-                hot: w.hot,
-                block,
-                armed,
-                athMcK: Math.round(athMc / 1000),
-                curMcK: Math.round(curMc / 1000),
-                freshPct: +(freshVsAth * 100).toFixed(0),                // shadow (distance à l'ATH)
-                athAgeH: athAgeH != null ? +athAgeH.toFixed(1) : null,   // ACTIF : ≤ 8h requis
-                stochK: stochNow != null ? +stochNow.toFixed(1) : null,  // BONUS (loggé, plus requis)
-                stochBonus,
+                hot: w.hot, block, armed, patternOk: patOk,
+                athMcK: Math.round(athMc / 1000), curMcK: Math.round(curMc / 1000),
+                drawdownPct: +(drawdown * 100).toFixed(0),               // retracement actuel sous l'ATH
+                ddOk, athAgeH: athAgeH != null ? +athAgeH.toFixed(1) : null,
                 trend: prevSt ? (prevSt.trend === 1 ? 'vert' : 'rouge') : '?',
                 distToST_pct: (line > 0) ? +(((curPrice / line) - 1) * 100).toFixed(1) : null,
-                minDistST_pct: w.minDistST ?? null,                      // plus proche jamais approché de la ligne ST
-                emaAvail: ema != null,
-                nearEMA100: nearEMA,
                 distEMA34_pct: ema34 != null ? +(((curPrice / ema34) - 1) * 100).toFixed(1) : null,
-                nearEMA34,
-                cooldown: !!onCooldown,
-                patternOk: patOk,                                        // SHADOW : pattern EP validé (mesure)
+                nearST, nearEMA34, nearBBlo, atSupport, cooldown: !!onCooldown,
             };
-            if (armed && mcOk && athFresh && prevSt && prevSt.trend === 1 && (nearST || nearEMA || nearEMA34) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
-                const entry = curPrice; // fill au prix courant réel
-                const freshPct = +(freshVsAth * 100).toFixed(0);
-                if (!isFresh) console.log(`  ⚠️ [SHADOW fresh-dist] entrée à ${freshPct}% de l'ATH (<65) — tag mesure`);
-                console.log(`  ${patOk ? '✓ [SHADOW pattern-OK]' : '· [SHADOW pattern-KO]'} ${w.symbol} : breakup→breakdown→newATH ${patOk ? 'validé' : 'non validé'} (mesure, ne bloque pas)`);
-                const support = nearST ? 'ST' : nearEMA ? 'EMA100' : 'EMA34';
-                state.positions[tok] = { symbol: w.symbol, entry, hw: entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), freshPct, athAgeH: +athAgeH.toFixed(1), stochK: stochNow != null ? +stochNow.toFixed(1) : null, stochBonus, support, patternOk: patOk, entryCandleTs: lastC[0] };
-                // ombre A/B : même entrée, sortie TP fixe +6%/flip ST (l'ancienne règle) — vit sa propre vie
-                state.fixedShadow[tok] = { symbol: w.symbol, entry, openedAt: now, entryCandleTs: lastC[0] };
+            if (armed && mcOk && patOk && ddOk && atSupport && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+                const entry = curPrice;
+                const support = nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
+                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, entryCandleTs: lastC[0] };
                 save();
-                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support})\nprix: $${entry.toFixed(8)}${line > 0 ? ` (+${(((curPrice/line)-1)*100).toFixed(1)}% au-dessus ST)` : ''}\nStochRSI ${stochNow != null ? stochNow.toFixed(1) : '?'}${stochBonus ? ' 🎯bonus≤5' : ''} | ATH il y a ${athAgeH.toFixed(1)}h | fresh ${freshPct}%\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nTP: trailing (armé +5%, sortie top -1.5%) | SL: flip ST`;
+                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support}, pattern ✓)\nprix: $${entry.toFixed(8)} | retrace -${(drawdown * 100).toFixed(0)}% sous ATH\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: RSI(2)>90 + BB/MACD | pas de SL (coupe-temps 24h)`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
                 // Cap MAX_LIVE_POSITIONS (défaut 1, 2026-07-22) : limite le blast radius en dry-run —
@@ -661,7 +667,7 @@ http.createServer((req, res) => {
 }).listen(process.env.PORT || 3000, () => console.log(`🌐 /status sur port ${process.env.PORT || 3000}`));
 
 console.log('🧪 Bonus Stage PAPER bot démarré — aucun ordre réel ne sera passé.');
-tg('🚀 Bot démarré (paper-trading). Setups: token <48h, ATH>$250K frais, entrée au retracement ST 15m, TP +6% / SL flip ST.');
+tg('🚀 Bot démarré (paper). Refonte EP : entrée = pattern breakup→breakdown→newATH + retrace ≥40% au support ; sortie = RSI(2)>90 + BB/MACD ; pas de SL (coupe-temps 24h) ; max 8 positions.');
 // scan() enveloppé : un rejet dans un tick est loggé, jamais propagé en unhandledRejection.
 const safeScan = () => scan().catch(e => console.log('⚠️ scan tick (survécu):', String(e?.stack || e?.message || e).slice(0, 200)));
 setInterval(safeScan, SCAN_INTERVAL_MS);
