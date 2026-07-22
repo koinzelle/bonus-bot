@@ -66,8 +66,8 @@ const NEAR_ST_PCT = 0.04;        // fenêtre pullback ≤ +4% au-dessus de la li
                                  // 19 trades vs 14 à 3%) sans nouvelle queue de perte ; 5% dégrade (-32.9% tail)
 const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
 const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
-const AGE_MAX_H = 336;            // token < 2 semaines (2026-07-22) : capte les coins post-1er-dump d'EP sans les reliques 1-12 mois (CTO/revival = piège)
-const VOL_MIN_24H = 500_000;      // "good volume" — seuil prudent, à calibrer
+const AGE_MAX_H = 240;            // token < 10 jours (2026-07-22) : aligné sur la data dispo — 1000 bougies 15m GT = 10.4 j. Au-delà on n'a plus l'historique complet → pattern/ATH faux.
+const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener exact d'EP (aligné 2026-07-22, avant 500k)
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
 const MAX_POSITIONS = 8;          // positions papier simultanées (EP : beaucoup de petites positions, pas all-in)
 const MAX_LIVE_POSITIONS = parseInt(process.env.MAX_LIVE_POSITIONS || '1', 10); // positions RÉELLES max (dry-run = 1)
@@ -86,6 +86,8 @@ try { if (fs.existsSync(STATE_FILE)) state = JSON.parse(fs.readFileSync(STATE_FI
 // après la vraie. Comparaison continue dans /status → vérification live du verdict backtest (×3).
 if (!state.fixedShadow) state.fixedShadow = {};
 if (!state.tradesFixed) state.tradesFixed = [];
+// reset des compteurs de l'ancien funnel (refonte EP 2026-07-22) — sinon /status mélange 2 logiques
+if (state.blockCount && (state.blockCount['dist>4%'] || state.blockCount['athAge>8h'] || state.blockCount['ST-rouge'])) state.blockCount = {};
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 async function tg(msg) {
@@ -231,18 +233,25 @@ function superTrend(cs) {
 // réel (avec les rugs) le WR pattern-OK vs pattern-KO, avant d'envisager d'en faire un gate dur.
 // Backtest offline (univers bot 1 présélectionné, donc sans rugs) : 2/23 tokens, 100% WR mais volume ×5
 // plus faible → non concluant, d'où la mesure live.
-function patternOk(cs, st) {
-    let ath = 0, brokeUp = false, athAtBd = null, ok = false;
+function patternInfo(cs, st) {
+    let ath = 0, brokeUp = false, athAtBd = null, ok = false, minAfterBd = null;
+    // inclure les highs d'AVANT le seed ST (10 premières bougies) — sinon l'ATH pré-dump est sous-estimé
+    const startI = st.length ? st[0].i : cs.length;
+    for (let j = 0; j < Math.min(startI, cs.length); j++) if (cs[j][2] > ath) ath = cs[j][2];
     for (const p of st) {
-        const h = cs[p.i][2];
+        const h = cs[p.i][2], l = cs[p.i][3];
         if (h > ath) {
             ath = h;
             if (brokeUp && athAtBd != null && ath > athAtBd) ok = true; // nouvel ATH après le breakdown
         }
         if (p.trend === 1) brokeUp = true;                              // ST passée verte (breakup)
         if (p.trend === -1 && brokeUp && athAtBd == null) athAtBd = ath; // 1er breakdown : fige l'ATH
+        if (athAtBd != null && !ok && (minAfterBd == null || l < minAfterBd)) minAfterBd = l; // creux du dump
     }
-    return ok;
+    // profondeur du 1er dump (SHADOW, calibration future) : chez EP c'est "les ruggers sortent" = dump
+    // SUBSTANTIEL. Un flip ST sur chop léger validerait sur du bruit → on mesure avant de seuiller.
+    const dumpDepthPct = (athAtBd && minAfterBd != null) ? +((1 - minAfterBd / athAtBd) * 100).toFixed(0) : null;
+    return { ok, dumpDepthPct };
 }
 
 // ── Indicateurs de SORTIE evil panda = bonus stage (copiés de bot 1, éprouvés) ────────────────────
@@ -468,7 +477,7 @@ async function scan() {
             const ageH = (now - w.birthMs) / 3.6e6;
             if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; } // purge > 2 semaines
             let cs;
-            try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); }
+            try { cs = await candles15(w.pool, 1000); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); } // 1000 = max GT ≈ 10.4 j — couvre AGE_MAX_H (le pattern/ATH voient toute la vie)
             // Purge fetch cassé (2026-07-19) : 5/12 slots n'étaient JAMAIS évalués (bougies GT en échec
             // silencieux) → après 8 échecs consécutifs, on libère le slot. cs.length entre 1 et 14 =
             // token très jeune, légitime → on attend sans compter d'échec.
@@ -500,28 +509,26 @@ async function scan() {
             const lastC = cs[cs.length - 1];
             const pos = state.positions[tok];
 
-            // ── Ombre A/B "TP fixe +6%" : traitée indépendamment (peut survivre à la vraie position) ──
-            const fx = state.fixedShadow[tok];
-            if (fx && lastC[0] > (fx.entryCandleTs || 0)) {
-                if (lastC[2] >= fx.entry * 1.06) closeFixedShadow(tok, fx, fx.entry * 1.06, 'TP +6%');
-                else if (last.trend === -1) closeFixedShadow(tok, fx, lastC[4], 'SL flip ST');
-            }
-
+            // (A/B "TP fixe +6%" RETIRÉ 2026-07-22 — comparait trailing vs fixe, obsolète depuis la sortie EP)
             if (pos) {
                 // ── SORTIE EP CANONIQUE (2026-07-22) : RSI(2)>90 ET (prix>BB sup OU 1re verte MACD) ET PnL>0.
                 // PAS de SL (EP tient pour le rebond ; le backtest a montré qu'un SL dur détruit l'edge —
                 // c'est le filtre pattern à l'entrée qui protège). Coupe-temps 24h = règle EP anti-slot bloqué.
                 const candleAfterEntry = lastC[0] > (pos.entryCandleTs || 0);
                 if (candleAfterEntry) {
-                    const clz = cs.map(c => c[4]);
-                    const rsi2 = calculateRSI(clz, 2);
-                    const macd = calculateMACD(clz);
-                    const bb = bollinger(clz);
+                    // Signal sur bougies FERMÉES (EP : "RSI 2 CLOSE above 90" ; un spike intra-bougie qui
+                    // se rétracte ne doit pas sortir). Fill au prix courant réel. Sortie = RSI2>90 + VERT
+                    // seulement — c'est SON bot ("my bot is only exit when RSI above 90 and P&L bigger
+                    // than zero") ; BB/MACD loggés à titre indicatif, plus requis (2026-07-22).
+                    const closed = cs.slice(0, -1).map(c => c[4]);
+                    const rsi2 = calculateRSI(closed, 2);
+                    const macd = calculateMACD(closed);
+                    const bb = bollinger(closed);
                     const px = lastC[4];
-                    const aboveBB = bb && px > bb.upper;
+                    const aboveBB = bb && closed[closed.length - 1] > bb.upper;
                     const macdGreen = macd && macd.histogramTurnsGreen;
                     const heldH = (now - pos.openedAt) / 3.6e6;
-                    if (rsi2 != null && rsi2 > 90 && (aboveBB || macdGreen) && px > pos.entry) {
+                    if (rsi2 != null && rsi2 > 90 && px > pos.entry) {
                         await closePaper(tok, pos, px, `SORTIE EP (RSI2 ${rsi2.toFixed(0)}>90${aboveBB ? ' +BB' : ''}${macdGreen ? ' +MACD' : ''}, +${((px / pos.entry - 1) * 100).toFixed(1)}%)`);
                     } else if (heldH >= 24) {
                         await closePaper(tok, pos, px, `coupe-temps 24h — pas de rebond (${((px / pos.entry - 1) * 100).toFixed(1)}%)`);
@@ -538,7 +545,12 @@ async function scan() {
             for (const c of cs) if (c[2] > ath) { ath = c[2]; athTs = c[0]; }
             const athMc = ath * w.supply;
             const armed = athMc > MC_MIN_ATH;                       // a fait un ATH > 250K dans sa vie
-            const patOk = patternOk(cs, st);                        // GATE DUR : pattern EP (protège des rugs)
+            // GATE DUR pattern EP — qualification COLLANTE (2026-07-22) : une fois validé (ruggers sortis),
+            // c'est ACQUIS ("by that time they already out"). Sans ça, la fenêtre de bougies glissante
+            // dé-qualifiait un token quand le breakup/breakdown sortait de la fenêtre.
+            const pInfo = patternInfo(cs, st);
+            if (pInfo.ok && !w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} (dump -${pInfo.dumpDepthPct}% puis nouvel ATH) — qualification acquise`); }
+            const patOk = !!w.patternValidated;
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
             const line = prevSt ? prevSt.line : null;
             const curPrice = lastC[4];

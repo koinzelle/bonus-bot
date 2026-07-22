@@ -102,7 +102,7 @@ async function findMeteoraPool(tokenAddress) {
             if (baseFeePct < 0.5) continue;
             let reserveSol = 0;
             try { reserveSol = parseFloat((await connection.getTokenAccountBalance(pool.lbPair.reserveY)).value.uiAmount || 0); } catch (_) {}
-            if (reserveSol < 1) continue; // pool quasi vide → fills/SL irréalistes
+            if (reserveSol < 20) continue; // EP : "TVL in 20 → don't play, you won't earn much" (2026-07-22, avant 1 SOL)
             candidates.push({ addr: addr.toString(), binStep, baseFeePct, reserveSol });
         } catch (_) {}
     }
@@ -134,7 +134,7 @@ async function tokenBalanceRaw(mint) {
 // Endpoint lite-api v1 (2026-07-22) : quote-api.jup.ag/v6 est déprécié → ENOTFOUND. Aligné sur bot 1.
 async function jupSwap(inputMint, outputMint, rawAmount) {
     const quote = await axios.get('https://lite-api.jup.ag/swap/v1/quote', {
-        params: { inputMint, outputMint, amount: rawAmount.toString(), slippageBps: 300 }, timeout: 12000,
+        params: { inputMint, outputMint, amount: rawAmount.toString(), slippageBps: 1000 }, timeout: 12000, // 10% (EP: "so your transaction doesn't hang") — tokens volatils, avant 3%
     });
     const swap = await axios.post('https://lite-api.jup.ag/swap/v1/swap', {
         quoteResponse: quote.data, userPublicKey: keypair.publicKey.toString(), wrapAndUnwrapSol: true,
