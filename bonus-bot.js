@@ -350,6 +350,9 @@ async function scan() {
                 if (!d || !d.birthMs || !d.supply) continue;
                 const ageH = (now - d.birthMs) / 3.6e6;
                 if (ageH >= AGE_MAX_H || d.vol24h < VOL_MIN_24H) continue;
+                // MC EN PREMIER (2026-07-22, demande user) : MC pas bonne → skip IMMÉDIAT, on ne gaspille
+                // pas l'appel qualité GMGN (comme bot 1). Seuil 200k = marge sous les 250k requis à l'entrée.
+                if (d.mc < 200_000) continue;
                 // Règle EP n°5 (profil DexScreener payé + X) : SHADOW (2026-07-19, décision user) —
                 // on logge UNE FOIS par token (anti-spam : RACY loggé 60×/h le 20/07), on ne bloque pas.
                 const profilOk = d.hasTwitter && d.hasImage;
