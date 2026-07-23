@@ -652,7 +652,7 @@ async function scan() {
             };
             // SHADOW dd30 (2026-07-23) : setup complet SAUF que le retrace est à 30-35% → mesure ce que le
             // seuil 30% déclencherait en plus (1 log par token/cycle, anti-spam via w.dd30Logged).
-            if (armed && mcOk && patOk && brokeTrueAth && athRecent && ddShadow30 && atSupport && !onCooldown && !w.dd30Logged) {
+            if (armed && mcOk && patOk && athRecent && ddShadow30 && atSupport && !onCooldown && !w.dd30Logged) {
                 w.dd30Logged = true;
                 console.log(`  · [SHADOW dd30] ${w.symbol} : entrerait à -${(drawdown * 100).toFixed(0)}% (support ${nearST ? 'ST' : nearBBlo ? 'BB' : 'EMA34'}) — bloqué par seuil 35% (mesure)`);
             }
