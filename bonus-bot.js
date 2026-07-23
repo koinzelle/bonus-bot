@@ -621,19 +621,20 @@ async function scan() {
             // ATH RÉCENT ≤14j (2026-07-22, remplace le cap d'âge) : on n'entre que sur le retrace d'un TOP
             // RÉCENT (EP entre après le dip d'un sommet frais, cas FOMO). Sans ça, un coin qualifié il y a
             // 3 mois et à -80% depuis serait "dd≥40%" en permanence = entrée sur qualification fossile.
-            // ATH RÉCENT ≤48h (2026-07-24, remarque user) : resserré de 14j→48h pour tuer le piège du
-            // COIN MOURANT — ATH il y a 7j, ne fait que dump (lower highs), petit pump local où on rentre.
-            // EP : "lower high = exit signal, not entry". À 48h, seul un VRAI nouvel ATH global récent
-            // arme l'entrée. Effet bonus : re-entrer exige un nouvel ATH (reset athAge) = cycle EP exact ;
-            // un lower high ne reset pas → athAge grandit → bloqué (fin des ré-entrées type HBULL -68%/vieil ATH).
-            const athRecent = athAgeH != null && athAgeH <= 48;
+            // ATH RÉCENT — garde-fou zombie LARGE 14j (2026-07-24) : le hard-gate 48h a été ANNULÉ car la
+            // data le contredit (nos gagnants HBULL +19/+24/+36% étaient sur ATH de 5-6j — un vieil ATH ≠
+            // un coin mourant : HBULL bounçait). On MESURE athAge en shadow (tag sur trades + log >48h)
+            // avant d'en faire un gate : si les vieux-ATH finissent par perdre (queue du mourant) → on
+            // resserrera à la data ; s'ils gagnent → on garde. Décision à ~20-30 trades.
+            const athRecent = athAgeH != null && athAgeH <= 14 * 24;
+            const athStale48 = athAgeH != null && athAgeH > 48; // SHADOW : entrée sur ATH pas frais (à juger)
             w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
             else if (!patOk) block = 'pattern-KO';
-            else if (!athRecent) block = 'ATH>48h';
+            else if (!athRecent) block = 'ATH>14j';
             else if (drawdown < 0.35) block = 'dd<35%';
             else if (drawdown < 0.50 && !atSupport) block = 'no-support(35-50%)';
             else if (onCooldown) block = 'cooldown';
@@ -666,9 +667,11 @@ async function scan() {
             if (armed && mcOk && patOk && athRecent && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
                 const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
-                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, entryCandleTs: lastC[0] };
+                const athAgeHr = athAgeH != null ? +athAgeH.toFixed(1) : null;
+                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0] };
                 save();
-                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support}, pattern ✓)\nprix: $${entry.toFixed(8)} | retrace -${(drawdown * 100).toFixed(0)}% sous ATH\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: RSI(2)>90 + vert | on TIENT jusqu'au rebond (pas de SL/coupe-temps)`;
+                if (athStale48) console.log(`  · [SHADOW athStale] ${w.symbol} : entrée sur ATH de ${athAgeHr}h (>48h) — on juge le WR de ces vieux-ATH séparément`);
+                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support}, pattern ✓)\nprix: $${entry.toFixed(8)} | retrace -${(drawdown * 100).toFixed(0)}% sous ATH (ATH ${athAgeHr}h${athStale48 ? ' ⚠️vieux' : ''})\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: RSI(2)>90 + vert | on TIENT jusqu'au rebond (pas de SL/coupe-temps)`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
                 // Cap MAX_LIVE_POSITIONS (défaut 1, 2026-07-22) : limite le blast radius en dry-run —
@@ -723,7 +726,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         pnlSolLive, // PnL RÉEL fees incluses (null en paper pur) — à comparer au pnlSol prix
         symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
-        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
+        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
