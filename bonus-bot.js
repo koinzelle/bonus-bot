@@ -621,14 +621,19 @@ async function scan() {
             // ATH RÉCENT ≤14j (2026-07-22, remplace le cap d'âge) : on n'entre que sur le retrace d'un TOP
             // RÉCENT (EP entre après le dip d'un sommet frais, cas FOMO). Sans ça, un coin qualifié il y a
             // 3 mois et à -80% depuis serait "dd≥40%" en permanence = entrée sur qualification fossile.
-            const athRecent = athAgeH != null && athAgeH <= 14 * 24;
+            // ATH RÉCENT ≤48h (2026-07-24, remarque user) : resserré de 14j→48h pour tuer le piège du
+            // COIN MOURANT — ATH il y a 7j, ne fait que dump (lower highs), petit pump local où on rentre.
+            // EP : "lower high = exit signal, not entry". À 48h, seul un VRAI nouvel ATH global récent
+            // arme l'entrée. Effet bonus : re-entrer exige un nouvel ATH (reset athAge) = cycle EP exact ;
+            // un lower high ne reset pas → athAge grandit → bloqué (fin des ré-entrées type HBULL -68%/vieil ATH).
+            const athRecent = athAgeH != null && athAgeH <= 48;
             w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
             else if (!patOk) block = 'pattern-KO';
-            else if (!athRecent) block = 'ATH>14j';
+            else if (!athRecent) block = 'ATH>48h';
             else if (drawdown < 0.35) block = 'dd<35%';
             else if (drawdown < 0.50 && !atSupport) block = 'no-support(35-50%)';
             else if (onCooldown) block = 'cooldown';
