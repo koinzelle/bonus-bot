@@ -555,15 +555,14 @@ async function scan() {
 
             // (A/B "TP fixe +6%" RETIRÉ 2026-07-22 — comparait trailing vs fixe, obsolète depuis la sortie EP)
             if (pos) {
-                // ── SORTIE EP CANONIQUE (2026-07-22) : RSI(2)>90 ET (prix>BB sup OU 1re verte MACD) ET PnL>0.
-                // PAS de SL (EP tient pour le rebond ; le backtest a montré qu'un SL dur détruit l'edge —
-                // c'est le filtre pattern à l'entrée qui protège). Coupe-temps 24h = règle EP anti-slot bloqué.
+                // ── SORTIE EP CANONIQUE (2026-07-22) : RSI(2)>90 sur bougie FERMÉE + PnL>0. SEULE sortie.
+                // PAS de SL, PAS de coupe-temps (2026-07-23, décision user) — EP TIENT pour le rebond,
+                // jusqu'à 9 jours ("I just left it there... after 9 days it bounced, closed in profits ;
+                // you must wait for your exit criteria no matter what"). Le coupe-temps 24h était la règle
+                // de l'EVIL PANDA (LP au sommet), PAS du bonus stage (dip au support) → retiré. La
+                // protection = le pattern (le coin rebondit) + petites positions (jamais all-in).
                 const candleAfterEntry = lastC[0] > (pos.entryCandleTs || 0);
                 if (candleAfterEntry) {
-                    // Signal sur bougies FERMÉES (EP : "RSI 2 CLOSE above 90" ; un spike intra-bougie qui
-                    // se rétracte ne doit pas sortir). Fill au prix courant réel. Sortie = RSI2>90 + VERT
-                    // seulement — c'est SON bot ("my bot is only exit when RSI above 90 and P&L bigger
-                    // than zero") ; BB/MACD loggés à titre indicatif, plus requis (2026-07-22).
                     const closed = cs.slice(0, -1).map(c => c[4]);
                     const rsi2 = calculateRSI(closed, 2);
                     const macd = calculateMACD(closed);
@@ -571,11 +570,8 @@ async function scan() {
                     const px = lastC[4];
                     const aboveBB = bb && closed[closed.length - 1] > bb.upper;
                     const macdGreen = macd && macd.histogramTurnsGreen;
-                    const heldH = (now - pos.openedAt) / 3.6e6;
                     if (rsi2 != null && rsi2 > 90 && px > pos.entry) {
                         await closePaper(tok, pos, px, `SORTIE EP (RSI2 ${rsi2.toFixed(0)}>90${aboveBB ? ' +BB' : ''}${macdGreen ? ' +MACD' : ''}, +${((px / pos.entry - 1) * 100).toFixed(1)}%)`);
-                    } else if (heldH >= 24) {
-                        await closePaper(tok, pos, px, `coupe-temps 24h — pas de rebond (${((px / pos.entry - 1) * 100).toFixed(1)}%)`);
                     }
                 }
                 continue;
@@ -667,7 +663,7 @@ async function scan() {
                 const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, entryCandleTs: lastC[0] };
                 save();
-                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support}, pattern ✓)\nprix: $${entry.toFixed(8)} | retrace -${(drawdown * 100).toFixed(0)}% sous ATH\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: RSI(2)>90 + BB/MACD | pas de SL (coupe-temps 24h)`;
+                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support}, pattern ✓)\nprix: $${entry.toFixed(8)} | retrace -${(drawdown * 100).toFixed(0)}% sous ATH\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: RSI(2)>90 + vert | on TIENT jusqu'au rebond (pas de SL/coupe-temps)`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
                 // Cap MAX_LIVE_POSITIONS (défaut 1, 2026-07-22) : limite le blast radius en dry-run —
@@ -768,7 +764,7 @@ http.createServer((req, res) => {
 }).listen(process.env.PORT || 3000, () => console.log(`🌐 /status sur port ${process.env.PORT || 3000}`));
 
 console.log('🧪 Bonus Stage PAPER bot démarré — aucun ordre réel ne sera passé.');
-tg('🚀 Bot démarré (paper). Refonte EP : entrée = pattern breakup→breakdown→newATH + retrace ≥40% au support ; sortie = RSI(2)>90 + BB/MACD ; pas de SL (coupe-temps 24h) ; max 8 positions.');
+tg('🚀 Bot démarré (paper). Refonte EP : entrée = pattern breakup→breakdown→newATH + retrace au support ; sortie = RSI(2)>90 + vert (on TIENT jusqu\'au rebond, pas de SL/coupe-temps) ; max 8 positions.');
 // scan() enveloppé : un rejet dans un tick est loggé, jamais propagé en unhandledRejection.
 const safeScan = () => scan().catch(e => console.log('⚠️ scan tick (survécu):', String(e?.stack || e?.message || e).slice(0, 200)));
 setInterval(safeScan, SCAN_INTERVAL_MS);
