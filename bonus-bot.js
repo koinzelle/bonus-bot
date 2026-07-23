@@ -70,7 +70,7 @@ const AGE_MAX_H = 24 * 365;       // garde-fou zombies 1 an (2026-07-22, GO user
 const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener exact d'EP (aligné 2026-07-22, avant 500k)
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
 const MAX_POSITIONS = 8;          // positions papier simultanées (EP : beaucoup de petites positions, pas all-in)
-const MAX_LIVE_POSITIONS = parseInt(process.env.MAX_LIVE_POSITIONS || '1', 10); // positions RÉELLES max (dry-run = 1)
+const MAX_LIVE_POSITIONS = parseInt(process.env.MAX_LIVE_POSITIONS || '3', 10); // positions RÉELLES max (test capture = 3)
 // Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
 // tous les tokens, comme avant à 60s) ; l'autre tick = UNIQUEMENT les tokens "chauds" (4/5 conditions,
 // il ne manque que le retracement vers la ST) + positions ouvertes (TP/SL 2× plus réactifs). Le prix

@@ -64,7 +64,11 @@ function loadKeypair(raw) {
 const keypair = loadKeypair(process.env.BONUS_WALLET_KEY || process.env.WALLET_PRIVATE_KEY);
 console.log(`  🔑 Wallet live: ${keypair.publicKey.toString()}`);
 
-const POSITION_SIZE_SOL = parseFloat(process.env.POSITION_SIZE_SOL || '0.25');
+// Sizing (2026-07-23) : EP dime 1-2% du capital PAR position (jamais all-in). On lit le solde RÉEL et on
+// prend POSITION_SIZE_PCT % — auto-scaling, plus de taille fixe qui sur-engage le wallet. Un plancher/
+// plafond absolu (POSITION_SIZE_SOL comme cap dur optionnel) borde le risque.
+const POSITION_SIZE_PCT = parseFloat(process.env.POSITION_SIZE_PCT || '2'); // % du capital par position
+const POSITION_SIZE_MAX_SOL = parseFloat(process.env.POSITION_SIZE_SOL || '999'); // plafond dur optionnel
 const BIN_RANGE = 34;              // ±34 bins = 69 bins — spec canonique EP (screenshot Meteora UI 19/07)
 const TX_RESERVE_SOL = 0.02;
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -185,8 +189,12 @@ async function sweepOrphans() {
 // Retourne { positionKeypairPub, poolAddress, depositedSol, lowerBinId, upperBinId, tokenMint } ou null.
 async function openBidAsk(poolAddress) {
     const balBefore = await solBalance();
-    const amountSol = Math.min(POSITION_SIZE_SOL, balBefore / LAMPORTS_PER_SOL - TX_RESERVE_SOL);
-    if (amountSol < 0.05) { console.log('❌ solde insuffisant'); return null; }
+    const balSol = balBefore / LAMPORTS_PER_SOL;
+    // taille = % du capital, plafonnée par POSITION_SIZE_MAX_SOL et par (solde - réserve gas)
+    const pctSize = balSol * (POSITION_SIZE_PCT / 100);
+    const amountSol = Math.min(pctSize, POSITION_SIZE_MAX_SOL, balSol - TX_RESERVE_SOL);
+    console.log(`  💵 Taille: ${amountSol.toFixed(4)} SOL (${POSITION_SIZE_PCT}% de ${balSol.toFixed(3)} SOL)`);
+    if (amountSol < 0.05) { console.log(`❌ solde/taille insuffisant (${amountSol.toFixed(4)} SOL < 0.05)`); return null; }
 
     const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
     const xMint = dlmmPool.tokenX.publicKey.toString();
