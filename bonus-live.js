@@ -70,7 +70,11 @@ console.log(`  🔑 Wallet live: ${keypair.publicKey.toString()}`);
 const POSITION_SIZE_PCT = parseFloat(process.env.POSITION_SIZE_PCT || '2'); // % du capital par position
 const POSITION_SIZE_MAX_SOL = parseFloat(process.env.POSITION_SIZE_SOL || '999'); // plafond dur optionnel
 const BIN_RANGE = 34;              // ±34 bins = 69 bins — spec canonique EP (screenshot Meteora UI 19/07)
-const TX_RESERVE_SOL = 0.02;
+const TX_RESERVE_SOL = 0.02;      // gas
+// Rent du compte de position Meteora (~0.057 SOL) : RÉCUPÉRÉ au close (shouldClaimAndClose) — ce n'est
+// PAS un coût, juste une avance. On le réserve À CÔTÉ de la mise (2026-07-24, demande user) : la mise LP
+// = les X% du capital, le rent ne la rogne pas.
+const RENT_RESERVE_SOL = 0.06;
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // ── Découverte de pool Meteora DLMM on-chain (méthode bot 1 : getProgramAccounts + memcmp) ──
@@ -190,11 +194,11 @@ async function sweepOrphans() {
 async function openBidAsk(poolAddress) {
     const balBefore = await solBalance();
     const balSol = balBefore / LAMPORTS_PER_SOL;
-    // taille = % du capital, plafonnée par POSITION_SIZE_MAX_SOL et par (solde - réserve gas)
+    // MISE LP = X% du capital ; rent (récupéré au close) + gas réservés À CÔTÉ, ne rognent PAS la mise.
     const pctSize = balSol * (POSITION_SIZE_PCT / 100);
-    const amountSol = Math.min(pctSize, POSITION_SIZE_MAX_SOL, balSol - TX_RESERVE_SOL);
-    console.log(`  💵 Taille: ${amountSol.toFixed(4)} SOL (${POSITION_SIZE_PCT}% de ${balSol.toFixed(3)} SOL)`);
-    if (amountSol < 0.05) { console.log(`❌ solde/taille insuffisant (${amountSol.toFixed(4)} SOL < 0.05)`); return null; }
+    const amountSol = Math.min(pctSize, POSITION_SIZE_MAX_SOL, balSol - RENT_RESERVE_SOL - TX_RESERVE_SOL);
+    console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (${POSITION_SIZE_PCT}% de ${balSol.toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
+    if (amountSol < 0.01) { console.log(`❌ mise trop faible (${amountSol.toFixed(4)} SOL < 0.01) ou solde insuffisant`); return null; }
 
     const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
     const xMint = dlmmPool.tokenX.publicKey.toString();
