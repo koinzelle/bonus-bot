@@ -466,6 +466,7 @@ const ema100Last = cs => emaLast(cs, 100); // support des alertes EP (25h d'hist
 
 // ── Boucle principale ─────────────────────────────────────────
 let scanning = false;
+let scanOffset = 0; // rotation du point de départ de la boucle watch (équité sous backoff 429)
 let scanTick = 0;
 async function scan() {
     if (scanning) return; scanning = true;
@@ -512,7 +513,13 @@ async function scan() {
 
         // 2. pour chaque token suivi : setup / entrée / gestion de position papier
         let rl429 = 0; // 429 vus ce tick — au 2e, on arrête de fetch (backoff global, le cache sert le reste)
-        for (const [tok, w] of Object.entries(state.watch)) {
+        // ROTATION (2026-07-24, GO user) : l'ordre d'itération était fixe → quand le backoff 429 coupait
+        // le tick, c'était TOUJOURS la même queue de liste qui sautait → 8 tokens jamais évalués (diag
+        // None depuis des heures). Départ tournant : chaque token passe en tête à tour de rôle.
+        const watchEntries = Object.entries(state.watch);
+        scanOffset = (scanOffset + 1) % Math.max(watchEntries.length, 1);
+        const rotated = [...watchEntries.slice(scanOffset), ...watchEntries.slice(0, scanOffset)];
+        for (const [tok, w] of rotated) {
             // tick chaud : ne traiter que les tokens à 4/5 conditions + les positions ouvertes
             if (hotOnly && !w.hot && !state.positions[tok]) continue;
             const ageH = (now - w.birthMs) / 3.6e6;
