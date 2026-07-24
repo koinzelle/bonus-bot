@@ -628,20 +628,21 @@ async function scan() {
             // ATH RÉCENT ≤14j (2026-07-22, remplace le cap d'âge) : on n'entre que sur le retrace d'un TOP
             // RÉCENT (EP entre après le dip d'un sommet frais, cas FOMO). Sans ça, un coin qualifié il y a
             // 3 mois et à -80% depuis serait "dd≥40%" en permanence = entrée sur qualification fossile.
-            // ATH RÉCENT — garde-fou zombie LARGE 14j (2026-07-24) : le hard-gate 48h a été ANNULÉ car la
-            // data le contredit (nos gagnants HBULL +19/+24/+36% étaient sur ATH de 5-6j — un vieil ATH ≠
-            // un coin mourant : HBULL bounçait). On MESURE athAge en shadow (tag sur trades + log >48h)
-            // avant d'en faire un gate : si les vieux-ATH finissent par perdre (queue du mourant) → on
-            // resserrera à la data ; s'ils gagnent → on garde. Décision à ~20-30 trades.
-            const athRecent = athAgeH != null && athAgeH <= 14 * 24;
-            const athStale48 = athAgeH != null && athAgeH > 48; // SHADOW : entrée sur ATH pas frais (à juger)
+            // ATH RÉCENT ≤24h (2026-07-24, GO user — APPUYÉ PAR LA DATA) : mesure sur 23 tokens bot 1
+            // (bougies 1min) → le retrace post-ATH arrive VITE : -35% médiane 24min (max 7.3h), -50%
+            // médiane 1.8h (max 14.5h), 100% sous 24h. Un "retrace" avec un ATH de 3-7j n'est PAS le dip
+            // post-ATH (passé depuis longtemps) = coin qui traîne au fond / pump local (cas HBULL#3 live
+            // -33%, 旺旺#2). Trade-off assumé : on perd les 1res entrées sur vieux bounceurs (HBULL#1 +19%
+            // avait un ATH de ~6j) — le cycle propre = nouvel ATH (<24h) → dump → retrace → entrée.
+            const athRecent = athAgeH != null && athAgeH <= 24;
+            const athStale48 = athAgeH != null && athAgeH > 48; // tag legacy conservé sur les trades (mesure)
             w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
             else if (!patOk) block = 'pattern-KO';
-            else if (!athRecent) block = 'ATH>14j';
+            else if (!athRecent) block = 'ATH>24h';
             else if (w.lastEntryAth && ath <= w.lastEntryAth) block = 'ATH-déjà-joué';
             else if (drawdown < 0.35) block = 'dd<35%';
             else if (drawdown < 0.50 && !atSupport) block = 'no-support(35-50%)';
