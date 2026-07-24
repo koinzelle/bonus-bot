@@ -642,6 +642,7 @@ async function scan() {
             else if (!mcOk) block = 'MC<250k';
             else if (!patOk) block = 'pattern-KO';
             else if (!athRecent) block = 'ATH>14j';
+            else if (w.lastEntryAth && ath <= w.lastEntryAth) block = 'ATH-déjà-joué';
             else if (drawdown < 0.35) block = 'dd<35%';
             else if (drawdown < 0.50 && !atSupport) block = 'no-support(35-50%)';
             else if (onCooldown) block = 'cooldown';
@@ -671,8 +672,15 @@ async function scan() {
             // un support (dip moins profond = plus de risque de couteau). Le support 15m ratait HeavyPulp
             // (analysé en daily) — la profondeur le rattrape.
             const deepRetrace = drawdown >= 0.50;
-            if (armed && mcOk && patOk && athRecent && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            // ── UNE ENTRÉE PAR ATH (2026-07-24, règle user = EP pur) : on achète LE retracement de l'ATH,
+            // et on ne ré-entre sur le même coin QUE s'il refait un NOUVEL ATH ("it goes again a new ATH,
+            // you open again"). Sans ça, le bot rachetait les replis de pumps locaux SOUS l'ATH (HBULL #2/#3
+            // à -10% d'un pump de minuit → live -33% ; 旺旺 #2 à -20% d'un pump de 20 min) = acheter
+            // l'euphorie, pas la peur. w.lastEntryAth persisté ; nouvel ATH strict requis pour ré-armer.
+            const newAthSinceLastEntry = !w.lastEntryAth || ath > w.lastEntryAth;
+            if (armed && mcOk && patOk && athRecent && newAthSinceLastEntry && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
+                w.lastEntryAth = ath; // fige l'ATH consommé par cette entrée
                 const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
                 const athAgeHr = athAgeH != null ? +athAgeH.toFixed(1) : null;
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0] };
