@@ -272,23 +272,22 @@ function superTrend(cs) {
 // Backtest offline (univers bot 1 présélectionné, donc sans rugs) : 2/23 tokens, 100% WR mais volume ×5
 // plus faible → non concluant, d'où la mesure live.
 function patternInfo(cs, st) {
-    // Breakdown détecté par flip ST rouge OU par PRIX (low ≤ 65% de l'ATH courant = dump ≥35%).
-    // (2026-07-25, cas looong) : sur un pump violent l'ATR est énorme → la ST ne flippe PAS même sur un
-    // dump -56% → le "1er dump" était invisible → pattern jamais validé → setup EP parfait raté. Le prix
-    // ne ment pas : -35% sous l'ATH = les ruggers sont sortis, flip ST ou non.
+    // RÈGLE EP PURE (2026-07-25, recadrage user — le hack "breakdown par prix" est ANNULÉ) : le flip ROUGE
+    // de la ST EST la signature du vrai dump ("break up → break down, THIS is where snipers/insiders dump
+    // → then goes back up to a NEW ATH = safe"). Séquence obligatoire : VERT (breakup) → ROUGE (breakdown)
+    // → nouvel ATH (implique ST re-VERTE au-dessus de l'ancien sommet). Sans flip rouge = pas de dump
+    // structuré (TRUMP2028 : que du vert, pump→mort). Rouge sans nouvel ATH = encore en dump (looong).
     let ath = 0, brokeUp = false, athAtBd = null, ok = false, minAfterBd = null;
     const stByI = new Map(st.map(p => [p.i, p]));
     for (let i = 0; i < cs.length; i++) {
         const h = cs[i][2], l = cs[i][3];
         if (h > ath) {
             ath = h;
-            if (athAtBd != null && ath > athAtBd) ok = true;            // nouvel ATH après le breakdown
+            if (brokeUp && athAtBd != null && ath > athAtBd) ok = true;  // nouvel ATH après le breakdown ST
         }
         const p = stByI.get(i);
-        if (p && p.trend === 1) brokeUp = true;                          // ST passée verte (breakup)
-        const stBreak = p && p.trend === -1 && brokeUp;                  // breakdown par flip ST
-        const priceBreak = ath > 0 && l <= ath * 0.65;                   // breakdown par prix (dump ≥35%)
-        if ((stBreak || priceBreak) && athAtBd == null) athAtBd = ath;   // 1er breakdown : fige l'ATH
+        if (p && p.trend === 1) brokeUp = true;                          // ST VERTE (breakup)
+        if (p && p.trend === -1 && brokeUp && athAtBd == null) athAtBd = ath; // 1er flip ROUGE : fige l'ATH
         if (athAtBd != null && !ok && (minAfterBd == null || l < minAfterBd)) minAfterBd = l; // creux du dump
     }
     const dumpDepthPct = (athAtBd && minAfterBd != null) ? +((1 - minAfterBd / athAtBd) * 100).toFixed(0) : null;
