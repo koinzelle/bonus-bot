@@ -243,17 +243,27 @@ async function openBidAsk(poolAddress) {
         await sweepToken(xMint);
         return null;
     }
-    // dépôt RÉEL mesuré flat-to-flat, swap inclus (pattern bot.js post-ELON)
     const balAfter = await solBalance();
-    const depositedSol = (balBefore - balAfter) / LAMPORTS_PER_SOL;
-    console.log(`  💰 Déposé réel: ${depositedSol.toFixed(4)} SOL | bins [${minBinId}→${maxBinId}] (±${BIN_RANGE}) Bid-Ask 2-sided`);
-    return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint };
+    const depositedSol = (balBefore - balAfter) / LAMPORTS_PER_SOL; // indicatif (inclut rent+gas)
+    // VALEUR D'OUVERTURE on-chain (base du PnL réel) — lue juste après le dépôt, avant tout mouvement.
+    const posRef = { poolAddress, positionKeypairPub: positionKeypair.publicKey.toString() };
+    let openValueSol = null;
+    try { openValueSol = await positionValueSol(posRef, dlmmPool); } catch (_) {}
+    console.log(`  💰 Déposé: ${depositedSol.toFixed(4)} SOL (rent+gas inclus) | valeur LP: ${openValueSol != null ? openValueSol.toFixed(4) : '?'} SOL | bins [${minBinId}→${maxBinId}] (±${BIN_RANGE})`);
+    return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, openValueSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint };
 }
 
-// ── Valeur de position en SOL (X + Y + fees, pour TP sur PnL réel fees incluses) ──
-async function positionValueSol(pos) {
-    const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
-    const p = await dlmmPool.getPosition(new PublicKey(pos.positionKeypairPub));
+// ── Valeur de position en SOL (X + Y + fees) — LECTURE ON-CHAIN DIRECTE ──────────────────────────
+// C'est la SEULE mesure de PnL fiable (2026-07-25) : le flat-to-flat du wallet était pollué par le rent
+// récupéré, le gas, et surtout les positions concurrentes qui s'ouvrent/ferment pendant → PnL faux.
+// PnL réel d'une position = valeur_close − valeur_open, indépendant du bruit wallet. Passe par
+// getPositionsByUserAndLbPair (getPosition seul throw "Cannot read null" sur ce SDK). Retourne null si
+// introuvable (position déjà vidée). dlmmPool optionnel (réutilise si fourni).
+async function positionValueSol(pos, dlmmPool = null) {
+    dlmmPool = dlmmPool || await DLMM.create(connection, new PublicKey(pos.poolAddress));
+    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(keypair.publicKey);
+    const p = userPositions.find(u => u.publicKey.toString() === pos.positionKeypairPub);
+    if (!p) return null;
     const d = p.positionData;
     const xDec = dlmmPool.tokenX.decimal ?? dlmmPool.tokenX.mint?.decimals ?? 6;
     const yDec = dlmmPool.tokenY.decimal ?? dlmmPool.tokenY.mint?.decimals ?? 9;
@@ -267,8 +277,9 @@ async function positionValueSol(pos) {
 }
 
 // ── Fermeture vérifiée (pattern bot.js post-world) + re-swap token→SOL ──
-// Retourne { ok, proceedsSol } : proceeds = SOL revenus au wallet (close + fees + re-swap), mesuré
-// flat-to-flat → PnL réel = proceedsSol - pos.depositedSol (fees INCLUSES — reporting, pas trigger).
+// Retourne { ok, proceedsSol, closeValueSol } : closeValueSol = valeur ON-CHAIN de la position (X+Y+fees)
+// lue AVANT le remove = mesure FIABLE. PnL réel = closeValueSol − pos.openValueSol (insensible au bruit
+// wallet). proceedsSol (flat-to-flat) gardé en secours/indicatif.
 async function closeVerified(pos) {
     const balBefore = await solBalance();
     const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
@@ -280,8 +291,11 @@ async function closeVerified(pos) {
             const p = userPositions.find(u => u.publicKey.toString() === pos.positionKeypairPub);
             if (!p) { // introuvable = déjà vidée on-chain → close réussi
                 console.log('  ✓ position introuvable on-chain = déjà fermée');
-                return { ok: true, proceedsSol: (await solBalance() - balBefore) / LAMPORTS_PER_SOL };
+                return { ok: true, proceedsSol: (await solBalance() - balBefore) / LAMPORTS_PER_SOL, closeValueSol: null };
             }
+            // valeur ON-CHAIN avant remove (X+Y+fees en SOL) = base du PnL réel
+            let closeValueSol = null;
+            try { closeValueSol = await positionValueSol(pos, dlmmPool); } catch (_) {}
             const fromBinId = Number(p.positionData.lowerBinId);
             const toBinId = Number(p.positionData.upperBinId);
             let removeTxs;
@@ -314,7 +328,7 @@ async function closeVerified(pos) {
                 } catch (e) { console.log(`  ⚠️ re-swap token→SOL échoué (${String(e.message).slice(0, 60)}) — résidu au wallet, PnL à corriger à la main`); }
             }
             const proceedsSol = (await solBalance() - balBefore) / LAMPORTS_PER_SOL;
-            return { ok: true, proceedsSol };
+            return { ok: true, proceedsSol, closeValueSol };
         } catch (e) {
             console.log(`  ⚠️ close tentative ${attempt}/3: ${String(e.message).slice(0, 80)}`);
             if (attempt === 3) { console.log('  🚨 CLOSE INCOMPLET — garder le tracking, alerter, NE PAS logger de PnL'); return { ok: false, proceedsSol: null }; }

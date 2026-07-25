@@ -737,7 +737,14 @@ async function closePaper(tok, pos, exitPrice, reason) {
         try {
             const r = await live.closeVerified(pos.live);
             if (!r || !r.ok) { alertThrottled(`🚨 LIVE ${pos.symbol}: close INCOMPLET — position GARDÉE, re-tentée à chaque tick, vérifier on-chain`); return; }
-            pnlSolLive = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
+            // PnL RÉEL = valeur on-chain close − open (X+Y+fees, insensible au bruit wallet). Fallback sur
+            // le flat-to-flat seulement si la lecture on-chain a échoué (2026-07-25, fix mesure).
+            if (r.closeValueSol != null && pos.live.openValueSol != null) {
+                pnlSolLive = +(r.closeValueSol - pos.live.openValueSol).toFixed(4);
+            } else {
+                pnlSolLive = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
+                console.log(`  ⚠️ PnL live via flat-to-flat (lecture on-chain KO) — moins fiable`);
+            }
         } catch (e) { alertThrottled(`🚨 LIVE ${pos.symbol}: close erreur (${String(e.message).slice(0, 60)}) — position GARDÉE`); return; }
     }
     const pnlPct = exitPrice / pos.entry - 1;
