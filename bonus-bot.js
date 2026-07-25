@@ -88,6 +88,10 @@ if (!state.fixedShadow) state.fixedShadow = {};
 if (!state.tradesFixed) state.tradesFixed = [];
 // reset des compteurs de l'ancien funnel (refonte EP 2026-07-22) — sinon /status mélange 2 logiques
 if (state.blockCount && (state.blockCount['dist>4%'] || state.blockCount['athAge>8h'] || state.blockCount['ST-rouge'])) state.blockCount = {};
+// RESET one-shot des qualifications pattern COLLANTES (2026-07-25) : le hack "breakdown par prix" validait
+// trop large (TRUMP2028, reliques 6 mois). patternValidated est collant → sans reset, ces fausses
+// qualifications survivraient au passage à la règle ST pure. On efface pour que la ST re-juge tout le monde.
+if (!state.patternResetV2) { for (const w of Object.values(state.watch || {})) delete w.patternValidated; state.patternResetV2 = true; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 async function tg(msg) {
