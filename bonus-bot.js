@@ -828,6 +828,29 @@ http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         return res.end(LOG_BUFFER.slice(-tail).join('\n'));
     }
+    // GET /close?symbol=X  ou  /close?all=1 — CLOSE MANUEL (stop-loss humain, rôle EP). Ferme la vraie
+    // position live si présente (closeVerified), retire du tracking, comptabilise en manualClose.
+    if ((req.url || '').startsWith('/close')) {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const sym = q.get('symbol'); const all = q.get('all') === '1';
+        const targets = Object.entries(state.positions).filter(([, p]) => all || p.symbol === sym);
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        if (!targets.length) return res.end(`aucune position ${all ? '' : 'nommée ' + sym} à fermer`);
+        (async () => {
+            const done = [];
+            for (const [tok, p] of targets) {
+                if (p.live && live.enabled) { try { await live.closeVerified(p.live); } catch (_) {} } // best-effort on-chain
+                state.trades.push({ symbol: p.symbol, entry: p.entry, exit: null, pnlPct: null, pnlSol: null, pnlSolLive: null, manualClose: true, ageH: p.ageH, athMc: p.athMc, support: p.support ?? null, patternOk: p.patternOk ?? null, durMin: Math.round((Date.now() - p.openedAt) / 60000), openedAt: new Date(p.openedAt).toISOString(), closedAt: new Date().toISOString(), reason: 'close MANUEL (commande /close)' });
+                delete state.positions[tok];
+                if (state.watch[tok]) state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS;
+                done.push(p.symbol);
+            }
+            save();
+            const m = `🧹 Close manuel: ${done.join(', ')} — ${done.length} position(s) fermée(s) + slots libérés`;
+            console.log(m); tg(m);
+        })();
+        return res.end(`fermeture lancée: ${targets.map(([, p]) => p.symbol).join(', ')}`);
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
     res.end(JSON.stringify({
