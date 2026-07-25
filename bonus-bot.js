@@ -282,20 +282,22 @@ function patternInfo(cs, st) {
     // → nouvel ATH (implique ST re-VERTE au-dessus de l'ancien sommet). Sans flip rouge = pas de dump
     // structuré (TRUMP2028 : que du vert, pump→mort). Rouge sans nouvel ATH = encore en dump (looong).
     let ath = 0, brokeUp = false, athAtBd = null, ok = false, minAfterBd = null;
+    let ath1 = null, ath2 = null, flipRed = false; // pour traçabilité (vérif chart)
     const stByI = new Map(st.map(p => [p.i, p]));
     for (let i = 0; i < cs.length; i++) {
         const h = cs[i][2], l = cs[i][3];
         if (h > ath) {
             ath = h;
-            if (brokeUp && athAtBd != null && ath > athAtBd) ok = true;  // nouvel ATH après le breakdown ST
+            if (brokeUp && athAtBd != null && ath > athAtBd) { ok = true; ath2 = ath; } // 2e ATH après breakdown
         }
         const p = stByI.get(i);
         if (p && p.trend === 1) brokeUp = true;                          // ST VERTE (breakup)
-        if (p && p.trend === -1 && brokeUp && athAtBd == null) athAtBd = ath; // 1er flip ROUGE : fige l'ATH
+        if (p && p.trend === -1 && brokeUp && athAtBd == null) { athAtBd = ath; ath1 = ath; flipRed = true; } // 1er flip ROUGE
         if (athAtBd != null && !ok && (minAfterBd == null || l < minAfterBd)) minAfterBd = l; // creux du dump
     }
     const dumpDepthPct = (athAtBd && minAfterBd != null) ? +((1 - minAfterBd / athAtBd) * 100).toFixed(0) : null;
-    return { ok, dumpDepthPct };
+    // ok garanti par construction = brokeUp (ST verte) ET flipRed (ST rouge) ET ath2>ath1 (2e ATH). Les 3.
+    return { ok, dumpDepthPct, ath1, ath2, flipRed };
 }
 
 // ── Indicateurs de SORTIE evil panda = bonus stage (copiés de bot 1, éprouvés) ────────────────────
@@ -642,7 +644,7 @@ async function scan() {
             // c'est ACQUIS ("by that time they already out"). Sans ça, la fenêtre de bougies glissante
             // dé-qualifiait un token quand le breakup/breakdown sortait de la fenêtre.
             const pInfo = patternInfo(ms, ms === cs ? st : superTrend(ms));
-            if (pInfo.ok && !w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} (dump -${pInfo.dumpDepthPct}% puis nouvel ATH) — qualification acquise`); }
+            if (pInfo.ok && !w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} — ATH1 ${pInfo.ath1?.toExponential(2)} → flip ST rouge (dump -${pInfo.dumpDepthPct}%) → ATH2 ${pInfo.ath2?.toExponential(2)} (2e ATH > 1er, +${pInfo.ath1 ? (((pInfo.ath2/pInfo.ath1)-1)*100).toFixed(0) : '?'}%) — qualification acquise`); }
             const patOk = !!w.patternValidated;
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
             const line = prevSt ? prevSt.line : null;
