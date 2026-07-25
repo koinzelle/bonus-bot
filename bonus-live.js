@@ -276,6 +276,19 @@ async function positionValueSol(pos, dlmmPool = null) {
     return yHuman + feeY + (xHuman + feeX) * priceYperX; // tout en SOL
 }
 
+// ── Existence d'une position live (réconciliation) — check INDIVIDUEL sur SA pool (méthode éprouvée,
+// = celle du close). Retourne 'open' | 'closed' | 'unknown'. 'unknown' sur erreur RPC → l'appelant ne
+// touche à rien (jamais de faux "fermé" qui nettoierait une position vivante). Plus sûr qu'une liste
+// globale (dont un appel vide nettoierait tout).
+async function positionState(pos) {
+    try {
+        const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
+        const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(keypair.publicKey);
+        const found = userPositions.some(u => u.publicKey.toString() === pos.positionKeypairPub);
+        return found ? 'open' : 'closed';
+    } catch (_) { return 'unknown'; }
+}
+
 // ── Fermeture vérifiée (pattern bot.js post-world) + re-swap token→SOL ──
 // Retourne { ok, proceedsSol, closeValueSol } : closeValueSol = valeur ON-CHAIN de la position (X+Y+fees)
 // lue AVANT le remove = mesure FIABLE. PnL réel = closeValueSol − pos.openValueSol (insensible au bruit
@@ -337,4 +350,4 @@ async function closeVerified(pos) {
     }
 }
 
-module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, sweepToken, sweepOrphans };
+module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionState, sweepToken, sweepOrphans };

@@ -466,6 +466,34 @@ function emaLast(cs, n) {
 }
 const ema100Last = cs => emaLast(cs, 100); // support des alertes EP (25h d'historique — souvent null)
 
+// ── Réconciliation on-chain des positions LIVE (2026-07-25, GO user) : le bot ne vérifiait jamais que
+// ses positions live existaient encore → une coupe MANUELLE (Meteora) laissait un fantôme qui squattait
+// un slot indéfiniment (le bot ne s'en apercevait qu'au prochain RSI2>90). Ici on liste les positions
+// réelles du wallet et on nettoie celles qui ont disparu (fermées à la main) → trade manualClose + slot
+// libéré. Pattern de bot 1. Appelée 1×/scan complet (pas sur les ticks chauds, pour économiser le RPC.
+async function reconcileLivePositions() {
+    if (!live.enabled || !live.positionState) return;
+    const tracked = Object.entries(state.positions).filter(([, p]) => p.live);
+    for (const [tok, p] of tracked) {
+        const st = await live.positionState(p.live); // 'open' | 'closed' | 'unknown'
+        if (st === 'closed') {
+            // position live disparue on-chain = fermée manuellement → nettoyage + comptabilité
+            console.log(`🧹 Position live ${p.symbol} fermée à la main (absente on-chain) — nettoyage tracking`);
+            const trade = {
+                symbol: p.symbol, entry: p.entry, exit: null, pnlPct: null, pnlSol: null, pnlSolLive: null,
+                manualClose: true, ageH: p.ageH, athMc: p.athMc, support: p.support ?? null, patternOk: p.patternOk ?? null,
+                durMin: Math.round((Date.now() - p.openedAt) / 60000),
+                openedAt: new Date(p.openedAt).toISOString(), closedAt: new Date().toISOString(), reason: 'close MANUEL (hors bot)',
+            };
+            state.trades.push(trade);
+            delete state.positions[tok];
+            if (state.watch[tok]) state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS;
+            tg(`🧹 ${p.symbol}: position live fermée à la main détectée — tracking nettoyé, slot libéré`);
+        }
+    }
+    save();
+}
+
 // ── Boucle principale ─────────────────────────────────────────
 let scanning = false;
 let scanOffset = 0; // rotation du point de départ de la boucle watch (équité sous backoff 429)
@@ -479,6 +507,8 @@ async function scan() {
         // comme avant) ; impair = UNIQUEMENT tokens chauds (4/5 conditions) + positions → réactivité 30s
         // là où ça compte, sans doubler la charge GT.
         const hotOnly = (scanTick++ % 2) === 1;
+        // Réconciliation on-chain des positions live (ticks complets seulement) — détecte les coupes manuelles
+        if (!hotOnly) { try { await reconcileLivePositions(); } catch (e) { console.log('reconcile:', e.message); } }
         // 1. découverte : nouveaux candidats < 48h (ticks complets uniquement)
         let discovered = [];
         if (!hotOnly) { try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); } }
