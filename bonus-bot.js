@@ -272,22 +272,25 @@ function superTrend(cs) {
 // Backtest offline (univers bot 1 présélectionné, donc sans rugs) : 2/23 tokens, 100% WR mais volume ×5
 // plus faible → non concluant, d'où la mesure live.
 function patternInfo(cs, st) {
+    // Breakdown détecté par flip ST rouge OU par PRIX (low ≤ 65% de l'ATH courant = dump ≥35%).
+    // (2026-07-25, cas looong) : sur un pump violent l'ATR est énorme → la ST ne flippe PAS même sur un
+    // dump -56% → le "1er dump" était invisible → pattern jamais validé → setup EP parfait raté. Le prix
+    // ne ment pas : -35% sous l'ATH = les ruggers sont sortis, flip ST ou non.
     let ath = 0, brokeUp = false, athAtBd = null, ok = false, minAfterBd = null;
-    // inclure les highs d'AVANT le seed ST (10 premières bougies) — sinon l'ATH pré-dump est sous-estimé
-    const startI = st.length ? st[0].i : cs.length;
-    for (let j = 0; j < Math.min(startI, cs.length); j++) if (cs[j][2] > ath) ath = cs[j][2];
-    for (const p of st) {
-        const h = cs[p.i][2], l = cs[p.i][3];
+    const stByI = new Map(st.map(p => [p.i, p]));
+    for (let i = 0; i < cs.length; i++) {
+        const h = cs[i][2], l = cs[i][3];
         if (h > ath) {
             ath = h;
-            if (brokeUp && athAtBd != null && ath > athAtBd) ok = true; // nouvel ATH après le breakdown
+            if (athAtBd != null && ath > athAtBd) ok = true;            // nouvel ATH après le breakdown
         }
-        if (p.trend === 1) brokeUp = true;                              // ST passée verte (breakup)
-        if (p.trend === -1 && brokeUp && athAtBd == null) athAtBd = ath; // 1er breakdown : fige l'ATH
+        const p = stByI.get(i);
+        if (p && p.trend === 1) brokeUp = true;                          // ST passée verte (breakup)
+        const stBreak = p && p.trend === -1 && brokeUp;                  // breakdown par flip ST
+        const priceBreak = ath > 0 && l <= ath * 0.65;                   // breakdown par prix (dump ≥35%)
+        if ((stBreak || priceBreak) && athAtBd == null) athAtBd = ath;   // 1er breakdown : fige l'ATH
         if (athAtBd != null && !ok && (minAfterBd == null || l < minAfterBd)) minAfterBd = l; // creux du dump
     }
-    // profondeur du 1er dump (SHADOW, calibration future) : chez EP c'est "les ruggers sortent" = dump
-    // SUBSTANTIEL. Un flip ST sur chop léger validerait sur du bruit → on mesure avant de seuiller.
     const dumpDepthPct = (athAtBd && minAfterBd != null) ? +((1 - minAfterBd / athAtBd) * 100).toFixed(0) : null;
     return { ok, dumpDepthPct };
 }
