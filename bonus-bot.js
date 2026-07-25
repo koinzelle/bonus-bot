@@ -92,6 +92,10 @@ if (state.blockCount && (state.blockCount['dist>4%'] || state.blockCount['athAge
 // trop large (TRUMP2028, reliques 6 mois). patternValidated est collant → sans reset, ces fausses
 // qualifications survivraient au passage à la règle ST pure. On efface pour que la ST re-juge tout le monde.
 if (!state.patternResetV2) { for (const w of Object.values(state.watch || {})) delete w.patternValidated; state.patternResetV2 = true; }
+// Fix migration (2026-07-25) : purge la watch pour que chaque token soit re-découvert avec sa pool
+// d'ORIGINE (historique complet). Les entrées existantes ont une pool figée (post-migration) → pattern
+// faux. One-shot ; les positions ouvertes sont préservées (jamais purgées).
+if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})) { if (!state.positions?.[tok]) delete state.watch[tok]; } state.poolOriginResetV1 = true; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 async function tg(msg) {
@@ -167,9 +171,16 @@ async function dexInfo(token) {
     pairs.sort((a, b) => ((b.liquidity || {}).usd || 0) - ((a.liquidity || {}).usd || 0));
     const p = pairs[0];
     const created = pairs.map(q => q.pairCreatedAt).filter(Boolean);
+    // Pool d'ANALYSE (2026-07-25) = la plus ANCIENNE (origine, ex pumpswap) : elle contient TOUTE la vie
+    // du token, migration incluse. La plus liquide (souvent la pool DEX post-migration) rate le 1er dump
+    // → pattern/ATH faux (cas fomo : dump -89% invisible sur la pool meteora, visible sur pumpswap).
+    const withDate = pairs.filter(q => q.pairCreatedAt);
+    const oldest = withDate.length ? withDate.reduce((a, b) => a.pairCreatedAt <= b.pairCreatedAt ? a : b) : p;
     const price = parseFloat(p.priceUsd || 0), mc = parseFloat(p.marketCap || 0);
     return {
         pool: p.pairAddress,
+        poolAnalysis: oldest.pairAddress, // bougies pattern/ATH — historique complet
+        poolAnalysisDex: oldest.dexId,
         symbol: p.baseToken?.symbol || token.slice(0, 6),
         birthMs: created.length ? Math.min(...created) : null,
         price, mc,
@@ -544,7 +555,9 @@ async function scan() {
                 // (paper 29% WR vs 46-50% sur l'univers bot 1 filtré). 1 appel à l'ajout seulement.
                 if (!(await gmgnQualityOk(tok, d.symbol))) continue;
                 // bougies : pool GT du trending (garantie indexée) en priorité, DexScreener en fallback
-                state.watch[tok] = { symbol: d.symbol, pool: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now };
+                // pool = ORIGINE (historique complet, fix migration 2026-07-25) ; poolAlt = fallback (GT
+                // trending / plus liquide) si l'origine n'est pas indexée par GeckoTerminal.
+                state.watch[tok] = { symbol: d.symbol, pool: d.poolAnalysis || gtPool || d.pool, poolAlt: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now };
                 console.log(`👀 Suivi: ${d.symbol} (âge ${ageH.toFixed(1)}h, vol $${Math.round(d.vol24h / 1000)}k, pool ${gtPool ? 'GT' : 'dex'})`);
             } catch (_) {}
         }
@@ -565,6 +578,10 @@ async function scan() {
             if (rl429 >= 2 && !state.positions[tok]) continue; // backoff : GT sature, on réessaie au prochain tick
             let cs;
             try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); } // 192×15m=48h : support/sortie (le macro vit sur les 1H, cf plus bas)
+            // fallback : pool d'origine pas indexée GT → bascule sur poolAlt (plus liquide) + le note
+            if ((!cs || cs.length === 0) && w.poolAlt && w.poolAlt !== w.pool && !/429/.test(w.lastFetchErr || '')) {
+                try { const alt = await candles15(w.poolAlt, 192); if (alt && alt.length) { cs = alt; w.pool = w.poolAlt; console.log(`  ↪️ ${w.symbol}: pool d'origine non indexée GT → bascule sur pool alt`); } } catch (_) {}
+            }
             await new Promise(r => setTimeout(r, 300)); // espacement anti-rafale GT
             // Purge fetch cassé (2026-07-19) : après 8 échecs consécutifs, on libère le slot — MAIS un 429
             // (rate-limit) n'est PAS une pool morte (2026-07-22 : les purges 429 tuaient des tokens
