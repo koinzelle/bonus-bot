@@ -194,63 +194,62 @@ async function dexInfo(token) {
     };
 }
 
-// Cache bougies 15m (2026-07-22) : une bougie 15m ne change pas toutes les 30s → cache 100s par pool.
-// Divise ~×4 les appels GeckoTerminal (cause des 429 → purges en masse). Sur 429, on renvoie le
-// cache périmé plutôt que rien (évite la purge d'un token pendant un pic de rate-limit).
-const candleCache = new Map(); // pool -> { cs, ts }
-const CANDLE_TTL_MS = 100 * 1000;
-async function candles15(pool, limit = 200) {
-    const c = candleCache.get(pool);
-    if (c && Date.now() - c.ts < CANDLE_TTL_MS) return c.cs;
-    const url = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/ohlcv/minute?aggregate=15&before_timestamp=${Math.floor(Date.now() / 1000)}&limit=${limit}`;
-    try {
-        const r = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
-        const cs = (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]); // [ts,o,h,l,c,v]
-        if (cs.length) candleCache.set(pool, { cs, ts: Date.now() });
-        return cs;
-    } catch (e) {
-        if (c) return c.cs; // 429/timeout → cache périmé plutôt que faux échec (pas de purge injustifiée)
-        throw e;
-    }
+// ── BOUGIES : BIRDEYE primaire + GMGN fallback (2026-07-27, bascule depuis GeckoTerminal) ──────────
+// GT throttlait l'IP Railway (429 en boucle → famine 6/18). Birdeye PRIMAIRE (choix user : épargner
+// GMGN, déjà rate-limité sur bot 1) : à 1.5s d'espacement séquentiel = 6/6 sans 429 ET 192 bougies
+// (vs 44 GMGN). GMGN en FALLBACK seulement quand Birdeye vide/rate-limité. On MINIMISE les appels :
+// fréquence adaptative (peu de tokens dus/tick) + caches longs (macro pattern/ATH lent) + throttle
+// global 1.5s. Les deux TOKEN-LEVEL → suivent la migration (supprime le bricolage pool d'origine).
+const BIRDEYE_KEY = (process.env.BIRDEYE_API_KEY || '').trim();
+const { randomUUID: _uuid } = require('crypto');
+// throttle global partagé (sérialise + espace) — 1.5s mini entre 2 appels bougies (Birdeye tient à 1.5s).
+let candleChain = Promise.resolve();
+let candleLast = 0;
+function throttled(fn) {
+    const run = candleChain.then(async () => {
+        const wait = Math.max(0, 1500 - (Date.now() - candleLast));
+        if (wait) await new Promise(r => setTimeout(r, wait));
+        candleLast = Date.now();
+        return fn();
+    });
+    candleChain = run.catch(() => { });
+    return run;
 }
-
-// Bougies 1H (2026-07-22, idée user) : la STRUCTURE macro (ATH de vie, pattern breakup→breakdown→newATH,
-// drawdown) n'a pas besoin de 15m — 240×1H = 10j en UN appel léger, cache 10 min (ça bouge lentement).
-// Utilisé pour les tokens ≥ 48h (les <48h ont toute leur vie dans les 192×15m).
-const candle1hCache = new Map();
-const CANDLE1H_TTL_MS = 10 * 60 * 1000;
-async function candles1h(pool, limit = 720) {
-    const c = candle1hCache.get(pool);
-    if (c && Date.now() - c.ts < CANDLE1H_TTL_MS) return c.cs;
-    const url = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/ohlcv/hour?aggregate=1&before_timestamp=${Math.floor(Date.now() / 1000)}&limit=${limit}`;
-    try {
-        const r = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
-        const cs = (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]);
-        if (cs.length) candle1hCache.set(pool, { cs, ts: Date.now() });
-        return cs;
-    } catch (e) {
-        if (c) return c.cs;
-        throw e;
-    }
+async function gmgnKline(mint, res, limit, intervalSec) {
+    const now = Date.now(), from = now - limit * intervalSec * 1000;
+    const r = await axios.get(`${GMGN_BASE}/v1/market/token_kline`, {
+        httpsAgent: GMGN_AGENT, headers: { 'X-APIKEY': GMGN_KEY },
+        params: { chain: 'sol', address: mint, resolution: res, from, to: now, timestamp: Math.floor(now / 1000), client_id: _uuid() }, timeout: 12000,
+    });
+    const list = r.data?.data?.list || r.data?.data || [];
+    // GMGN {time(ms),open,high,low,close,volume} → [ts(sec),o,h,l,c,v]
+    return list.map(k => [Math.floor((k.time || k.timestamp || 0) / 1000), +k.open, +k.high, +k.low, +k.close, +k.volume]).sort((a, b) => a[0] - b[0]);
 }
-
-// Bougies DAILY (2026-07-22) : tokens > 30j — 1000×1j ≈ 3 ans = vie entière. Cache 30 min (macro lent).
-const candleDayCache = new Map();
-const CANDLE_DAY_TTL_MS = 30 * 60 * 1000;
-async function candlesDay(pool, limit = 1000) {
-    const c = candleDayCache.get(pool);
-    if (c && Date.now() - c.ts < CANDLE_DAY_TTL_MS) return c.cs;
-    const url = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/ohlcv/day?aggregate=1&before_timestamp=${Math.floor(Date.now() / 1000)}&limit=${limit}`;
-    try {
-        const r = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
-        const cs = (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]);
-        if (cs.length) candleDayCache.set(pool, { cs, ts: Date.now() });
-        return cs;
-    } catch (e) {
-        if (c) return c.cs;
-        throw e;
-    }
+async function birdeyeOhlcv(mint, type, limit, intervalSec) {
+    const to = Math.floor(Date.now() / 1000), from = to - limit * intervalSec;
+    const r = await axios.get('https://public-api.birdeye.so/defi/ohlcv', {
+        params: { address: mint, type, time_from: from, time_to: to },
+        headers: { 'X-API-KEY': BIRDEYE_KEY, 'x-chain': 'solana' }, timeout: 12000,
+    });
+    return (r.data?.data?.items || []).map(k => [k.unixTime, +k.o, +k.h, +k.l, +k.c, +k.v]).sort((a, b) => a[0] - b[0]);
 }
+const candleCache = new Map(); // (mint+res) -> { cs, ts }
+async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs) {
+    const key = mint + gmgnRes;
+    const c = candleCache.get(key);
+    if (c && Date.now() - c.ts < ttlMs) return c.cs; // cache : ÉVITE l'appel (le principal minimiseur)
+    let cs = [];
+    try { cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec)); } catch (_) {} // PRIMAIRE
+    if (cs.length < 15) { // Birdeye vide/rate-limité → fallback GMGN (épargné au max)
+        try { const g = await throttled(() => gmgnKline(mint, gmgnRes, limit, intervalSec)); if (g.length > cs.length) cs = g; } catch (_) {}
+    }
+    if (cs.length) candleCache.set(key, { cs, ts: Date.now() });
+    return cs.length ? cs : (c ? c.cs : []);
+}
+// TTL longs = moins d'appels : 15m→120s (support/exit) ; 1H→20min ; daily→60min (macro = lent).
+const candles15 = (mint, limit = 192) => candlesTF(mint, '15m', '15m', limit, 900, 120 * 1000);
+const candles1h = (mint, limit = 720) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000);
+const candlesDay = (mint, limit = 1000) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000);
 
 // ── SuperTrend (10, 3) — ATR en RMA WILDER (2026-07-19, GO user) : c'est la formule
 // TradingView/DexScreener/GMGN — la ligne que l'équipe EP et le user regardent VRAIMENT.
@@ -583,13 +582,9 @@ async function scan() {
             if (ageH >= AGE_MAX_H && !inPos) { delete state.watch[tok]; continue; } // garde-fou zombies 1 an
             if (rl429 >= 3 && !inPos) continue; // backoff : GT sature, on réessaie au prochain tick (seuil 2→3)
             let cs;
-            try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); } // 192×15m=48h : support/sortie (le macro vit sur les 1H, cf plus bas)
-            // fallback : pool d'origine avec trop peu de bougies (< 15, ex bonding curve pump.fun non
-            // indexée GT) → bascule sur poolAlt (plus liquide) + le note. Déclenché dès <15 (pas seulement 0).
-            if ((!cs || cs.length < 15) && w.poolAlt && w.poolAlt !== w.pool && !/429/.test(w.lastFetchErr || '')) {
-                try { const alt = await candles15(w.poolAlt, 192); if (alt && alt.length >= 15) { cs = alt; w.pool = w.poolAlt; console.log(`  ↪️ ${w.symbol}: pool d'origine ${(cs || []).length} bougies → bascule sur pool alt (${alt.length})`); } } catch (_) {}
-            }
-            await new Promise(r => setTimeout(r, 300)); // espacement anti-rafale GT
+            // Birdeye TOKEN-LEVEL (tok = mint) : 192×15m=48h pour support/sortie. Suit la migration
+            // nativement → plus de bricolage pool (poolAlt/origine supprimé). Le throttle est global.
+            try { cs = await candles15(tok, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); }
             // Purge fetch cassé (2026-07-19) : après 8 échecs consécutifs, on libère le slot — MAIS un 429
             // (rate-limit) n'est PAS une pool morte (2026-07-22 : les purges 429 tuaient des tokens
             // QUALIFIÉS comme Jimothy911) → le 429 ne compte plus comme échec, il déclenche le backoff.
@@ -659,8 +654,8 @@ async function scan() {
             // daily×1000 (~3 ans). L'ÂGE N'EST PLUS UN CRITÈRE (EP : "no minimum age", il a ouvert FOMO
             // sur un chart daily en live) — le travail est fait par pattern + ATH récent ≤14j.
             let ms = cs;
-            if (ageH >= 720) { try { const ds = await candlesDay(w.pool, 1000); if (ds && ds.length >= 12) ms = ds; } catch (_) { /* fallback cs */ } }
-            else if (ageH >= 48) { try { const hs = await candles1h(w.pool, 720); if (hs && hs.length >= 12) ms = hs; } catch (_) { /* fallback cs */ } }
+            if (ageH >= 720) { try { const ds = await candlesDay(tok, 1000); if (ds && ds.length >= 12) ms = ds; } catch (_) { /* fallback cs */ } }
+            else if (ageH >= 48) { try { const hs = await candles1h(tok, 720); if (hs && hs.length >= 12) ms = hs; } catch (_) { /* fallback cs */ } }
             // ATH = celui des BOUGIES (2026-07-23, décision user) : avec les paliers de TF (daily pour les
             // vieux coins ≈ 3 ans), l'ATH bougies EST l'ATH de vie. Plus de dépendance à GMGN (souvent None
             // sur les vieux coins). Le gate ATH-récent ≤14j gère les zombies : ATH ancien = bloqué.
