@@ -171,11 +171,13 @@ async function dexInfo(token) {
     pairs.sort((a, b) => ((b.liquidity || {}).usd || 0) - ((a.liquidity || {}).usd || 0));
     const p = pairs[0];
     const created = pairs.map(q => q.pairCreatedAt).filter(Boolean);
-    // Pool d'ANALYSE (2026-07-25) = la plus ANCIENNE (origine, ex pumpswap) : elle contient TOUTE la vie
-    // du token, migration incluse. La plus liquide (souvent la pool DEX post-migration) rate le 1er dump
-    // → pattern/ATH faux (cas fomo : dump -89% invisible sur la pool meteora, visible sur pumpswap).
-    const withDate = pairs.filter(q => q.pairCreatedAt);
-    const oldest = withDate.length ? withDate.reduce((a, b) => a.pairCreatedAt <= b.pairCreatedAt ? a : b) : p;
+    // Pool d'ANALYSE (2026-07-25) = la plus ANCIENNE (origine, ex pumpswap) : contient TOUTE la vie du
+    // token, migration incluse (cas fomo : dump -89% visible sur pumpswap, pas sur meteora).
+    // ⚠️ (2026-07-27) EXCLURE la bonding curve pump.fun (dexId 'pumpfun') : GeckoTerminal ne l'indexe PAS
+    // pour les bougies (1 seule bougie → token skippé). On prend la plus ancienne pool RÉELLE (pumpswap).
+    const withDate = pairs.filter(q => q.pairCreatedAt && q.dexId !== 'pumpfun');
+    const pool4analysis = withDate.length ? withDate : pairs.filter(q => q.pairCreatedAt);
+    const oldest = pool4analysis.length ? pool4analysis.reduce((a, b) => a.pairCreatedAt <= b.pairCreatedAt ? a : b) : p;
     const price = parseFloat(p.priceUsd || 0), mc = parseFloat(p.marketCap || 0);
     return {
         pool: p.pairAddress,
@@ -578,9 +580,10 @@ async function scan() {
             if (rl429 >= 2 && !state.positions[tok]) continue; // backoff : GT sature, on réessaie au prochain tick
             let cs;
             try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); } // 192×15m=48h : support/sortie (le macro vit sur les 1H, cf plus bas)
-            // fallback : pool d'origine pas indexée GT → bascule sur poolAlt (plus liquide) + le note
-            if ((!cs || cs.length === 0) && w.poolAlt && w.poolAlt !== w.pool && !/429/.test(w.lastFetchErr || '')) {
-                try { const alt = await candles15(w.poolAlt, 192); if (alt && alt.length) { cs = alt; w.pool = w.poolAlt; console.log(`  ↪️ ${w.symbol}: pool d'origine non indexée GT → bascule sur pool alt`); } } catch (_) {}
+            // fallback : pool d'origine avec trop peu de bougies (< 15, ex bonding curve pump.fun non
+            // indexée GT) → bascule sur poolAlt (plus liquide) + le note. Déclenché dès <15 (pas seulement 0).
+            if ((!cs || cs.length < 15) && w.poolAlt && w.poolAlt !== w.pool && !/429/.test(w.lastFetchErr || '')) {
+                try { const alt = await candles15(w.poolAlt, 192); if (alt && alt.length >= 15) { cs = alt; w.pool = w.poolAlt; console.log(`  ↪️ ${w.symbol}: pool d'origine ${(cs || []).length} bougies → bascule sur pool alt (${alt.length})`); } } catch (_) {}
             }
             await new Promise(r => setTimeout(r, 300)); // espacement anti-rafale GT
             // Purge fetch cassé (2026-07-19) : après 8 échecs consécutifs, on libère le slot — MAIS un 429
