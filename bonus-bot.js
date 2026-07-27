@@ -559,7 +559,7 @@ async function scan() {
                 // bougies : pool GT du trending (garantie indexée) en priorité, DexScreener en fallback
                 // pool = ORIGINE (historique complet, fix migration 2026-07-25) ; poolAlt = fallback (GT
                 // trending / plus liquide) si l'origine n'est pas indexée par GeckoTerminal.
-                state.watch[tok] = { symbol: d.symbol, pool: d.poolAnalysis || gtPool || d.pool, poolAlt: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now };
+                state.watch[tok] = { symbol: d.symbol, pool: d.poolAnalysis || gtPool || d.pool, poolAlt: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now, nextCheckAt: now + Math.floor(Math.random() * 30e3) };
                 console.log(`👀 Suivi: ${d.symbol} (âge ${ageH.toFixed(1)}h, vol $${Math.round(d.vol24h / 1000)}k, pool ${gtPool ? 'GT' : 'dex'})`);
             } catch (_) {}
         }
@@ -594,6 +594,10 @@ async function scan() {
             // (rate-limit) n'est PAS une pool morte (2026-07-22 : les purges 429 tuaient des tokens
             // QUALIFIÉS comme Jimothy911) → le 429 ne compte plus comme échec, il déclenche le backoff.
             if (!cs || cs.length === 0) {
+                // BACK-OFF du token qui échoue (2026-07-27) : sinon les tokens sans cache sont re-tentés
+                // CHAQUE tick → 429 en boucle (chicken-and-egg : nextCheckAt n'était posé qu'après succès).
+                // On les recule de 90s → ils cessent de marteler GT → GT récupère → fetchs réussis.
+                if (!inPos) w.nextCheckAt = now + 90e3;
                 if (/429/.test(w.lastFetchErr || '')) { rl429++; if (rl429 === 1) console.log(`  ⏳ GT rate-limit (429) ce tick — backoff, le cache prend le relais`); continue; }
                 if (!state.positions[tok]) {
                     w.fetchFails = (w.fetchFails || 0) + 1;
