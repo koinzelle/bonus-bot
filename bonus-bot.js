@@ -573,11 +573,15 @@ async function scan() {
         scanOffset = (scanOffset + 1) % Math.max(watchEntries.length, 1);
         const rotated = [...watchEntries.slice(scanOffset), ...watchEntries.slice(0, scanOffset)];
         for (const [tok, w] of rotated) {
-            // tick chaud : ne traiter que les tokens à 4/5 conditions + les positions ouvertes
-            if (hotOnly && !w.hot && !state.positions[tok]) continue;
+            const inPos = !!state.positions[tok];
+            // FRÉQUENCE ADAPTATIVE (2026-07-27, idée user) : un token LOIN de l'entrée (-35%) n'a pas besoin
+            // d'être checké souvent → on concentre les appels GT là où ça compte (proche entrée / positions).
+            // dd<20% → 10min ; 20-30% → 3min ; ≥30% → 1min ; position → chaque tick (pour la sortie).
+            // Divise la charge GT ~×5-8 → fin de la famine 429 (13/18 tokens jamais évalués).
+            if (!inPos && w.nextCheckAt && now < w.nextCheckAt) continue;
             const ageH = (now - w.birthMs) / 3.6e6;
-            if (ageH >= AGE_MAX_H && !state.positions[tok]) { delete state.watch[tok]; continue; } // garde-fou zombies 1 an
-            if (rl429 >= 2 && !state.positions[tok]) continue; // backoff : GT sature, on réessaie au prochain tick
+            if (ageH >= AGE_MAX_H && !inPos) { delete state.watch[tok]; continue; } // garde-fou zombies 1 an
+            if (rl429 >= 3 && !inPos) continue; // backoff : GT sature, on réessaie au prochain tick (seuil 2→3)
             let cs;
             try { cs = await candles15(w.pool, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); } // 192×15m=48h : support/sortie (le macro vit sur les 1H, cf plus bas)
             // fallback : pool d'origine avec trop peu de bougies (< 15, ex bonding curve pump.fun non
@@ -590,7 +594,7 @@ async function scan() {
             // (rate-limit) n'est PAS une pool morte (2026-07-22 : les purges 429 tuaient des tokens
             // QUALIFIÉS comme Jimothy911) → le 429 ne compte plus comme échec, il déclenche le backoff.
             if (!cs || cs.length === 0) {
-                if (/429/.test(w.lastFetchErr || '')) { rl429++; continue; }
+                if (/429/.test(w.lastFetchErr || '')) { rl429++; if (rl429 === 1) console.log(`  ⏳ GT rate-limit (429) ce tick — backoff, le cache prend le relais`); continue; }
                 if (!state.positions[tok]) {
                     w.fetchFails = (w.fetchFails || 0) + 1;
                     if (w.fetchFails >= 8) {
@@ -672,8 +676,10 @@ async function scan() {
             const curMc = curPrice * w.supply;
             const mcOk = curMc >= MC_MIN_ATH;
             const drawdown = ath > 0 ? 1 - curPrice / ath : 0;      // retracement depuis l'ATH courant
-            const ddOk = drawdown >= 0.35;                          // EP : "30-40% down" (35% dur, 2026-07-23)
-            const ddShadow30 = drawdown >= 0.30 && drawdown < 0.35; // SHADOW : ce que 30% donnerait en plus
+            const ddOk = drawdown >= 0.40;                          // tolérance dès -40% (2026-07-27, demande user — avant 35%)
+            // fréquence adaptative : prochain check plus tôt à mesure qu'on approche l'entrée (-40%)
+            w.nextCheckAt = now + (drawdown >= 0.35 ? 60e3 : drawdown >= 0.25 ? 180e3 : 600e3);
+            const ddShadow35 = drawdown >= 0.35 && drawdown < 0.40; // SHADOW : ce que le seuil 35% donnerait en plus
             // supports (±4% = NOTRE calibration ; EP dit juste "near support")
             const nearST = line > 0 && Math.abs(curPrice / line - 1) <= 0.04;
             const ema34 = emaLast(cs, 34);
@@ -709,8 +715,8 @@ async function scan() {
             else if (!patOk) block = 'pattern-KO';
             else if (!athRecent) block = 'ATH>24h';
             else if (w.lastEntryAth && ath <= w.lastEntryAth) block = 'ATH-déjà-joué';
-            else if (drawdown < 0.35) block = 'dd<35%';
-            else if (drawdown < 0.50 && !atSupport) block = 'no-support(35-50%)';
+            else if (drawdown < 0.40) block = 'dd<40%';
+            else if (drawdown < 0.45 && !atSupport) block = 'no-support(40-45%)';
             else if (onCooldown) block = 'cooldown';
             else if (Object.keys(state.positions).length >= MAX_POSITIONS) block = 'max-pos';
             else block = 'ENTRÉE';
@@ -726,18 +732,18 @@ async function scan() {
                 distEMA34_pct: ema34 != null ? +(((curPrice / ema34) - 1) * 100).toFixed(1) : null,
                 nearST, nearEMA34, nearBBlo, atSupport, cooldown: !!onCooldown,
             };
-            // SHADOW dd30 (2026-07-23) : setup complet SAUF que le retrace est à 30-35% → mesure ce que le
-            // seuil 30% déclencherait en plus (1 log par token/cycle, anti-spam via w.dd30Logged).
-            if (armed && mcOk && patOk && athRecent && ddShadow30 && atSupport && !onCooldown && !w.dd30Logged) {
-                w.dd30Logged = true;
-                console.log(`  · [SHADOW dd30] ${w.symbol} : entrerait à -${(drawdown * 100).toFixed(0)}% (support ${nearST ? 'ST' : nearBBlo ? 'BB' : 'EMA34'}) — bloqué par seuil 35% (mesure)`);
+            // SHADOW dd35 (2026-07-27) : setup complet SAUF que le retrace est à 35-40% → mesure ce que
+            // l'ancien seuil 35% déclencherait en plus (1 log par token/cycle, anti-spam via w.dd35Logged).
+            if (armed && mcOk && patOk && athRecent && ddShadow35 && atSupport && !onCooldown && !w.dd35Logged) {
+                w.dd35Logged = true;
+                console.log(`  · [SHADOW dd35] ${w.symbol} : entrerait à -${(drawdown * 100).toFixed(0)}% (support ${nearST ? 'ST' : nearBBlo ? 'BB' : 'EMA34'}) — bloqué par seuil 40% (mesure)`);
             }
-            if (ddOk) w.dd30Logged = false; // reset quand on repasse au-dessus (nouveau cycle de dip)
+            if (ddOk) w.dd35Logged = false; // reset quand on repasse au-dessus (nouveau cycle de dip)
             // ENTRÉE (2026-07-23, remarque user HeavyPulp -54%) : la PROFONDEUR suffit chez EP ("after
             // 40-50% down" tout court). Retrace ≥50% = on entre sur le dip seul ; 35-50% = on exige encore
             // un support (dip moins profond = plus de risque de couteau). Le support 15m ratait HeavyPulp
             // (analysé en daily) — la profondeur le rattrape.
-            const deepRetrace = drawdown >= 0.50;
+            const deepRetrace = drawdown >= 0.45;                   // ≥45% = entrée deep sans support (2026-07-27, avant 50%)
             // ── UNE ENTRÉE PAR ATH (2026-07-24, règle user = EP pur) : on achète LE retracement de l'ATH,
             // et on ne ré-entre sur le même coin QUE s'il refait un NOUVEL ATH ("it goes again a new ATH,
             // you open again"). Sans ça, le bot rachetait les replis de pumps locaux SOUS l'ATH (HBULL #2/#3
