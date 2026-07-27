@@ -633,6 +633,19 @@ async function scan() {
                 // you must wait for your exit criteria no matter what"). Le coupe-temps 24h était la règle
                 // de l'EVIL PANDA (LP au sommet), PAS du bonus stage (dip au support) → retiré. La
                 // protection = le pattern (le coin rebondit) + petites positions (jamais all-in).
+                // ── SHADOW STACKING (2026-07-27, demande user) : EP ajoute une position quand la 1re est à
+                // ~-10% ("I open the second when the first is about minus 10%", jusqu'à 3-5 positions). On
+                // MESURE seulement (n'ouvre RIEN) : on logge chaque palier -10% franchi + on note la
+                // profondeur max atteinte sur le trade → après quelques trades on saura si le stacking aide
+                // (un trade qui plonge à -30% puis sort vert = le stacking aurait baissé le prix moyen).
+                const dropFromEntry = 1 - lastC[4] / pos.entry;
+                const stackLevel = dropFromEntry > 0 ? Math.floor(dropFromEntry / 0.10) : 0; // 1=-10%, 2=-20%...
+                if (stackLevel >= 1 && stackLevel > (pos.stacksLogged || 0) && stackLevel <= 5) {
+                    pos.stacksLogged = stackLevel;
+                    if (stackLevel > (pos.maxStackLevel || 0)) pos.maxStackLevel = stackLevel;
+                    console.log(`  · [SHADOW stacking] ${pos.symbol} : EP ouvrirait la position #${stackLevel + 1} (à -${(dropFromEntry * 100).toFixed(0)}% de l'entrée) — mesure, n'ouvre rien`);
+                }
+
                 const candleAfterEntry = lastC[0] > (pos.entryCandleTs || 0);
                 if (candleAfterEntry) {
                     const closed = cs.slice(0, -1).map(c => c[4]);
@@ -823,7 +836,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         pnlSolLive, // PnL RÉEL fees incluses (null en paper pur) — à comparer au pnlSol prix
         symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
-        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
+        ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
