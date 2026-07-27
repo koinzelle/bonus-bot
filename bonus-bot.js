@@ -610,7 +610,7 @@ async function scan() {
             // le token ne peut plus entrer et squatte un slot. Cooldown re-add 60min évite l'oscillation.
             const mcNow = cs[cs.length - 1][4] * w.supply;
             if (mcNow < MC_MIN_ATH && !state.positions[tok]) {
-                console.log(`🧹 Purge watch: ${w.symbol} (MC $${Math.round(mcNow / 1000)}k < 200k)`);
+                console.log(`🧹 Purge watch: ${w.symbol} (MC $${Math.round(mcNow / 1000)}k < ${Math.round(MC_MIN_ATH / 1000)}k — a dumpé après ajout)`);
                 state.purgedAt[tok] = now;
                 delete state.watch[tok];
                 continue;
