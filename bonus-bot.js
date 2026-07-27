@@ -288,28 +288,30 @@ function superTrend(cs) {
 // Backtest offline (univers bot 1 présélectionné, donc sans rugs) : 2/23 tokens, 100% WR mais volume ×5
 // plus faible → non concluant, d'où la mesure live.
 function patternInfo(cs, st) {
-    // RÈGLE EP PURE (2026-07-25, recadrage user — le hack "breakdown par prix" est ANNULÉ) : le flip ROUGE
-    // de la ST EST la signature du vrai dump ("break up → break down, THIS is where snipers/insiders dump
-    // → then goes back up to a NEW ATH = safe"). Séquence obligatoire : VERT (breakup) → ROUGE (breakdown)
-    // → nouvel ATH (implique ST re-VERTE au-dessus de l'ancien sommet). Sans flip rouge = pas de dump
-    // structuré (TRUMP2028 : que du vert, pump→mort). Rouge sans nouvel ATH = encore en dump (looong).
-    let ath = 0, brokeUp = false, athAtBd = null, ok = false, minAfterBd = null;
-    let ath1 = null, ath2 = null, flipRed = false; // pour traçabilité (vérif chart)
+    // PATTERN EP (2026-07-27, précision user sur chart BlackBear) : DUMP (ST ROUGE) → RECOVERY (ST re-verte
+    // après le rouge) → NOUVEL ATH. On ne requiert PLUS un VERT AVANT le rouge : les JEUNES tokens pumpent
+    // AVANT que la ST ait assez de données → la ST "apparaît" déjà ROUGE (1er pump/ATH/dump déjà passés),
+    // puis flip VERTE au 2e pump. La séquence ROUGE→VERT signifie donc "1er dump fait, 2e ATH en cours".
+    // Le 1er flip ROUGE (quel qu'il soit, y compris au démarrage) = le 1er dump ; fige l'ATH pré-dump.
+    // Recovery = ST verte APRÈS ce rouge. Pattern validé = nouvel ATH > ATH pré-dump APRÈS la recovery.
+    // (TRUMP2028 : jamais de rouge → jamais validé ; looong : rouge sans nouvel ATH → pas validé.)
+    let ath = 0, athAtRed = null, recovered = false, ok = false, minAfterRed = null;
+    let ath1 = null, ath2 = null;
     const stByI = new Map(st.map(p => [p.i, p]));
     for (let i = 0; i < cs.length; i++) {
         const h = cs[i][2], l = cs[i][3];
         if (h > ath) {
             ath = h;
-            if (brokeUp && athAtBd != null && ath > athAtBd) { ok = true; ath2 = ath; } // 2e ATH après breakdown
+            if (recovered && athAtRed != null && ath > athAtRed) { ok = true; ath2 = ath; } // nouvel ATH après recovery
         }
         const p = stByI.get(i);
-        if (p && p.trend === 1) brokeUp = true;                          // ST VERTE (breakup)
-        if (p && p.trend === -1 && brokeUp && athAtBd == null) { athAtBd = ath; ath1 = ath; flipRed = true; } // 1er flip ROUGE
-        if (athAtBd != null && !ok && (minAfterBd == null || l < minAfterBd)) minAfterBd = l; // creux du dump
+        if (p && p.trend === -1 && athAtRed == null) { athAtRed = ath; ath1 = ath; }         // 1er ROUGE = 1er dump
+        if (p && p.trend === 1 && athAtRed != null) recovered = true;                        // VERT après le rouge = recovery
+        if (athAtRed != null && !ok && (minAfterRed == null || l < minAfterRed)) minAfterRed = l; // creux du dump
     }
-    const dumpDepthPct = (athAtBd && minAfterBd != null) ? +((1 - minAfterBd / athAtBd) * 100).toFixed(0) : null;
-    // ok garanti par construction = brokeUp (ST verte) ET flipRed (ST rouge) ET ath2>ath1 (2e ATH). Les 3.
-    return { ok, dumpDepthPct, ath1, ath2, flipRed };
+    const dumpDepthPct = (athAtRed && minAfterRed != null) ? +((1 - minAfterRed / athAtRed) * 100).toFixed(0) : null;
+    // ok = 1er rouge (dump) ET recovery (verte après) ET ath2>ath1 (nouvel ATH). Marche aussi si ST démarre rouge.
+    return { ok, dumpDepthPct, ath1, ath2, flipRed: athAtRed != null };
 }
 
 // ── Indicateurs de SORTIE evil panda = bonus stage (copiés de bot 1, éprouvés) ────────────────────
