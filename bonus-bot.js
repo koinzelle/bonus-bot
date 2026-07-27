@@ -114,14 +114,16 @@ async function gtTrending() {
     // Découverte élargie (2026-07-22, demande user) : trending 24h pages 1-3 + 1h page 1 ; new_pools
     // 1 scan/3 ; DexScreener boosts (tokens mis en avant) 1 scan/2. Plus de candidats → plus de chances
     // qu'un token retrace sur l'EMA34 pendant qu'on le surveille.
-    // Découverte ALLÉGÉE (2026-07-22, fix 429) : page 1 toujours + UNE des pages 2/3/1h en rotation
-    // (au lieu de toutes à chaque scan qui saturait GeckoTerminal) → 2 appels GT/scan. new_pools 1/4.
-    const urls = ['https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1'];
-    const rot = gtScan % 3;
-    if (rot === 0) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=2');
-    else if (rot === 1) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=3');
-    else urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1');
-    if (gtScan % 4 === 0) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
+    // DÉCOUVERTE ORIENTÉE JEUNES (2026-07-27, GO user, VALIDÉ PAR TEST) : le trending 24h ramenait des
+    // VIEUX coins établis (MET 277j, TripleT 153j) → tous bloqués ATH>24h (19425 fois). Test des sources :
+    // 1h trending = 3 jeunes qualifiants (Ryder 3h, QUIP 0.8h...) vs 24h = 1 ; new_pools = 0 (trop neufs,
+    // sans volume) → INUTILE, retiré. On cible le FRAIS : trending 1h + 6h à chaque scan, 24h 1 scan/3.
+    // Le gtPool ne sert plus (bougies Birdeye token-level) → n'importe quelle source va.
+    const urls = [
+        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
+        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1',
+    ];
+    if (gtScan % 3 === 0) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1'); // 24h occasionnel
     // Retourne [{ tok, gtPool }] : on GARDE l'adresse de pool GT (garantie indexée pour les bougies —
     // fix 19/07 : la pool DexScreener la plus liquide n'est parfois PAS sur GT → fetch bougies mort
     // en boucle → purge → watch vide alors que le token est bon).
