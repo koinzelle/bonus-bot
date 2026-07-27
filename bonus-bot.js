@@ -694,6 +694,13 @@ async function scan() {
             // avait un ATH de ~6j) — le cycle propre = nouvel ATH (<24h) → dump → retrace → entrée.
             const athRecent = athAgeH != null && athAgeH <= 24;
             const athStale48 = athAgeH != null && athAgeH > 48; // tag legacy conservé sur les trades (mesure)
+            // PURGE des coincés (2026-07-27, GO user) : ATH > 72h ET pas en position = fenêtre d'entrée
+            // (ATH≤24h) close depuis longtemps, le token squatte un slot. S'il re-pompe (nouvel ATH), il
+            // revient via le trending. 72h = 3× le seuil d'entrée, marge pour les cyclers.
+            if (athAgeH != null && athAgeH > 72 && !state.positions[tok]) {
+                console.log(`🧹 Purge watch: ${w.symbol} (ATH ${athAgeH.toFixed(0)}h > 72h — fenêtre close, slot libéré)`);
+                state.purgedAt[tok] = now; delete state.watch[tok]; continue;
+            }
             w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
