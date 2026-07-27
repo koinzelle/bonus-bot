@@ -687,13 +687,14 @@ async function scan() {
             if (pInfo.ok && !w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} — ATH1 ${pInfo.ath1?.toExponential(2)} → flip ST rouge (dump -${pInfo.dumpDepthPct}%) → ATH2 ${pInfo.ath2?.toExponential(2)} (2e ATH > 1er, +${pInfo.ath1 ? (((pInfo.ath2/pInfo.ath1)-1)*100).toFixed(0) : '?'}%) — qualification acquise`); }
             const patOk = !!w.patternValidated;
             // GARDE-FOU ANTI-PUMP EXPLOSIF (2026-07-28, demande user — cas breadcat) : un token qui a fait
-            // x10 de MC en 15 min = snipe/manipulation qui crashe ensuite (breadcat : x13 puis -75%). On
-            // bloque l'entrée si UNE bougie 15m a explosé ≥5× (high/low OU high/close préc.). Calibré :
-            // nos gagnants ≤x2.5 (BUNKEE x2.5, HeavyPulp x1.1, BlackBear x1.5), breadcat x13 → seuil x5 net.
+            // x5+ de MC EN UNE bougie 15m depuis un prix ÉTABLI = snipe/manipulation qui crashe (breadcat :
+            // x12.8 puis -75%). On mesure le JUMP = high / close de la bougie PRÉCÉDENTE (pas high/low, qui
+            // attraperait la bougie de NAISSANCE open≈0 → x100 sur TOUS les tokens = faux positif, cas Ryder
+            // x108 = juste son launch). Le jump exclut la naissance (pas de close avant). Calibré : gagnants
+            // ≤x2.5 (BUNKEE), breadcat x12.8 → seuil x5. On démarre à j=1 (pas de close avant la 1re bougie).
             let maxPump15 = 1;
-            for (let j = 0; j < cs.length; j++) {
-                if (cs[j][3] > 0 && cs[j][2] / cs[j][3] > maxPump15) maxPump15 = cs[j][2] / cs[j][3];
-                if (j > 0 && cs[j - 1][4] > 0 && cs[j][2] / cs[j - 1][4] > maxPump15) maxPump15 = cs[j][2] / cs[j - 1][4];
+            for (let j = 1; j < cs.length; j++) {
+                if (cs[j - 1][4] > 0 && cs[j][2] / cs[j - 1][4] > maxPump15) maxPump15 = cs[j][2] / cs[j - 1][4];
             }
             const explosif = maxPump15 >= 5;
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
