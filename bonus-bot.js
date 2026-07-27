@@ -686,6 +686,16 @@ async function scan() {
             const pInfo = patternInfo(ms, ms === cs ? st : superTrend(ms));
             if (pInfo.ok && !w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} — ATH1 ${pInfo.ath1?.toExponential(2)} → flip ST rouge (dump -${pInfo.dumpDepthPct}%) → ATH2 ${pInfo.ath2?.toExponential(2)} (2e ATH > 1er, +${pInfo.ath1 ? (((pInfo.ath2/pInfo.ath1)-1)*100).toFixed(0) : '?'}%) — qualification acquise`); }
             const patOk = !!w.patternValidated;
+            // GARDE-FOU ANTI-PUMP EXPLOSIF (2026-07-28, demande user — cas breadcat) : un token qui a fait
+            // x10 de MC en 15 min = snipe/manipulation qui crashe ensuite (breadcat : x13 puis -75%). On
+            // bloque l'entrée si UNE bougie 15m a explosé ≥5× (high/low OU high/close préc.). Calibré :
+            // nos gagnants ≤x2.5 (BUNKEE x2.5, HeavyPulp x1.1, BlackBear x1.5), breadcat x13 → seuil x5 net.
+            let maxPump15 = 1;
+            for (let j = 0; j < cs.length; j++) {
+                if (cs[j][3] > 0 && cs[j][2] / cs[j][3] > maxPump15) maxPump15 = cs[j][2] / cs[j][3];
+                if (j > 0 && cs[j - 1][4] > 0 && cs[j][2] / cs[j - 1][4] > maxPump15) maxPump15 = cs[j][2] / cs[j - 1][4];
+            }
+            const explosif = maxPump15 >= 5;
             const prevSt = st.length >= 2 ? st[st.length - 2] : null;
             const line = prevSt ? prevSt.line : null;
             const curPrice = lastC[4];
@@ -729,6 +739,7 @@ async function scan() {
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
             else if (!patOk) block = 'pattern-KO';
+            else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (!athRecent) block = 'ATH>24h';
             else if (w.lastEntryAth && ath <= w.lastEntryAth) block = 'ATH-déjà-joué';
             else if (drawdown < 0.40) block = 'dd<40%';
@@ -766,7 +777,7 @@ async function scan() {
             // à -10% d'un pump de minuit → live -33% ; 旺旺 #2 à -20% d'un pump de 20 min) = acheter
             // l'euphorie, pas la peur. w.lastEntryAth persisté ; nouvel ATH strict requis pour ré-armer.
             const newAthSinceLastEntry = !w.lastEntryAth || ath > w.lastEntryAth;
-            if (armed && mcOk && patOk && athRecent && newAthSinceLastEntry && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && patOk && !explosif && athRecent && newAthSinceLastEntry && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
                 w.lastEntryAth = ath; // fige l'ATH consommé par cette entrée
                 const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
