@@ -40,7 +40,7 @@ const CHAT_ID = (process.env.CHAT_ID || '').trim();
 let live = { enabled: false };
 try { live = require('./bonus-live'); } catch (e) { console.log('⚠️ bonus-live indisponible:', e.message, '— paper seulement'); }
 if (live.enabled) {
-    console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_SOL || '0.25'} SOL | max ${process.env.MAX_LIVE_POSITIONS || '1'} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
+    console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_PCT || '?'}% capital | max ${MAX_LIVE_POSITIONS} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
     if (live.sweepOrphans) live.sweepOrphans().catch(e => console.log('⚠️ sweep démarrage:', String(e.message).slice(0, 60)));
 } else console.log('🧪 Mode PAPER (LIVE≠1 ou bonus-live KO) — aucun ordre réel');
 
@@ -67,7 +67,7 @@ const NEAR_ST_PCT = 0.04;        // fenêtre pullback ≤ +4% au-dessus de la li
 const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
 const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
 const AGE_MAX_H = 24 * 365;       // garde-fou zombies 1 an — pas de MAX (EP joue les vieux coins).
-const AGE_MIN_H = 24;             // MINIMUM d'âge de coin (2026-07-28, GO user) : EP "I don't LP coins less than 24 hours". Les <24h pump→dump à l'infini (data : Looks 16h/breadcat 29h → -50% après entrée). Un coin doit être établi (survécu au 1er cycle) avant son bonus stage.
+const AGE_MIN_H = 10;             // MINIMUM d'âge de coin (2026-07-28, abaissé 24h→10h) : 24h bloquait Looks (16h) qui a fait +66% en V — l'âge n'est PAS un bon discriminateur (le plus jeune a gagné, les vieux saignent). 10h ne vire que les launch snipes purs (<10h) ; le pattern + anti-pump-explosif font le vrai tri.
 const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener exact d'EP (aligné 2026-07-22, avant 500k)
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
 const MAX_POSITIONS = 8;          // positions papier simultanées (EP : beaucoup de petites positions, pas all-in)
@@ -740,7 +740,7 @@ async function scan() {
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
-            else if (ageH < AGE_MIN_H) block = 'coin<24h';
+            else if (ageH < AGE_MIN_H) block = 'coin<10h';
             else if (!patOk) block = 'pattern-KO';
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (!athRecent) block = 'ATH>24h';
