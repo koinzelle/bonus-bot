@@ -518,6 +518,17 @@ async function reconcileLivePositions() {
             delete state.positions[tok];
             if (state.watch[tok]) state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS;
             tg(`🧹 ${p.symbol}: position live fermée à la main détectée — tracking nettoyé, slot libéré`);
+        } else if (st === 'open' && p.live.openValueSol == null && live.positionValueSol) {
+            // Auto-réparation : la valeur d'ouverture a échoué à l'open (RPC pas encore indexé) →
+            // openValueSol=null = PnL non mesurable. Maintenant que la position est indexée, on
+            // ré-inscrit une base propre (best-effort). Rattrapé vite = quasi-exact.
+            try {
+                const v = await live.positionValueSol(p.live);
+                if (v != null) {
+                    p.live.openValueSol = v;
+                    console.log(`🩹 ${p.symbol}: openValueSol ré-inscrite (${v.toFixed(4)} SOL) — base PnL restaurée`);
+                }
+            } catch (e) { console.log(`reconcile openValueSol ${p.symbol}:`, e.message); }
         }
     }
     save();

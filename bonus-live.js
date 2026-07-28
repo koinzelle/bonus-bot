@@ -248,7 +248,12 @@ async function openBidAsk(poolAddress) {
     // VALEUR D'OUVERTURE on-chain (base du PnL réel) — lue juste après le dépôt, avant tout mouvement.
     const posRef = { poolAddress, positionKeypairPub: positionKeypair.publicKey.toString() };
     let openValueSol = null;
-    try { openValueSol = await positionValueSol(posRef, dlmmPool); } catch (_) {}
+    // Poll de propagation : la position vient d'être créée, le RPC ne l'indexe pas toujours
+    // instantanément (getPositionsByUserAndLbPair renvoie vide) → on réessaie avant d'abandonner.
+    for (let attempt = 0; attempt < 4 && openValueSol == null; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
+        try { openValueSol = await positionValueSol(posRef, dlmmPool); } catch (_) {}
+    }
     console.log(`  💰 Déposé: ${depositedSol.toFixed(4)} SOL (rent+gas inclus) | valeur LP: ${openValueSol != null ? openValueSol.toFixed(4) : '?'} SOL | bins [${minBinId}→${maxBinId}] (±${BIN_RANGE})`);
     return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, openValueSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint };
 }
