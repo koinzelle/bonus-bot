@@ -40,7 +40,7 @@ const CHAT_ID = (process.env.CHAT_ID || '').trim();
 let live = { enabled: false };
 try { live = require('./bonus-live'); } catch (e) { console.log('⚠️ bonus-live indisponible:', e.message, '— paper seulement'); }
 if (live.enabled) {
-    console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_PCT || '?'}% capital | max ${MAX_LIVE_POSITIONS} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
+    console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_PCT || '?'}% capital | max ${process.env.MAX_LIVE_POSITIONS || '5'} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
     if (live.sweepOrphans) live.sweepOrphans().catch(e => console.log('⚠️ sweep démarrage:', String(e.message).slice(0, 60)));
 } else console.log('🧪 Mode PAPER (LIVE≠1 ou bonus-live KO) — aucun ordre réel');
 
