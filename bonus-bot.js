@@ -859,7 +859,11 @@ async function closePaper(tok, pos, exitPrice, reason) {
     save();
     const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
     const wr = state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100;
-    const liveLine = pnlSolLive != null ? `\n💵 PnL RÉEL (fees incluses): ${pnlSolLive > 0 ? '+' : ''}${pnlSolLive} SOL` : '';
+    // PnL LP réel en % de la mise (= ce que Meteora affiche) — souvent TRÈS différent du % prix quand le
+    // token a fait un V (Bid-Ask achète le dip, revend la remontée → +66% LP sur +4.9% prix, cas Looks).
+    const liveOpenVal = pos.live?.openValueSol;
+    const livePct = (pnlSolLive != null && liveOpenVal) ? (pnlSolLive / liveOpenVal) * 100 : null;
+    const liveLine = pnlSolLive != null ? `\n💵 PnL LP RÉEL: ${livePct != null ? `${livePct > 0 ? '+' : ''}${livePct.toFixed(0)}% (` : ''}${pnlSolLive > 0 ? '+' : ''}${pnlSolLive} SOL${livePct != null ? ')' : ''} — fees incluses` : '';
     const msg = `${pnlPct > 0 ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason}\nPnL: ${(pnlPct * 100).toFixed(1)}% (${trade.pnlSol > 0 ? '+' : ''}${trade.pnlSol} SOL papier, ${trade.durMin} min)${liveLine}\n📒 Total papier: ${state.trades.length} trades | WR ${wr.toFixed(0)}% | ${tot > 0 ? '+' : ''}${tot.toFixed(3)} SOL`;
     console.log(msg.replace(/\n/g, ' | ')); tg(msg);
 }
