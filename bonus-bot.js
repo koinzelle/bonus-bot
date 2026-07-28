@@ -93,6 +93,9 @@ if (state.blockCount && (state.blockCount['dist>4%'] || state.blockCount['athAge
 // trop large (TRUMP2028, reliques 6 mois). patternValidated est collant → sans reset, ces fausses
 // qualifications survivraient au passage à la règle ST pure. On efface pour que la ST re-juge tout le monde.
 if (!state.patternResetV2) { for (const w of Object.values(state.watch || {})) delete w.patternValidated; state.patternResetV2 = true; }
+// Reset one-shot au passage ST mult 3→2 (2026-07-29) : les patterns validés en mult=3 doivent être
+// re-jugés en mult=2 (plus sensible) — sinon flags collants obsolètes.
+if (!state.stMult2Reset) { for (const w of Object.values(state.watch || {})) delete w.patternValidated; state.stMult2Reset = true; }
 // Fix migration (2026-07-25) : purge la watch pour que chaque token soit re-découvert avec sa pool
 // d'ORIGINE (historique complet). Les entrées existantes ont une pool figée (post-migration) → pattern
 // faux. One-shot ; les positions ouvertes sont préservées (jamais purgées).
@@ -254,10 +257,13 @@ const candles15 = (mint, limit = 192) => candlesTF(mint, '15m', '15m', limit, 90
 const candles1h = (mint, limit = 720) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000);
 const candlesDay = (mint, limit = 1000) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000);
 
-// ── SuperTrend (10, 3) — ATR en RMA WILDER (2026-07-19, GO user) : c'est la formule
-// TradingView/DexScreener/GMGN — la ligne que l'équipe EP et le user regardent VRAIMENT.
-// L'ancienne moyenne simple (copiée de bot 1) divergeait fortement de leur ligne après un pump
-// (cas Agamemnon : touch visible sur DexScreener 15m, invisible pour nous). Retourne [{i, trend, line}].
+// ── SuperTrend (10, 2) — ATR en RMA WILDER. MULTIPLICATEUR 3→2 (2026-07-29, GO user, backtest) : notre
+// ST(10,3) divergeait de DexScreener/GMGN (identiques, autorité) — sur tokens volatils la bande était
+// trop large → ratait les 1ers dumps (cas FRANK : rouge-vert-rouge sur les charts, vert chez nous).
+// Backtest 23 tokens : mult3 = 2/23 patterns (trop strict), mult2 = 8/23 dont 5 gagnants / 1 perdant
+// des nouveaux captés. mult=2 dans NOTRE calcul reproduit le rouge-vert-rouge affiché à (10,3) sur
+// DexScreener/GMGN. Retourne [{i, trend, line}].
+const ST_MULT = 2;
 function superTrend(cs) {
     if (cs.length < 12) return [];
     const trs = [];
@@ -270,7 +276,7 @@ function superTrend(cs) {
         else rma = (rma * 9 + trs[i - 1]) / 10;
         const atr = rma;
         const hl2 = (cs[i][2] + cs[i][3]) / 2;
-        const bu = hl2 + 3 * atr, bl = hl2 - 3 * atr;
+        const bu = hl2 + ST_MULT * atr, bl = hl2 - ST_MULT * atr;
         let fu = bu, fl = bl;
         if (prev) {
             fu = (bu < prev.fu || cs[i - 1][4] > prev.fu) ? bu : prev.fu;
