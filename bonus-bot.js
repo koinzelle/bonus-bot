@@ -66,7 +66,8 @@ const NEAR_ST_PCT = 0.04;        // fenêtre pullback ≤ +4% au-dessus de la li
                                  // 19 trades vs 14 à 3%) sans nouvelle queue de perte ; 5% dégrade (-32.9% tail)
 const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
 const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
-const AGE_MAX_H = 24 * 365;       // garde-fou zombies 1 an (2026-07-22, GO user) — l'âge n'est PLUS un critère (EP: "no minimum age") : paliers de TF (15m/1H/daily) + ATH récent ≤14j font le travail.
+const AGE_MAX_H = 24 * 365;       // garde-fou zombies 1 an — pas de MAX (EP joue les vieux coins).
+const AGE_MIN_H = 24;             // MINIMUM d'âge de coin (2026-07-28, GO user) : EP "I don't LP coins less than 24 hours". Les <24h pump→dump à l'infini (data : Looks 16h/breadcat 29h → -50% après entrée). Un coin doit être établi (survécu au 1er cycle) avant son bonus stage.
 const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener exact d'EP (aligné 2026-07-22, avant 500k)
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
 const MAX_POSITIONS = 8;          // positions papier simultanées (EP : beaucoup de petites positions, pas all-in)
@@ -739,6 +740,7 @@ async function scan() {
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
+            else if (ageH < AGE_MIN_H) block = 'coin<24h';
             else if (!patOk) block = 'pattern-KO';
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (!athRecent) block = 'ATH>24h';
@@ -778,7 +780,7 @@ async function scan() {
             // à -10% d'un pump de minuit → live -33% ; 旺旺 #2 à -20% d'un pump de 20 min) = acheter
             // l'euphorie, pas la peur. w.lastEntryAth persisté ; nouvel ATH strict requis pour ré-armer.
             const newAthSinceLastEntry = !w.lastEntryAth || ath > w.lastEntryAth;
-            if (armed && mcOk && patOk && !explosif && athRecent && newAthSinceLastEntry && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && !explosif && athRecent && newAthSinceLastEntry && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
                 w.lastEntryAth = ath; // fige l'ATH consommé par cette entrée
                 const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
