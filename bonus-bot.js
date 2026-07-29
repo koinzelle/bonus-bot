@@ -742,6 +742,15 @@ async function scan() {
             if (patOk && ageH >= 48) {
                 try { const ds = await candlesDay(tok, 1000); if (ds && ds.length) for (const c of ds) if (c[2] > trueAth) trueAth = c[2]; } catch (_) { /* fallback ath */ }
             }
+            // ATH officiel GMGN (capturé au check qualité, w.athGmgn) CROISÉ avec les bougies : on prend le
+            // PLUS HAUT des deux → on ne sous-estime JAMAIS l'ATH de vie (sinon un pump local passerait pour
+            // un ATH et un dead-cat serait qualifié). GMGN souvent null sur vieux coins → daily prend le relais.
+            if (w.athGmgn && w.athGmgn > trueAth) trueAth = w.athGmgn;
+            // Max glissant du vrai ATH (2026-07-29) : référence STABLE pour la ré-entrée (nouvel ATH global).
+            if (trueAth > (w.maxTrueAth || 0)) w.maxTrueAth = trueAth;
+            // Migration transition : un sac ouvert AVANT ce fix n'a pas de lastEntryPeak → on l'initialise au
+            // max courant pour qu'après fermeture il exige un NOUVEL ATH global (pas un simple re-pump local).
+            if (state.positions[tok] && w.lastEntryPeak == null) w.lastEntryPeak = w.maxTrueAth;
             const newAthIsReal = trueAth <= 0 || ath >= trueAth * 0.9; // le sommet récent EST (≈) le vrai ATH de vie
             // GARDE-FOU ANTI-PUMP EXPLOSIF (2026-07-28, demande user — cas breadcat) : un token qui a fait
             // x5+ de MC EN UNE bougie 15m depuis un prix ÉTABLI = snipe/manipulation qui crashe (breadcat :
@@ -801,7 +810,7 @@ async function scan() {
             else if (!newAthIsReal) block = `dead-cat(-${((1 - ath / trueAth) * 100).toFixed(0)}%<vraiATH)`;
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (!athRecent) block = 'ATH>24h';
-            else if (w.lastEntryTrueAth && trueAth <= w.lastEntryTrueAth * 1.02) block = 'pas-de-nouvel-ATH-global';
+            else if (w.lastEntryPeak && w.maxTrueAth <= w.lastEntryPeak * 1.02) block = 'pas-de-nouvel-ATH-global';
             else if (drawdown < 0.40) block = 'dd<40%';
             else if (drawdown < 0.45 && !atSupport) block = 'no-support(40-45%)';
             else if (onCooldown) block = 'cooldown';
@@ -842,11 +851,11 @@ async function scan() {
             // reprend PLUS ce coin. On se fiche des plus-hauts LOCAUX (cas BUNKEE +31% puis ré-entré -72%,
             // Diary +34% puis -73% : rachetés sur un pump local en tendance baissière). trueAth = ATH de vie
             // (daily). Nouvel ATH global = trueAth a grimpé >2% depuis la dernière entrée (buffer bruit sources).
-            const newGlobalAth = !w.lastEntryTrueAth || trueAth > w.lastEntryTrueAth * 1.02;
+            const newGlobalAth = !w.lastEntryPeak || w.maxTrueAth > w.lastEntryPeak * 1.02;
             if (armed && mcOk && ageH >= AGE_MIN_H && patOk && newAthIsReal && !explosif && athRecent && newGlobalAth && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
-                w.lastEntryAth = ath;            // ATH local consommé (legacy)
-                w.lastEntryTrueAth = trueAth;    // ATH GLOBAL consommé — gate de ré-entrée
+                w.lastEntryAth = ath;                 // ATH local consommé (legacy)
+                w.lastEntryPeak = w.maxTrueAth;        // max glissant du vrai ATH figé — gate de ré-entrée
                 const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
                 const athAgeHr = athAgeH != null ? +athAgeH.toFixed(1) : null;
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
