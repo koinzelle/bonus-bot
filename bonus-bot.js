@@ -748,9 +748,11 @@ async function scan() {
             if (w.athGmgn && w.athGmgn > trueAth) trueAth = w.athGmgn;
             // Max glissant du vrai ATH (2026-07-29) : référence STABLE pour la ré-entrée (nouvel ATH global).
             if (trueAth > (w.maxTrueAth || 0)) w.maxTrueAth = trueAth;
-            // Migration transition : un sac ouvert AVANT ce fix n'a pas de lastEntryPeak → on l'initialise au
-            // max courant pour qu'après fermeture il exige un NOUVEL ATH global (pas un simple re-pump local).
-            if (state.positions[tok] && w.lastEntryPeak == null) w.lastEntryPeak = w.maxTrueAth;
+            // Migration transition (2026-07-29) : tout token DÉJÀ tradé avant ce fix (position ouverte OU
+            // marqueur d'entrée antérieure lastEntryAth/lastEntryTrueAth) n'a pas de lastEntryPeak → on
+            // l'initialise au max COURANT. Effet : il ne pourra ré-entrer que sur un vrai NOUVEL ATH global
+            // (> max courant), jamais sur un re-pump local. Corrige le cas Gnomes (ré-entrées répétées).
+            if (w.lastEntryPeak == null && (state.positions[tok] || w.lastEntryAth || w.lastEntryTrueAth)) w.lastEntryPeak = w.maxTrueAth;
             const newAthIsReal = trueAth <= 0 || ath >= trueAth * 0.9; // le sommet récent EST (≈) le vrai ATH de vie
             // GARDE-FOU ANTI-PUMP EXPLOSIF (2026-07-28, demande user — cas breadcat) : un token qui a fait
             // x5+ de MC EN UNE bougie 15m depuis un prix ÉTABLI = snipe/manipulation qui crashe (breadcat :
