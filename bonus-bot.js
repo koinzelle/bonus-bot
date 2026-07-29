@@ -657,6 +657,13 @@ async function scan() {
                 // profondeur max atteinte sur le trade → après quelques trades on saura si le stacking aide
                 // (un trade qui plonge à -30% puis sort vert = le stacking aurait baissé le prix moyen).
                 const dropFromEntry = 1 - lastC[4] / pos.entry;
+                // ALERTE DOWNSIDE -30% (2026-07-29, règle user) : rôle de stop-loss HUMAIN (comme EP gère ses
+                // bleeders par alerte, pas par stop auto). Telegram UNE fois quand la position passe -30% sous
+                // l'entrée → décision manuelle garder/couper.
+                if (dropFromEntry >= 0.30 && !pos.alerted30) {
+                    pos.alerted30 = true; save();
+                    tg(`⚠️ ${pos.symbol} : -${(dropFromEntry * 100).toFixed(0)}% sous l'entrée (prix $${lastC[4].toFixed(8)}). Décision manuelle : garder ou couper (/close?symbol=${encodeURIComponent(pos.symbol)}).`);
+                }
                 const stackLevel = dropFromEntry > 0 ? Math.floor(dropFromEntry / 0.10) : 0; // 1=-10%, 2=-20%...
                 if (stackLevel >= 1 && stackLevel > (pos.stacksLogged || 0) && stackLevel <= 5) {
                     pos.stacksLogged = stackLevel;
@@ -773,7 +780,7 @@ async function scan() {
             else if (!newAthIsReal) block = `dead-cat(-${((1 - ath / trueAth) * 100).toFixed(0)}%<vraiATH)`;
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (!athRecent) block = 'ATH>24h';
-            else if (w.lastEntryAth && ath <= w.lastEntryAth) block = 'ATH-déjà-joué';
+            else if (w.lastEntryTrueAth && trueAth <= w.lastEntryTrueAth * 1.02) block = 'pas-de-nouvel-ATH-global';
             else if (drawdown < 0.40) block = 'dd<40%';
             else if (drawdown < 0.45 && !atSupport) block = 'no-support(40-45%)';
             else if (onCooldown) block = 'cooldown';
@@ -808,15 +815,27 @@ async function scan() {
             // you open again"). Sans ça, le bot rachetait les replis de pumps locaux SOUS l'ATH (HBULL #2/#3
             // à -10% d'un pump de minuit → live -33% ; 旺旺 #2 à -20% d'un pump de 20 min) = acheter
             // l'euphorie, pas la peur. w.lastEntryAth persisté ; nouvel ATH strict requis pour ré-armer.
-            const newAthSinceLastEntry = !w.lastEntryAth || ath > w.lastEntryAth;
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && newAthIsReal && !explosif && athRecent && newAthSinceLastEntry && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            // RÉ-ENTRÉE = UNIQUEMENT sur un NOUVEL ATH GLOBAL (2026-07-29, règle user) : on entre sur le
+            // retracement d'un ATH, on sort sur le rebond ; si le rebond ne refait PAS un ATH global, on ne
+            // reprend PLUS ce coin. On se fiche des plus-hauts LOCAUX (cas BUNKEE +31% puis ré-entré -72%,
+            // Diary +34% puis -73% : rachetés sur un pump local en tendance baissière). trueAth = ATH de vie
+            // (daily). Nouvel ATH global = trueAth a grimpé >2% depuis la dernière entrée (buffer bruit sources).
+            const newGlobalAth = !w.lastEntryTrueAth || trueAth > w.lastEntryTrueAth * 1.02;
+            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && newAthIsReal && !explosif && athRecent && newGlobalAth && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
-                w.lastEntryAth = ath; // fige l'ATH consommé par cette entrée
+                w.lastEntryAth = ath;            // ATH local consommé (legacy)
+                w.lastEntryTrueAth = trueAth;    // ATH GLOBAL consommé — gate de ré-entrée
                 const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
                 const athAgeHr = athAgeH != null ? +athAgeH.toFixed(1) : null;
-                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0] };
+                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
+                    // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
+                    dumpDepthPct: pInfo.dumpDepthPct ?? null, entryMcK: Math.round(curMc / 1000), trueAthMc: Math.round(trueAth * w.supply), pctOfTrueAth: trueAth > 0 ? +((ath / trueAth) * 100).toFixed(0) : null, vol24hK: w.vol ? Math.round(w.vol / 1000) : null };
                 save();
                 if (athStale48) console.log(`  · [SHADOW athStale] ${w.symbol} : entrée sur ATH de ${athAgeHr}h (>48h) — on juge le WR de ces vieux-ATH séparément`);
+                // SHADOW âge-ATH minimum (2026-07-29) : les perdants ouverts sont entrés sur des ATH ultra-frais
+                // (<3h = chute libre du snipe), les gagnants sur des ATH plus digérés (5-20h). On tague pour
+                // mesurer si un plancher d'âge-ATH ~2h aurait filtré les perdants sans tuer Looks/Gnomes.
+                if (athAgeH != null && athAgeH < 2) console.log(`  · [SHADOW athAgeMin] ${w.symbol} : ATH ultra-frais (${athAgeHr}h < 2h) — historiquement plus faible (chute libre), on mesure`);
                 const msg = `🎯 ENTRÉE ${w.symbol} (support ${support}, pattern ✓)\nprix: $${entry.toFixed(8)} | retrace -${(drawdown * 100).toFixed(0)}% sous ATH (ATH ${athAgeHr}h${athStale48 ? ' ⚠️vieux' : ''})\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: RSI(2)>90 + vert | on TIENT jusqu'au rebond (pas de SL/coupe-temps)`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
@@ -880,6 +899,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
+        drawdownPct: pos.drawdownPct ?? null, dumpDepthPct: pos.dumpDepthPct ?? null, entryMcK: pos.entryMcK ?? null, trueAthMc: pos.trueAthMc ?? null, pctOfTrueAth: pos.pctOfTrueAth ?? null, vol24hK: pos.vol24hK ?? null,
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
