@@ -102,6 +102,24 @@ if (!state.stMult2Reset) { for (const w of Object.values(state.watch || {})) del
 if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})) { if (!state.positions?.[tok]) delete state.watch[tok]; } state.poolOriginResetV1 = true; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
+// ── SHADOW STATS PERSISTÉS (2026-07-29, demande user) : les mesures shadow étaient des console.log
+// (buffer mémoire ~50 lignes, vidé au redeploy) → on perdait les vrais totaux. On les accumule ici,
+// DANS l'état (donc sur le volume Railway = survit aux redeploys). Compteurs + listes plafonnées (FIFO).
+if (!state.shadowStats) state.shadowStats = {};
+function recordShadow(type, data) {
+    const s = state.shadowStats;
+    if (!s[type]) s[type] = { n: 0, records: [] };
+    s[type].n++;
+    if (data) {
+        s[type].records.push({ ...data, ts: new Date().toISOString() });
+        if (s[type].records.length > 200) s[type].records.shift(); // cap FIFO
+    }
+    if (data && data.level != null) { // stacking : compteur par palier
+        s[type].byLevel = s[type].byLevel || {};
+        s[type].byLevel[data.level] = (s[type].byLevel[data.level] || 0) + 1;
+    }
+}
+
 async function tg(msg) {
     if (!TELEGRAM_TOKEN || !CHAT_ID) return;
     try {
@@ -439,6 +457,7 @@ async function gmgnQualityOk(tok, sym) {
         // on ne bloque pas. Seuils candidats : plus gros cluster ≥ 10% OU total insiders ≥ 40%.
         if (maxClusterPct != null && (maxClusterPct >= 10 || totalInsiderPct >= 40))
             console.log(`⚠️ [SHADOW clusters] ${sym}: plus gros ${maxClusterPct.toFixed(1)}% | total insiders ${totalInsiderPct.toFixed(0)}% — mesure seule (ne bloque pas)`);
+            recordShadow('clusters', { symbol: sym, maxClusterPct: +maxClusterPct.toFixed(1), totalInsiderPct: +totalInsiderPct.toFixed(0) });
         if (fails.length) {
             gmgnRejected.set(tok, Date.now());
             console.log(`🚫 Qualité GMGN: ${sym} rejeté (${fails.join(', ')})`);
@@ -573,6 +592,7 @@ async function scan() {
                 if (!profilOk && !profilWarned.has(tok)) {
                     profilWarned.add(tok);
                     console.log(`⚠️ [SHADOW profil] ${d.symbol}: profil DexScreener incomplet (Twitter:${d.hasTwitter} image:${d.hasImage}) — mesure seule`);
+                    recordShadow('profil', { symbol: d.symbol, twitter: !!d.hasTwitter, image: !!d.hasImage });
                 }
                 // Filtre qualité GMGN (2026-07-15, copié de bot 1) : l'univers GT trending est pollué
                 // (paper 29% WR vs 46-50% sur l'univers bot 1 filtré). 1 appel à l'ajout seulement.
@@ -669,6 +689,7 @@ async function scan() {
                     pos.stacksLogged = stackLevel;
                     if (stackLevel > (pos.maxStackLevel || 0)) pos.maxStackLevel = stackLevel;
                     console.log(`  · [SHADOW stacking] ${pos.symbol} : EP ouvrirait la position #${stackLevel + 1} (à -${(dropFromEntry * 100).toFixed(0)}% de l'entrée) — mesure, n'ouvre rien`);
+                    recordShadow('stacking', { symbol: pos.symbol, level: stackLevel + 1, dropPct: +(dropFromEntry * 100).toFixed(0) });
                 }
 
                 const candleAfterEntry = lastC[0] > (pos.entryCandleTs || 0);
@@ -803,6 +824,7 @@ async function scan() {
             if (armed && mcOk && patOk && athRecent && ddShadow35 && atSupport && !onCooldown && !w.dd35Logged) {
                 w.dd35Logged = true;
                 console.log(`  · [SHADOW dd35] ${w.symbol} : entrerait à -${(drawdown * 100).toFixed(0)}% (support ${nearST ? 'ST' : nearBBlo ? 'BB' : 'EMA34'}) — bloqué par seuil 40% (mesure)`);
+                recordShadow('dd35', { symbol: w.symbol, drawdownPct: +(drawdown * 100).toFixed(0) });
             }
             if (ddOk) w.dd35Logged = false; // reset quand on repasse au-dessus (nouveau cycle de dip)
             // ENTRÉE (2026-07-23, remarque user HeavyPulp -54%) : la PROFONDEUR suffit chez EP ("after
@@ -831,11 +853,11 @@ async function scan() {
                     // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
                     dumpDepthPct: pInfo.dumpDepthPct ?? null, entryMcK: Math.round(curMc / 1000), trueAthMc: Math.round(trueAth * w.supply), pctOfTrueAth: trueAth > 0 ? +((ath / trueAth) * 100).toFixed(0) : null, vol24hK: w.vol ? Math.round(w.vol / 1000) : null };
                 save();
-                if (athStale48) console.log(`  · [SHADOW athStale] ${w.symbol} : entrée sur ATH de ${athAgeHr}h (>48h) — on juge le WR de ces vieux-ATH séparément`);
+                if (athStale48) { console.log(`  · [SHADOW athStale] ${w.symbol} : entrée sur ATH de ${athAgeHr}h (>48h) — on juge le WR de ces vieux-ATH séparément`); recordShadow('athStale', { symbol: w.symbol, athAgeH: athAgeHr }); }
                 // SHADOW âge-ATH minimum (2026-07-29) : les perdants ouverts sont entrés sur des ATH ultra-frais
                 // (<3h = chute libre du snipe), les gagnants sur des ATH plus digérés (5-20h). On tague pour
                 // mesurer si un plancher d'âge-ATH ~2h aurait filtré les perdants sans tuer Looks/Gnomes.
-                if (athAgeH != null && athAgeH < 2) console.log(`  · [SHADOW athAgeMin] ${w.symbol} : ATH ultra-frais (${athAgeHr}h < 2h) — historiquement plus faible (chute libre), on mesure`);
+                if (athAgeH != null && athAgeH < 2) { console.log(`  · [SHADOW athAgeMin] ${w.symbol} : ATH ultra-frais (${athAgeHr}h < 2h) — historiquement plus faible (chute libre), on mesure`); recordShadow('athAgeMin', { symbol: w.symbol, athAgeH: athAgeHr }); }
                 const msg = `🎯 ENTRÉE ${w.symbol} (support ${support}, pattern ✓)\nprix: $${entry.toFixed(8)} | retrace -${(drawdown * 100).toFixed(0)}% sous ATH (ATH ${athAgeHr}h${athStale48 ? ' ⚠️vieux' : ''})\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: RSI(2)>90 + vert | on TIENT jusqu'au rebond (pas de SL/coupe-temps)`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
@@ -960,6 +982,7 @@ http.createServer((req, res) => {
         pnlSolPaper: +tot.toFixed(4),
         // A/B live : trailing (réel) vs TP fixe +6% (ombre) sur les MÊMES entrées
         blockCount: state.blockCount || {}, // compteur cumulé des raisons de non-entrée → voir le vrai goulot
+        shadowStats: state.shadowStats || {}, // mesures shadow accumulées (persistées sur le volume)
         abFixedVsTrailing: {
             trailing: { n: state.trades.length, pnlSol: +tot.toFixed(4) },
             fixed: { n: state.tradesFixed.length, pnlSol: +state.tradesFixed.reduce((s, t) => s + t.pnlSol, 0).toFixed(4),
