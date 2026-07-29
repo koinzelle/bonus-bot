@@ -704,6 +704,17 @@ async function scan() {
             const pInfo = patternInfo(ms, ms === cs ? st : superTrend(ms));
             if (pInfo.ok && !w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} — ATH1 ${pInfo.ath1?.toExponential(2)} → flip ST rouge (dump -${pInfo.dumpDepthPct}%) → ATH2 ${pInfo.ath2?.toExponential(2)} (2e ATH > 1er, +${pInfo.ath1 ? (((pInfo.ath2/pInfo.ath1)-1)*100).toFixed(0) : '?'}%) — qualification acquise`); }
             const patOk = !!w.patternValidated;
+            // VRAI ATH via lookback DAILY (2026-07-29, cas dog) : la fenêtre 1H/15m ne remonte pas assez
+            // loin pour les vieux coins (dog 694h : la série 1H ne voyait que $2.33M, alors que le VRAI ATH
+            // était $8.78M le 30/06). Résultat : le bot validait un dead-cat bounce à -73% sous l'ATH comme
+            // un "nouvel ATH". EP veut un VRAI nouvel ATH (force), pas un rebond de cadavre. On croise donc
+            // le plus haut récent (ath) avec le plus haut de vie (daily) et on exige qu'il en soit proche.
+            // Fetch UNIQUEMENT si patOk (candidats only) et ageH≥48h (sous 48h la série courte = toute la vie).
+            let trueAth = ath;
+            if (patOk && ageH >= 48) {
+                try { const ds = await candlesDay(tok, 1000); if (ds && ds.length) for (const c of ds) if (c[2] > trueAth) trueAth = c[2]; } catch (_) { /* fallback ath */ }
+            }
+            const newAthIsReal = trueAth <= 0 || ath >= trueAth * 0.9; // le sommet récent EST (≈) le vrai ATH de vie
             // GARDE-FOU ANTI-PUMP EXPLOSIF (2026-07-28, demande user — cas breadcat) : un token qui a fait
             // x5+ de MC EN UNE bougie 15m depuis un prix ÉTABLI = snipe/manipulation qui crashe (breadcat :
             // x12.8 puis -75%). On mesure le JUMP = high / close de la bougie PRÉCÉDENTE (pas high/low, qui
@@ -759,6 +770,7 @@ async function scan() {
             else if (!mcOk) block = 'MC<250k';
             else if (ageH < AGE_MIN_H) block = 'coin<10h';
             else if (!patOk) block = 'pattern-KO';
+            else if (!newAthIsReal) block = `dead-cat(-${((1 - ath / trueAth) * 100).toFixed(0)}%<vraiATH)`;
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (!athRecent) block = 'ATH>24h';
             else if (w.lastEntryAth && ath <= w.lastEntryAth) block = 'ATH-déjà-joué';
@@ -797,7 +809,7 @@ async function scan() {
             // à -10% d'un pump de minuit → live -33% ; 旺旺 #2 à -20% d'un pump de 20 min) = acheter
             // l'euphorie, pas la peur. w.lastEntryAth persisté ; nouvel ATH strict requis pour ré-armer.
             const newAthSinceLastEntry = !w.lastEntryAth || ath > w.lastEntryAth;
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && !explosif && athRecent && newAthSinceLastEntry && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && newAthIsReal && !explosif && athRecent && newAthSinceLastEntry && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 const entry = curPrice;
                 w.lastEntryAth = ath; // fige l'ATH consommé par cette entrée
                 const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
