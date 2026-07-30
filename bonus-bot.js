@@ -106,6 +106,13 @@ function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null,
 // (buffer mémoire ~50 lignes, vidé au redeploy) → on perdait les vrais totaux. On les accumule ici,
 // DANS l'état (donc sur le volume Railway = survit aux redeploys). Compteurs + listes plafonnées (FIFO).
 if (!state.shadowStats) state.shadowStats = {};
+// Coupes manuelles gardées en mémoire (2026-07-30) : on note juste le token + entrée + date → on vérifie
+// NOUS-MÊMES après ~9j s'il a rebondi jusqu'à une sortie possible (EP a déjà tenu 9j à -80% et fini vert).
+if (!state.shadowManualCloses) state.shadowManualCloses = [];
+function trackManualClose(tok, p) {
+    state.shadowManualCloses.push({ tok, symbol: p.symbol, entry: p.entry, athMc: p.athMc, closedAt: new Date().toISOString() });
+    if (state.shadowManualCloses.length > 100) state.shadowManualCloses = state.shadowManualCloses.slice(-100);
+}
 function recordShadow(type, data) {
     const s = state.shadowStats;
     if (!s[type]) s[type] = { n: 0, records: [] };
@@ -534,6 +541,7 @@ async function reconcileLivePositions() {
                 openedAt: new Date(p.openedAt).toISOString(), closedAt: new Date().toISOString(), reason: 'close MANUEL (hors bot)',
             };
             state.trades.push(trade);
+            trackManualClose(tok, p); // shadow regret : suivi post-close (coupe à la main hors bot)
             delete state.positions[tok];
             if (state.watch[tok]) state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS;
             tg(`🧹 ${p.symbol}: position live fermée à la main détectée — tracking nettoyé, slot libéré`);
@@ -973,6 +981,7 @@ http.createServer((req, res) => {
             for (const [tok, p] of targets) {
                 if (p.live && live.enabled) { try { await live.closeVerified(p.live); } catch (_) {} } // best-effort on-chain
                 state.trades.push({ symbol: p.symbol, entry: p.entry, exit: null, pnlPct: null, pnlSol: null, pnlSolLive: null, manualClose: true, ageH: p.ageH, athMc: p.athMc, support: p.support ?? null, patternOk: p.patternOk ?? null, durMin: Math.round((Date.now() - p.openedAt) / 60000), openedAt: new Date(p.openedAt).toISOString(), closedAt: new Date().toISOString(), reason: 'close MANUEL (commande /close)' });
+                trackManualClose(tok, p); // shadow regret : suivi post-close pour voir si un exit EP était possible
                 delete state.positions[tok];
                 if (state.watch[tok]) state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS;
                 done.push(p.symbol);
@@ -1011,6 +1020,7 @@ http.createServer((req, res) => {
         blockCount: state.blockCount || {}, // compteur cumulé des raisons de non-entrée → voir le vrai goulot
         shadowStats: state.shadowStats || {}, // mesures shadow accumulées (persistées sur le volume)
         athAgeBins, // issue par tranche d'âge d'ATH à l'entrée (tous les trades) — voir mémoire athage-vs-outcome
+        shadowManualCloses: state.shadowManualCloses || [], // regret des coupes manuelles (exit EP possible après ?)
         abFixedVsTrailing: {
             trailing: { n: state.trades.length, pnlSol: +tot.toFixed(4) },
             fixed: { n: state.tradesFixed.length, pnlSol: +state.tradesFixed.reduce((s, t) => s + t.pnlSol, 0).toFixed(4),
