@@ -985,6 +985,22 @@ http.createServer((req, res) => {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
+    // athAgeBins (2026-07-30, demande user) : issue par tranche d'âge de l'ATH à l'entrée, sur TOUS les
+    // trades fermés → le tableau athAgeH↔issue se remplit tout seul. À relire quand ~30-40+ trades (voir
+    // mémoire project-athage-vs-outcome-review). Bin = <2h / 2-5h / 5-12h / >12h.
+    const athAgeBins = (() => {
+        const b = { '<2h': [], '2-5h': [], '5-12h': [], '>12h': [] };
+        for (const t of state.trades) {
+            if (t.athAgeH == null || t.pnlPct == null) continue;
+            const k = t.athAgeH < 2 ? '<2h' : t.athAgeH < 5 ? '2-5h' : t.athAgeH < 12 ? '5-12h' : '>12h';
+            b[k].push(t.pnlPct);
+        }
+        const out = {};
+        for (const [k, arr] of Object.entries(b)) {
+            out[k] = arr.length ? { n: arr.length, wins: arr.filter(x => x > 0).length, avgPnlPct: +(arr.reduce((s, x) => s + x, 0) / arr.length).toFixed(1) } : { n: 0 };
+        }
+        return out;
+    })();
     res.end(JSON.stringify({
         mode: 'PAPER', updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
@@ -994,6 +1010,7 @@ http.createServer((req, res) => {
         // A/B live : trailing (réel) vs TP fixe +6% (ombre) sur les MÊMES entrées
         blockCount: state.blockCount || {}, // compteur cumulé des raisons de non-entrée → voir le vrai goulot
         shadowStats: state.shadowStats || {}, // mesures shadow accumulées (persistées sur le volume)
+        athAgeBins, // issue par tranche d'âge d'ATH à l'entrée (tous les trades) — voir mémoire athage-vs-outcome
         abFixedVsTrailing: {
             trailing: { n: state.trades.length, pnlSol: +tot.toFixed(4) },
             fixed: { n: state.tradesFixed.length, pnlSol: +state.tradesFixed.reduce((s, t) => s + t.pnlSol, 0).toFixed(4),
