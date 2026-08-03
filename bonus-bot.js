@@ -717,6 +717,13 @@ async function scan() {
                 const dropFromEntry = 1 - px / pos.entry;
                 const gain = px / pos.entry - 1;
                 const RANGE_DOWN = 0.30, TP_PCT = 0.06;
+                // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
+                // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
+                // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
+                let realGain = gain;
+                if (pos.live && live.enabled && live.positionValueSol && pos.live.openValueSol) {
+                    try { const v = await live.positionValueSol(pos.live); if (v != null) realGain = v / pos.live.openValueSol - 1; } catch (_) { /* fallback prix */ }
+                }
 
                 // CUT HORS-RANGE : prix sorti par le bas du ±34 → close (plus de fees hors range).
                 if (dropFromEntry >= RANGE_DOWN) {
@@ -732,14 +739,16 @@ async function scan() {
                     recordShadow('stacking', { symbol: pos.symbol, level: stackLevel + 1, dropPct: +(dropFromEntry * 100).toFixed(0) });
                 }
 
-                // TP FIXE +6% OU RSI2>90 — tous deux exigent le profit
+                // SORTIE = TP 5-7% PnL LP (comme EP, ligne 108) OU RSI2>90 — sur le gain LP RÉEL (realGain).
+                // Anti-churn : le RSI ne ferme que si le LP est déjà ≥+4% (sinon on sort à +0.9% en 1 min = 2
+                // swaps pour rien, cas CATE 23:12→23:13). EP TP fixe 5-7% PnL, pas sur une mèche de prix.
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
-                if (candleAfterEntry && gain > 0) {
+                if (candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
-                    const tpHit = gain >= TP_PCT;
-                    const rsiHit = rsi2 != null && rsi2 > 90;
+                    const tpHit = realGain >= TP_PCT;                              // +6% LP réel
+                    const rsiHit = rsi2 != null && rsi2 > 90 && realGain >= 0.04;  // top RSI MAIS ≥+4% LP (anti-churn)
                     if (tpHit || rsiHit) {
-                        await closePaper(tok, pos, px, tpHit ? `TP +${(gain * 100).toFixed(1)}% (5m)` : `SORTIE RSI2 ${rsi2.toFixed(0)}>90 (+${(gain * 100).toFixed(1)}%)`);
+                        await closePaper(tok, pos, px, tpHit ? `TP LP +${(realGain * 100).toFixed(1)}%` : `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
                     }
                 }
                 continue;
@@ -862,7 +871,6 @@ async function scan() {
             else if (cr == null) block = 'chop-inconnu';
             else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`;
             else if (!atDip) block = 'pas-au-creux(<40%)';
-            else if (!atST) block = 'pas-au-support-ST';
             else if (!canReenter) block = 'coin-mourant';
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (onCooldown) block = 'cooldown';
@@ -884,7 +892,7 @@ async function scan() {
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
             // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && atST && canReenter && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && canReenter && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 // Pool Meteora viable requise en LIVE (sélection EP "coin AND pool selection") — lazy, cachée 30min.
                 if (live.enabled && live.findMeteoraPool) {
                     if (w.meteoraOk == null || now - (w.meteoraCheckedAt || 0) > 30 * 60e3) {
