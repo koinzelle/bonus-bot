@@ -840,7 +840,13 @@ async function scan() {
             const chopOk = cr != null && cr >= 0.60;                 // chopper (NEEGY 88%) ; dumper = bas
             const recentHigh = Math.max(...cs.slice(-24).map(c => c[2]));
             const dumpedFromHigh = recentHigh > 0 ? 1 - curPrice / recentHigh : 0;
-            const atDip = dumpedFromHigh >= 0.25;                    // EP "wait for a dump" — retrace PROFOND (≥25% sous le haut récent, pas -10%)
+            const atDip = dumpedFromHigh >= 0.40;                    // EP "wait for a dump" — retrace PROFOND ≥40% (comme sur l'image NEEGY)
+            const atST = line != null && line > 0 ? curPrice <= line * 1.02 : true; // retrace VERS la ST (EP, ST intouchable) — prix à/sous la ligne ST
+            // ANTI-COIN-MOURANT (2026-08-04, règle user) : après un close on ne RÉ-OUVRE que si le prix a
+            // re-dépassé notre dernière entrée (= il chope encore). S'il ne fait que des lower lows sous notre
+            // entrée, il MEURT → on n'ouvre plus dessus (cas Slop cut -34% puis re-dump).
+            if (!state.positions[tok] && w.lastEntryPrice && curPrice >= w.lastEntryPrice * 0.98) w.recovered = true;
+            const canReenter = !w.lastEntryPrice || w.recovered;
             // Purge chop : un DUMPER clair (chop < 40%) hors position = poids mort → slot libéré.
             if (cr != null && cr < 0.40 && !state.positions[tok]) {
                 console.log(`🧹 Purge watch: ${w.symbol} (dumper, chop ${(cr * 100).toFixed(0)}% — dumps sans rebond)`);
@@ -855,7 +861,9 @@ async function scan() {
             else if (!patOk) block = 'pattern-KO';
             else if (cr == null) block = 'chop-inconnu';
             else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`;
-            else if (!atDip) block = 'pas-au-creux';
+            else if (!atDip) block = 'pas-au-creux(<40%)';
+            else if (!atST) block = 'pas-au-support-ST';
+            else if (!canReenter) block = 'coin-mourant';
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (onCooldown) block = 'cooldown';
             else if (Object.keys(state.positions).length >= MAX_POSITIONS) block = 'max-pos';
@@ -876,7 +884,7 @@ async function scan() {
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
             // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && atST && canReenter && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 // Pool Meteora viable requise en LIVE (sélection EP "coin AND pool selection") — lazy, cachée 30min.
                 if (live.enabled && live.findMeteoraPool) {
                     if (w.meteoraOk == null || now - (w.meteoraCheckedAt || 0) > 30 * 60e3) {
@@ -886,6 +894,7 @@ async function scan() {
                     if (!w.meteoraOk) { state.blockCount['no-pool-meteora'] = (state.blockCount['no-pool-meteora'] || 0) + 1; continue; }
                 }
                 const entry = curPrice;
+                w.lastEntryPrice = entry; w.recovered = false;   // anti-mourant : ré-ouvre seulement s'il re-dépasse ce prix
                 const support = `chop${(cr * 100).toFixed(0)}%-dip${(dumpedFromHigh * 100).toFixed(0)}%`;
                 const athAgeHr = athAgeH != null ? +athAgeH.toFixed(1) : null;
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
