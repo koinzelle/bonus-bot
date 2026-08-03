@@ -283,6 +283,27 @@ const candles15 = (mint, limit = 192) => candlesTF(mint, '15m', '15m', limit, 90
 const candles1h = (mint, limit = 720) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000);
 const candlesDay = (mint, limit = 1000) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000);
 
+// chop-rate (2026-08-03) : sur les bougies récentes, quelle fraction des dumps REBONDIT (+8% avant -30%)
+// vs continue à mourir (-30% = hors range). Chopper (NEEGY ~88%) → on cycle ; dumper (breadcat bas) → on
+// bloque. Remplace les gates ATH : pas "a-t-il fait un nouvel ATH ?" mais "ses dumps rebondissent-ils ?".
+function chopRate(cs, pump = 0.08, down = 0.30) {
+    let i = 0; const n = cs.length; let wins = 0, cuts = 0;
+    while (i < n - 1) {
+        if (i >= 3 && cs[i][4] < Math.min(cs[i - 1][4], cs[i - 2][4], cs[i - 3][4])) {
+            const E = cs[i][4]; let j = i + 1, done = false;
+            while (j < n) {
+                const p = cs[j][4];
+                if (p >= E * (1 + pump)) { wins++; i = j + 1; done = true; break; }
+                if (p <= E * (1 - down)) { cuts++; i = j + 1; done = true; break; }
+                j++;
+            }
+            if (!done) i = n;
+        } else i++;
+    }
+    const tot = wins + cuts;
+    return tot >= 3 ? wins / tot : null; // besoin d'un minimum d'échantillon
+}
+
 // ── SuperTrend (10, 2) — ATR en RMA WILDER. MULTIPLICATEUR 3→2 (2026-07-29, GO user, backtest) : notre
 // ST(10,3) divergeait de DexScreener/GMGN (identiques, autorité) — sur tokens volatils la bande était
 // trop large → ratait les 1ers dumps (cas FRANK : rouge-vert-rouge sur les charts, vert chez nous).
@@ -814,23 +835,27 @@ async function scan() {
             // PURGE des coincés (2026-07-27, GO user) : ATH > 72h ET pas en position = fenêtre d'entrée
             // (ATH≤24h) close depuis longtemps, le token squatte un slot. S'il re-pompe (nouvel ATH), il
             // revient via le trending. 72h = 3× le seuil d'entrée, marge pour les cyclers.
-            if (athAgeH != null && athAgeH > 72 && !state.positions[tok]) {
-                console.log(`🧹 Purge watch: ${w.symbol} (ATH ${athAgeH.toFixed(0)}h > 72h — fenêtre close, slot libéré)`);
+            // ── CHOP-RATE + AU CREUX (2026-08-03, refonte EP chop-cycle) — REMPLACE les gates ATH ──
+            const cr = chopRate(cs);                                 // fraction des dumps qui rebondissent
+            const chopOk = cr != null && cr >= 0.60;                 // chopper (NEEGY 88%) ; dumper = bas
+            const recentHigh = Math.max(...cs.slice(-24).map(c => c[2]));
+            const dumpedFromHigh = recentHigh > 0 ? 1 - curPrice / recentHigh : 0;
+            const atDip = dumpedFromHigh >= 0.10;                    // EP "wait for a dump" (≥10% sous le haut récent)
+            // Purge chop : un DUMPER clair (chop < 40%) hors position = poids mort → slot libéré.
+            if (cr != null && cr < 0.40 && !state.positions[tok]) {
+                console.log(`🧹 Purge watch: ${w.symbol} (dumper, chop ${(cr * 100).toFixed(0)}% — dumps sans rebond)`);
                 state.purgedAt[tok] = now; delete state.watch[tok]; continue;
             }
-            w.hot = !!(armed && mcOk && patOk);                     // "chaud" = qualifié, ne manque que le dip au support
+            w.hot = !!(armed && mcOk && chopOk);                     // "chaud" = choppy + armé
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
             if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
             else if (ageH < AGE_MIN_H) block = 'coin<10h';
-            else if (!patOk) block = 'pattern-KO';
-            else if (!newAthIsReal) block = `dead-cat(-${((1 - ath / trueAth) * 100).toFixed(0)}%<vraiATH)`;
+            else if (cr == null) block = 'chop-inconnu';
+            else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`;
+            else if (!atDip) block = 'pas-au-creux';
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
-            else if (!athRecent) block = 'ATH>24h';
-            else if (w.lastEntryPeak && w.maxTrueAth <= w.lastEntryPeak * 1.02) block = 'pas-de-nouvel-ATH-global';
-            else if (drawdown < 0.40) block = 'dd<40%';
-            else if (drawdown < 0.45 && !atSupport) block = 'no-support(40-45%)';
             else if (onCooldown) block = 'cooldown';
             else if (Object.keys(state.positions).length >= MAX_POSITIONS) block = 'max-pos';
             else block = 'ENTRÉE';
@@ -846,46 +871,27 @@ async function scan() {
                 distEMA34_pct: ema34 != null ? +(((curPrice / ema34) - 1) * 100).toFixed(1) : null,
                 nearST, nearEMA34, nearBBlo, atSupport, cooldown: !!onCooldown,
             };
-            // SHADOW dd35 (2026-07-27) : setup complet SAUF que le retrace est à 35-40% → mesure ce que
-            // l'ancien seuil 35% déclencherait en plus (1 log par token/cycle, anti-spam via w.dd35Logged).
-            if (armed && mcOk && patOk && athRecent && ddShadow35 && atSupport && !onCooldown && !w.dd35Logged) {
-                w.dd35Logged = true;
-                console.log(`  · [SHADOW dd35] ${w.symbol} : entrerait à -${(drawdown * 100).toFixed(0)}% (support ${nearST ? 'ST' : nearBBlo ? 'BB' : 'EMA34'}) — bloqué par seuil 40% (mesure)`);
-                recordShadow('dd35', { symbol: w.symbol, drawdownPct: +(drawdown * 100).toFixed(0) });
-            }
-            if (ddOk) w.dd35Logged = false; // reset quand on repasse au-dessus (nouveau cycle de dip)
-            // ENTRÉE (2026-07-23, remarque user HeavyPulp -54%) : la PROFONDEUR suffit chez EP ("after
-            // 40-50% down" tout court). Retrace ≥50% = on entre sur le dip seul ; 35-50% = on exige encore
-            // un support (dip moins profond = plus de risque de couteau). Le support 15m ratait HeavyPulp
-            // (analysé en daily) — la profondeur le rattrape.
-            const deepRetrace = drawdown >= 0.45;                   // ≥45% = entrée deep sans support (2026-07-27, avant 50%)
-            // ── UNE ENTRÉE PAR ATH (2026-07-24, règle user = EP pur) : on achète LE retracement de l'ATH,
-            // et on ne ré-entre sur le même coin QUE s'il refait un NOUVEL ATH ("it goes again a new ATH,
-            // you open again"). Sans ça, le bot rachetait les replis de pumps locaux SOUS l'ATH (HBULL #2/#3
-            // à -10% d'un pump de minuit → live -33% ; 旺旺 #2 à -20% d'un pump de 20 min) = acheter
-            // l'euphorie, pas la peur. w.lastEntryAth persisté ; nouvel ATH strict requis pour ré-armer.
-            // RÉ-ENTRÉE = UNIQUEMENT sur un NOUVEL ATH GLOBAL (2026-07-29, règle user) : on entre sur le
-            // retracement d'un ATH, on sort sur le rebond ; si le rebond ne refait PAS un ATH global, on ne
-            // reprend PLUS ce coin. On se fiche des plus-hauts LOCAUX (cas BUNKEE +31% puis ré-entré -72%,
-            // Diary +34% puis -73% : rachetés sur un pump local en tendance baissière). trueAth = ATH de vie
-            // (daily). Nouvel ATH global = trueAth a grimpé >2% depuis la dernière entrée (buffer bruit sources).
-            const newGlobalAth = !w.lastEntryPeak || w.maxTrueAth > w.lastEntryPeak * 1.02;
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && newAthIsReal && !explosif && athRecent && newGlobalAth && (deepRetrace || (ddOk && atSupport)) && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (ddOk) w.dd35Logged = false;
+            // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
+            // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
+            // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
+            if (armed && mcOk && ageH >= AGE_MIN_H && chopOk && atDip && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+                // Pool Meteora viable requise en LIVE (sélection EP "coin AND pool selection") — lazy, cachée 30min.
+                if (live.enabled && live.findMeteoraPool) {
+                    if (w.meteoraOk == null || now - (w.meteoraCheckedAt || 0) > 30 * 60e3) {
+                        try { w.meteoraOk = !!(await live.findMeteoraPool(tok)); } catch (_) { w.meteoraOk = false; }
+                        w.meteoraCheckedAt = now;
+                    }
+                    if (!w.meteoraOk) { state.blockCount['no-pool-meteora'] = (state.blockCount['no-pool-meteora'] || 0) + 1; continue; }
+                }
                 const entry = curPrice;
-                w.lastEntryAth = ath;                 // ATH local consommé (legacy)
-                w.lastEntryPeak = w.maxTrueAth;        // max glissant du vrai ATH figé — gate de ré-entrée
-                const support = deepRetrace && !atSupport ? 'deep' : nearST ? 'ST' : nearBBlo ? 'BB-bas' : 'EMA34';
+                const support = `chop${(cr * 100).toFixed(0)}%-dip${(dumpedFromHigh * 100).toFixed(0)}%`;
                 const athAgeHr = athAgeH != null ? +athAgeH.toFixed(1) : null;
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
                     // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
                     dumpDepthPct: pInfo.dumpDepthPct ?? null, entryMcK: Math.round(curMc / 1000), trueAthMc: Math.round(trueAth * w.supply), pctOfTrueAth: trueAth > 0 ? +((ath / trueAth) * 100).toFixed(0) : null, vol24hK: w.vol ? Math.round(w.vol / 1000) : null };
                 save();
-                if (athStale48) { console.log(`  · [SHADOW athStale] ${w.symbol} : entrée sur ATH de ${athAgeHr}h (>48h) — on juge le WR de ces vieux-ATH séparément`); recordShadow('athStale', { symbol: w.symbol, athAgeH: athAgeHr }); }
-                // SHADOW âge-ATH minimum (2026-07-29) : les perdants ouverts sont entrés sur des ATH ultra-frais
-                // (<3h = chute libre du snipe), les gagnants sur des ATH plus digérés (5-20h). On tague pour
-                // mesurer si un plancher d'âge-ATH ~2h aurait filtré les perdants sans tuer Looks/Gnomes.
-                if (athAgeH != null && athAgeH < 2) { console.log(`  · [SHADOW athAgeMin] ${w.symbol} : ATH ultra-frais (${athAgeHr}h < 2h) — historiquement plus faible (chute libre), on mesure`); recordShadow('athAgeMin', { symbol: w.symbol, athAgeH: athAgeHr }); }
-                const msg = `🎯 ENTRÉE ${w.symbol} (support ${support}, pattern ✓)\nprix: $${entry.toFixed(8)} | retrace -${(drawdown * 100).toFixed(0)}% sous ATH (ATH ${athAgeHr}h${athStale48 ? ' ⚠️vieux' : ''})\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: RSI(2)>90 + vert | on TIENT jusqu'au rebond (pas de SL/coupe-temps)`;
+                const msg = `🎯 ENTRÉE ${w.symbol} (chop-cycle)\nprix: $${entry.toFixed(8)} | chop ${(cr * 100).toFixed(0)}% | dumpé -${(dumpedFromHigh * 100).toFixed(0)}% sous le haut récent\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: TP +6% OU RSI(2)>90 | cut hors-range -30% | on cycle`;
                 console.log(msg.replace(/\n/g, ' | ')); tg(msg);
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
                 // Cap MAX_LIVE_POSITIONS (défaut 1, 2026-07-22) : limite le blast radius en dry-run —
