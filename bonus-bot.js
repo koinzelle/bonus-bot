@@ -739,14 +739,13 @@ async function scan() {
                     recordShadow('stacking', { symbol: pos.symbol, level: stackLevel + 1, dropPct: +(dropFromEntry * 100).toFixed(0) });
                 }
 
-                // SORTIE = TP 5-7% PnL LP (comme EP, ligne 108) OU RSI2>90 — sur le gain LP RÉEL (realGain).
-                // Anti-churn : le RSI ne ferme que si le LP est déjà ≥+4% (sinon on sort à +0.9% en 1 min = 2
-                // swaps pour rien, cas CATE 23:12→23:13). EP TP fixe 5-7% PnL, pas sur une mèche de prix.
+                // SORTIE = TP 5-7% PnL LP (comme EP, ligne 108) OU RSI2>90 en profit — sur le gain LP RÉEL.
+                // (Anti-churn retiré : l'entrée RSI-survendu empêche déjà d'ouvrir en plein pump.)
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
                 if (candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
-                    const tpHit = realGain >= TP_PCT;                              // +6% LP réel
-                    const rsiHit = rsi2 != null && rsi2 > 90 && realGain >= 0.04;  // top RSI MAIS ≥+4% LP (anti-churn)
+                    const tpHit = realGain >= TP_PCT;                    // +6% LP réel
+                    const rsiHit = rsi2 != null && rsi2 > 90 && realGain > 0; // top RSI en profit
                     if (tpHit || rsiHit) {
                         await closePaper(tok, pos, px, tpHit ? `TP LP +${(realGain * 100).toFixed(1)}%` : `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
                     }
@@ -856,6 +855,10 @@ async function scan() {
             // entrée, il MEURT → on n'ouvre plus dessus (cas Slop cut -34% puis re-dump).
             if (!state.positions[tok] && w.lastEntryPrice && curPrice >= w.lastEntryPrice * 0.98) w.recovered = true;
             const canReenter = !w.lastEntryPrice || w.recovered;
+            // ANTI-CHASE-PUMP (2026-08-04, cas CATE entré en plein +8.7%) : on n'entre QUE si survendu
+            // (RSI2 bas = DANS le dump), pas quand ça pompe déjà. EP achète la peur, pas l'euphorie.
+            const rsiEntry = calculateRSI(cs.slice(0, -1).map(c => c[4]), 2);
+            const rsiLow = rsiEntry != null && rsiEntry < 40;   // survendu/pullback (pas en pump) — pas trop strict
             // Purge chop : un DUMPER clair (chop < 40%) hors position = poids mort → slot libéré.
             if (cr != null && cr < 0.40 && !state.positions[tok]) {
                 console.log(`🧹 Purge watch: ${w.symbol} (dumper, chop ${(cr * 100).toFixed(0)}% — dumps sans rebond)`);
@@ -871,6 +874,7 @@ async function scan() {
             else if (cr == null) block = 'chop-inconnu';
             else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`;
             else if (!atDip) block = 'pas-au-creux(<40%)';
+            else if (!rsiLow) block = 'pas-survendu(RSI>40=pompe)';
             else if (!canReenter) block = 'coin-mourant';
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (onCooldown) block = 'cooldown';
@@ -892,7 +896,7 @@ async function scan() {
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
             // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && canReenter && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && rsiLow && canReenter && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 // Pool Meteora viable requise en LIVE (sélection EP "coin AND pool selection") — lazy, cachée 30min.
                 if (live.enabled && live.findMeteoraPool) {
                     if (w.meteoraOk == null || now - (w.meteoraCheckedAt || 0) > 30 * 60e3) {
