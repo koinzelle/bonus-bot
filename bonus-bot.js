@@ -278,6 +278,7 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs) 
     return cs.length ? cs : (c ? c.cs : []);
 }
 // TTL longs = moins d'appels : 15m→120s (support/exit) ; 1H→20min ; daily→60min (macro = lent).
+const candles5 = (mint, limit = 200) => candlesTF(mint, '5m', '5m', limit, 300, 60 * 1000);
 const candles15 = (mint, limit = 192) => candlesTF(mint, '15m', '15m', limit, 900, 120 * 1000);
 const candles1h = (mint, limit = 720) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000);
 const candlesDay = (mint, limit = 1000) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000);
@@ -684,33 +685,40 @@ async function scan() {
                 // MESURE seulement (n'ouvre RIEN) : on logge chaque palier -10% franchi + on note la
                 // profondeur max atteinte sur le trade → après quelques trades on saura si le stacking aide
                 // (un trade qui plonge à -30% puis sort vert = le stacking aurait baissé le prix moyen).
-                const dropFromEntry = 1 - lastC[4] / pos.entry;
-                // ALERTE DOWNSIDE -30% (2026-07-29, règle user) : rôle de stop-loss HUMAIN (comme EP gère ses
-                // bleeders par alerte, pas par stop auto). Telegram UNE fois quand la position passe -30% sous
-                // l'entrée → décision manuelle garder/couper.
-                if (dropFromEntry >= 0.30 && !pos.alerted30) {
-                    pos.alerted30 = true; save();
-                    tg(`⚠️ ${pos.symbol} : -${(dropFromEntry * 100).toFixed(0)}% sous l'entrée (prix $${lastC[4].toFixed(8)}). Décision manuelle : garder ou couper (/close?symbol=${encodeURIComponent(pos.symbol)}).`);
+                // ── SORTIE REFONTE EP CHOP-CYCLE (2026-08-03) : monitoring en 5m (EP cycle vite, ~1 cycle/6h
+                // sur NEEGY). Exit = TP +6% PnL OU RSI2>90 (tous deux en profit). CUT HORS-RANGE si le prix
+                // sort par le bas du ±34 (≈-30%) = fermeture STRUCTURELLE d'EP (ligne 108) → le cycle
+                // ré-ouvrira plus bas si le coin chope encore (chop-rate, Phase 2).
+                let pcs = cs;
+                try { const c5 = await candles5(tok, 200); if (c5 && c5.length >= 5) pcs = c5; } catch (_) { /* fallback 15m */ }
+                const plast = pcs[pcs.length - 1];
+                const px = plast[4];
+                const dropFromEntry = 1 - px / pos.entry;
+                const gain = px / pos.entry - 1;
+                const RANGE_DOWN = 0.30, TP_PCT = 0.06;
+
+                // CUT HORS-RANGE : prix sorti par le bas du ±34 → close (plus de fees hors range).
+                if (dropFromEntry >= RANGE_DOWN) {
+                    await closePaper(tok, pos, px, `CUT hors-range (-${(dropFromEntry * 100).toFixed(0)}%, sorti du ±34)`);
+                    continue;
                 }
-                const stackLevel = dropFromEntry > 0 ? Math.floor(dropFromEntry / 0.10) : 0; // 1=-10%, 2=-20%...
+
+                // SHADOW stacking (mesure only, inchangé)
+                const stackLevel = dropFromEntry > 0 ? Math.floor(dropFromEntry / 0.10) : 0;
                 if (stackLevel >= 1 && stackLevel > (pos.stacksLogged || 0) && stackLevel <= 5) {
                     pos.stacksLogged = stackLevel;
                     if (stackLevel > (pos.maxStackLevel || 0)) pos.maxStackLevel = stackLevel;
-                    console.log(`  · [SHADOW stacking] ${pos.symbol} : EP ouvrirait la position #${stackLevel + 1} (à -${(dropFromEntry * 100).toFixed(0)}% de l'entrée) — mesure, n'ouvre rien`);
                     recordShadow('stacking', { symbol: pos.symbol, level: stackLevel + 1, dropPct: +(dropFromEntry * 100).toFixed(0) });
                 }
 
-                const candleAfterEntry = lastC[0] > (pos.entryCandleTs || 0);
-                if (candleAfterEntry) {
-                    const closed = cs.slice(0, -1).map(c => c[4]);
-                    const rsi2 = calculateRSI(closed, 2);
-                    const macd = calculateMACD(closed);
-                    const bb = bollinger(closed);
-                    const px = lastC[4];
-                    const aboveBB = bb && closed[closed.length - 1] > bb.upper;
-                    const macdGreen = macd && macd.histogramTurnsGreen;
-                    if (rsi2 != null && rsi2 > 90 && px > pos.entry) {
-                        await closePaper(tok, pos, px, `SORTIE EP (RSI2 ${rsi2.toFixed(0)}>90${aboveBB ? ' +BB' : ''}${macdGreen ? ' +MACD' : ''}, +${((px / pos.entry - 1) * 100).toFixed(1)}%)`);
+                // TP FIXE +6% OU RSI2>90 — tous deux exigent le profit
+                const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
+                if (candleAfterEntry && gain > 0) {
+                    const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
+                    const tpHit = gain >= TP_PCT;
+                    const rsiHit = rsi2 != null && rsi2 > 90;
+                    if (tpHit || rsiHit) {
+                        await closePaper(tok, pos, px, tpHit ? `TP +${(gain * 100).toFixed(1)}% (5m)` : `SORTIE RSI2 ${rsi2.toFixed(0)}>90 (+${(gain * 100).toFixed(1)}%)`);
                     }
                 }
                 continue;
