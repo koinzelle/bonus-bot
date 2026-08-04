@@ -716,7 +716,7 @@ async function scan() {
                 const px = plast[4];
                 const dropFromEntry = 1 - px / pos.entry;
                 const gain = px / pos.entry - 1;
-                const RANGE_DOWN = 0.30, TP_PCT = 0.06;
+                const RANGE_DOWN = 0.35, TP_PCT = 0.06;
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
