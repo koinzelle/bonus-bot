@@ -792,7 +792,11 @@ async function scan() {
             // un ATH et un dead-cat serait qualifié). GMGN souvent null sur vieux coins → daily prend le relais.
             if (w.athGmgn && w.athGmgn > trueAth) trueAth = w.athGmgn;
             // Max glissant du vrai ATH (2026-07-29) : référence STABLE pour la ré-entrée (nouvel ATH global).
-            if (trueAth > (w.maxTrueAth || 0)) w.maxTrueAth = trueAth;
+            // Compteur de CASSURES D'ATH (règle EP ligne 79 : 2e/3e OK, 4e = MAX → pump épuisé, rug probable
+            // après → on ne LP plus). Compte les vrais nouveaux plus-hauts de vie (>2% au-dessus du max), pas
+            // les cycles. 1re observation = pas une cassure.
+            if (w.maxTrueAth == null) w.maxTrueAth = trueAth;
+            else if (trueAth > w.maxTrueAth * 1.02) { w.maxTrueAth = trueAth; w.athBreaks = (w.athBreaks || 0) + 1; }
             // Migration transition (2026-07-29) : tout token DÉJÀ tradé avant ce fix (position ouverte OU
             // marqueur d'entrée antérieure lastEntryAth/lastEntryTrueAth) n'a pas de lastEntryPeak → on
             // l'initialise au max COURANT. Effet : il ne pourra ré-entrer que sur un vrai NOUVEL ATH global
@@ -875,6 +879,7 @@ async function scan() {
             else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`;
             else if (!atDip) block = 'pas-au-creux(<35%)';
             else if (!rsiLow) block = 'pas-survendu(RSI>40=pompe)';
+            else if ((w.athBreaks || 0) >= 4) block = 'ATH-épuisé(4x)';
             else if (!canReenter) block = 'coin-mourant';
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (onCooldown) block = 'cooldown';
@@ -896,7 +901,7 @@ async function scan() {
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
             // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && rsiLow && canReenter && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && rsiLow && canReenter && (w.athBreaks || 0) < 4 && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 // Pool Meteora viable requise en LIVE (sélection EP "coin AND pool selection") — lazy, cachée 30min.
                 if (live.enabled && live.findMeteoraPool) {
                     if (w.meteoraOk == null || now - (w.meteoraCheckedAt || 0) > 30 * 60e3) {
