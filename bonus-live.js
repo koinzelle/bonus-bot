@@ -115,9 +115,11 @@ async function findMeteoraPool(tokenAddress) {
         } catch (_) {}
     }
     if (!candidates.length) return null;
-    // Priorité FEES d'abord (demande user, aligné bot 1 : "5% d'abord, descendre s'il n'y a rien") —
-    // une pool 5% bat toujours une 2% ; bin step 100 (canonique) puis réserve en départage.
-    candidates.sort((a, b) => b.baseFeePct - a.baseFeePct || (b.binStep === 100) - (a.binStep === 100) || b.reserveSol - a.reserveSol);
+    // Priorité SCALP (2026-08-04, preuve image CATE : EP scalpe en fee 1-2% = +SOL ; notre 5% = 0% car le
+    // swap round-trip du scalp mange la grosse fee + moins de volume). On prend la fee la plus BASSE
+    // (viable ≥0.5%), puis la plus PROFONDE (volume), puis bin step 100 canonique. (L'ancien "5% d'abord"
+    // = bot 1 classique / harvest range large — PAS le scalp bonus stage.)
+    candidates.sort((a, b) => a.baseFeePct - b.baseFeePct || b.reserveSol - a.reserveSol || (b.binStep === 100) - (a.binStep === 100));
     const best = candidates[0];
     console.log(`  🏆 Pool: ${best.addr.slice(0, 8)}... | bin step ${best.binStep} | fee ${best.baseFeePct}% | réserve ${best.reserveSol.toFixed(1)} SOL`);
     return best.addr;
