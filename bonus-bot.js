@@ -741,13 +741,19 @@ async function scan() {
 
                 // SORTIE = TP 5-7% PnL LP (comme EP, ligne 108) OU RSI2>90 en profit — sur le gain LP RÉEL.
                 // (Anti-churn retiré : l'entrée RSI-survendu empêche déjà d'ouvrir en plein pump.)
+                // TRAILING (2026-08-04, data live : le RSI coupait les gains à +2.5% vs cuts -30%, breakeven).
+                // - Runner : dès +6% LP (armé), on TRAIL 1% → sort quand ça retombe 1% sous le peak (ride le
+                //   pump, ex JLY +12%). - Petit bounce pas encore armé : RSI2>90 + profit (scalp). Sur realGain.
+                pos.peakGain = Math.max(pos.peakGain || 0, realGain);
+                const armed = pos.peakGain >= TP_PCT;   // +6% LP atteint
+                const TRAIL = 0.01;
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
                 if (candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
-                    const tpHit = realGain >= TP_PCT;                    // +6% LP réel
-                    const rsiHit = rsi2 != null && rsi2 > 90 && realGain > 0; // top RSI en profit
-                    if (tpHit || rsiHit) {
-                        await closePaper(tok, pos, px, tpHit ? `TP LP +${(realGain * 100).toFixed(1)}%` : `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
+                    const trailHit = armed && realGain <= pos.peakGain - TRAIL;         // ride terminé (pullback 1%)
+                    const rsiHit = !armed && rsi2 != null && rsi2 > 90 && realGain > 0; // scalp au top RSI (pas encore armé)
+                    if (trailHit || rsiHit) {
+                        await closePaper(tok, pos, px, trailHit ? `TRAIL LP +${(realGain * 100).toFixed(1)}% (peak +${(pos.peakGain * 100).toFixed(1)}%)` : `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
                     }
                 }
                 continue;
