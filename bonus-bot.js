@@ -858,7 +858,7 @@ async function scan() {
             const chopOk = cr != null && cr >= 0.60;                 // chopper (NEEGY 88%) ; dumper = bas
             const recentHigh = Math.max(...cs.slice(-24).map(c => c[2]));
             const dumpedFromHigh = recentHigh > 0 ? 1 - curPrice / recentHigh : 0;
-            const atDip = dumpedFromHigh >= 0.35;                    // EP "wait for a dump" — retrace ≥35% (cale sur sa cadence NEEGY ~25/sem, backtest 04/08)
+            const atDip = dumpedFromHigh >= 0.40;                    // EP "wait for a dump" — retrace ≥40% (backtest 06/08 : moins de cuts 8→6, WR 78→82%, entrées + profondes 42-49% = près du fond)
             const atST = line != null && line > 0 ? curPrice <= line * 1.02 : true; // retrace VERS la ST (EP, ST intouchable) — prix à/sous la ligne ST
             // ANTI-COIN-MOURANT (2026-08-04, règle user) : après un close on ne RÉ-OUVRE que si le prix a
             // re-dépassé notre dernière entrée (= il chope encore). S'il ne fait que des lower lows sous notre
@@ -888,7 +888,7 @@ async function scan() {
             else if (!patOk) block = 'pattern-KO';
             else if (cr == null) block = 'chop-inconnu';
             else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`;
-            else if (!atDip) block = 'pas-au-creux(<35%)';
+            else if (!atDip) block = 'pas-au-creux(<40%)';
             else if (!rsiLow) block = 'pas-survendu(RSI>40=pompe)';
             else if ((w.athBreaks || 0) >= 4) block = 'ATH-épuisé(4x)';
             else if (!canReenter) block = 'coin-mourant';
