@@ -477,10 +477,15 @@ async function gmgnQualityOk(tok, sym) {
                 totalInsiderPct = pcts.reduce((s, v) => s + v, 0);
             }
         } catch (_) { /* rugcheck KO → fail-open sur ce critère */ }
+        // ÉTABLI (2026-08-08, cas ANSEM) : un coin avec bcp de holders / gros MC a survécu des semaines →
+        // la concentration top10/insiders n'est PLUS un signal de rug (ANSEM 192M, top10 63% = EP le scalpe).
+        // On relâche les rug-guards de CONCENTRATION pour les établis, on les garde stricts pour le frais.
+        const mcUsd = parseFloat(info.market_cap ?? info.usd_market_cap ?? info.fdv ?? 0);
+        const established = holders >= 5000 || mcUsd >= 5_000_000;
         const fails = [];
         if (holders < 1000) fails.push(`holders ${holders}`);
-        if (top10 > 30) fails.push(`top10 ${top10.toFixed(0)}%`);
-        if (insiders > 10) fails.push(`insiders ${insiders.toFixed(0)}%`);
+        if (top10 > (established ? 85 : 30)) fails.push(`top10 ${top10.toFixed(0)}%`);
+        if (!established && insiders > 10) fails.push(`insiders ${insiders.toFixed(0)}%`);
         if (dangerous) fails.push('honeypot/flag');
         // fees ≥ 30 SOL EN DUR (2026-07-22, demande user) : EP l'exige (« demande réelle », anti-wash).
         // Le souci "token jeune pas encore 30 SOL" tombe : on cible désormais des coins PLUS VIEUX
