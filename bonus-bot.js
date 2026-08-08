@@ -720,13 +720,16 @@ async function scan() {
                 // sur NEEGY). Exit = TP +6% PnL OU RSI2>90 (tous deux en profit). CUT HORS-RANGE si le prix
                 // sort par le bas du ±34 (≈-30%) = fermeture STRUCTURELLE d'EP (ligne 108) → le cycle
                 // ré-ouvrira plus bas si le coin chope encore (chop-rate, Phase 2).
+                // TF de sortie ADAPTATIF (2026-08-08, cas STONK/CATE LP 0%) : un ÉTABLI (MC≥5M) chope DOUX sur
+                // des heures → RSI(2) 5m explose sur un micro-wiggle → sort à LP ~0% avant le vrai bounce. On
+                // le monitore en 15m. NEW/VOLATIL = 5m INCHANGÉ (verrouillé sur pos.established, défaut 5m).
                 let pcs = cs;
-                try { const c5 = await candles5(tok, 200); if (c5 && c5.length >= 5) pcs = c5; } catch (_) { /* fallback 15m */ }
+                try { const c = pos.established ? await candles15(tok, 200) : await candles5(tok, 200); if (c && c.length >= 5) pcs = c; } catch (_) { /* fallback */ }
                 const plast = pcs[pcs.length - 1];
                 const px = plast[4];
                 const dropFromEntry = 1 - px / pos.entry;
                 const gain = px / pos.entry - 1;
-                const RANGE_DOWN = 0.35, TP_PCT = 0.06;
+                const RANGE_DOWN = 0.35, TP_PCT = pos.established ? 0.025 : 0.06;  // établi bounce doux ~+2.5% / volatil +6% (new inchangé)
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
@@ -756,7 +759,7 @@ async function scan() {
                 //   pump, ex JLY +12%). - Petit bounce pas encore armé : RSI2>90 + profit (scalp). Sur realGain.
                 pos.peakGain = Math.max(pos.peakGain || 0, realGain);
                 const armed = pos.peakGain >= TP_PCT;   // +6% LP atteint
-                const TRAIL = 0.01;
+                const TRAIL = pos.established ? 0.005 : 0.01;   // trail plus serré pour le chop doux des établis
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
                 if (candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
@@ -944,7 +947,7 @@ async function scan() {
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
                     // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
                     dumpDepthPct: pInfo.dumpDepthPct ?? null, entryMcK: Math.round(curMc / 1000), trueAthMc: Math.round(trueAth * w.supply), pctOfTrueAth: trueAth > 0 ? +((ath / trueAth) * 100).toFixed(0) : null, vol24hK: w.vol ? Math.round(w.vol / 1000) : null,
-                    downtrendEntry: downtrend };  // SHADOW : tag lower-highs pour comparer l'issue downtrend vs range
+                    downtrendEntry: downtrend, established };  // established (MC≥5M) → exit régime doux (15m, TP bas)
                 save();
                 if (downtrend) { console.log(`  · [SHADOW downtrend] ${w.symbol} : entrée en LOWER-HIGHS (haut récent -${((1 - recentHigh12 / priorHigh12) * 100).toFixed(0)}% vs avant) — mesure, on juge l'issue (dead-cat ?)`); recordShadow('downtrend', { symbol: w.symbol, dropHighPct: +((1 - recentHigh12 / priorHigh12) * 100).toFixed(0) }); }
                 const msg = `🎯 ENTRÉE ${w.symbol} (chop-cycle${downtrend ? ' ⚠️downtrend' : ''})\nprix: $${entry.toFixed(8)} | chop ${(cr * 100).toFixed(0)}% | dumpé -${(dumpedFromHigh * 100).toFixed(0)}% sous le haut récent\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: TP +6% OU RSI(2)>90 | cut hors-range -35% | on cycle`;
