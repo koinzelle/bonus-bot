@@ -866,9 +866,15 @@ async function scan() {
             // ── CHOP-RATE + AU CREUX (2026-08-03, refonte EP chop-cycle) — REMPLACE les gates ATH ──
             const cr = chopRate(cs);                                 // fraction des dumps qui rebondissent
             const chopOk = cr != null && cr >= 0.60;                 // chopper (NEEGY 88%) ; dumper = bas
-            const recentHigh = Math.max(...cs.slice(-24).map(c => c[2]));
+            // ENTRÉE ADAPTATIVE AU RÉGIME (2026-08-08, mesure ANSEM/CATE) : un ÉTABLI (MC≥5M) chope DOUX
+            // (dips médiane ~11% sur ANSEM, sur des jours) ; un volatil dumpe -40% en 6h. On adapte seuil +
+            // fenêtre → sinon l'entrée -40%/6h ne se déclenche JAMAIS sur les établis (KINS/ANSEM = 0 trade).
+            const established = curMc >= 5_000_000;
+            const winN = established ? 96 : 24;                      // haut récent : 24h (établi, 1h de chop lent) vs 6h (volatil)
+            const dumpThr = established ? 0.12 : 0.40;               // établi -12% (dips ANSEM ~11%) / volatil -40%
+            const recentHigh = Math.max(...cs.slice(-winN).map(c => c[2]));
             const dumpedFromHigh = recentHigh > 0 ? 1 - curPrice / recentHigh : 0;
-            const atDip = dumpedFromHigh >= 0.40;                    // EP "wait for a dump" — retrace ≥40% (backtest 06/08 : moins de cuts 8→6, WR 78→82%, entrées + profondes 42-49% = près du fond)
+            const atDip = dumpedFromHigh >= dumpThr;
             const atST = line != null && line > 0 ? curPrice <= line * 1.02 : true; // retrace VERS la ST (EP, ST intouchable) — prix à/sous la ligne ST
             // ANTI-COIN-MOURANT (2026-08-04, règle user) : après un close on ne RÉ-OUVRE que si le prix a
             // re-dépassé notre dernière entrée (= il chope encore). S'il ne fait que des lower lows sous notre
@@ -898,7 +904,7 @@ async function scan() {
             else if (!patOk) block = 'pattern-KO';
             else if (cr == null) block = 'chop-inconnu';
             else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`;
-            else if (!atDip) block = 'pas-au-creux(<40%)';
+            else if (!atDip) block = `pas-au-creux(<${(dumpThr * 100).toFixed(0)}%${established ? '·établi' : ''})`;
             else if (!rsiLow) block = 'pas-survendu(RSI>40=pompe)';
             else if ((w.athBreaks || 0) >= 4) block = 'ATH-épuisé(4x)';
             else if (!canReenter) block = 'coin-mourant';
