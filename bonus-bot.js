@@ -151,6 +151,11 @@ async function gtTrending() {
     const urls = [
         'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
         'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1',
+        // POOLS METEORA ACTIVES (2026-08-08, cas KINS/ANSEM) : les choppeurs ÉTABLIS d'EP ne trendent pas
+        // toujours (« chops quietly, minimal mentions ») mais génèrent du volume dans leur pool Meteora.
+        // On les découvre par volume 24h → capte CATE, ANSEM, STONK, KINS… = l'univers d'EP.
+        'https://api.geckoterminal.com/api/v2/networks/solana/dexes/meteora/pools?sort=h24_volume_usd_desc&page=1',
+        'https://api.geckoterminal.com/api/v2/networks/solana/dexes/meteora/pools?sort=h24_volume_usd_desc&page=2',
     ];
     if (gtScan % 3 === 0) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1'); // 24h occasionnel
     // Retourne [{ tok, gtPool }] : on GARDE l'adresse de pool GT (garantie indexée pour les bougies —
