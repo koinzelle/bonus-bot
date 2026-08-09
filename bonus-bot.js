@@ -868,7 +868,7 @@ async function scan() {
             // revient via le trending. 72h = 3× le seuil d'entrée, marge pour les cyclers.
             // ── CHOP-RATE + AU CREUX (2026-08-03, refonte EP chop-cycle) — REMPLACE les gates ATH ──
             const cr = chopRate(cs);                                 // fraction des dumps qui rebondissent
-            const chopOk = cr != null && cr >= 0.60;                 // chopper (NEEGY 88%) ; dumper = bas
+            const chopOk = cr == null || cr >= 0.40;                 // filtre ANTI-DUMPER (2026-08-09) : bloque SEULEMENT les dumpers connus (<40%), laisse passer les inconnus (pas de gate obligatoire — EP choisit au jugement, pas de chop-rate formel)
             // ENTRÉE ADAPTATIVE AU RÉGIME (2026-08-08, mesure ANSEM/CATE) : un ÉTABLI (MC≥5M) chope DOUX
             // (dips médiane ~11% sur ANSEM, sur des jours) ; un volatil dumpe -40% en 6h. On adapte seuil +
             // fenêtre → sinon l'entrée -40%/6h ne se déclenche JAMAIS sur les établis (KINS/ANSEM = 0 trade).
@@ -896,6 +896,13 @@ async function scan() {
             // Purge chop : un DUMPER clair (chop < 40%) hors position = poids mort → slot libéré.
             if (cr != null && cr < 0.40 && !state.positions[tok]) {
                 console.log(`🧹 Purge watch: ${w.symbol} (dumper, chop ${(cr * 100).toFixed(0)}% — dumps sans rebond)`);
+                state.purgedAt[tok] = now; delete state.watch[tok]; continue;
+            }
+            // Rotation watch (2026-08-09, demande user) : un pattern-KO qui traîne >12h hors position ne
+            // qualifiera pas → on le purge pour libérer le slot (arrête de garder du junk). Re-add possible
+            // via découverte s'il forme le pattern plus tard.
+            if (!patOk && !state.positions[tok] && w.addedAt && (now - w.addedAt) > 12 * 3600e3) {
+                console.log(`🧹 Purge watch: ${w.symbol} (pattern-KO depuis >12h — rotation)`);
                 state.purgedAt[tok] = now; delete state.watch[tok]; continue;
             }
             w.hot = !!(armed && mcOk && chopOk);                     // "chaud" = choppy + armé
