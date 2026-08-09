@@ -760,13 +760,27 @@ async function scan() {
                 pos.peakGain = Math.max(pos.peakGain || 0, realGain);
                 const armed = pos.peakGain >= TP_PCT;   // +6% LP atteint
                 const TRAIL = 0.01;   // uniforme
+
+                // LOG position par scan (2026-08-09) : fin du silence de bot 2 + audit de la sortie —
+                // exactement ce que le bot VOIT (realGain, source live-ou-prix, seuil trail, TF).
+                const realSource = (pos.live && live.enabled && live.positionValueSol && pos.live.openValueSol) ? 'live' : 'prix';
+                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | src:${realSource} | ${pos.established ? '15m' : '5m'}`);
+
+                // TRAILING TEMPS RÉEL (2026-08-09, cas STONK sorti à la main) : le trail est un STOP de
+                // protection → il agit sur la valeur LP live à CHAQUE scan, PLUS derrière candleAfterEntry
+                // (sinon il attend une bougie 15m clôturée = 15 min de retard, rate les pullbacks rapides).
+                if (armed && realGain <= pos.peakGain - TRAIL) {
+                    await closePaper(tok, pos, px, `TRAIL LP +${(realGain * 100).toFixed(1)}% (peak +${(pos.peakGain * 100).toFixed(1)}%)`);
+                    continue;
+                }
+
+                // RSI2>90 = scalp au top quand pas encore armé → reste sur bougie CLÔTURÉE (le RSI en a besoin).
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
-                if (candleAfterEntry) {
+                if (!armed && candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
-                    const trailHit = armed && realGain <= pos.peakGain - TRAIL;         // ride terminé (pullback 1%)
-                    const rsiHit = !armed && rsi2 != null && rsi2 > 90 && realGain > 0; // scalp au top RSI (pas encore armé)
-                    if (trailHit || rsiHit) {
-                        await closePaper(tok, pos, px, trailHit ? `TRAIL LP +${(realGain * 100).toFixed(1)}% (peak +${(pos.peakGain * 100).toFixed(1)}%)` : `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
+                    if (rsi2 != null && rsi2 > 90 && realGain > 0) {
+                        await closePaper(tok, pos, px, `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
+                        continue;
                     }
                 }
                 continue;
