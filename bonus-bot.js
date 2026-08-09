@@ -181,7 +181,8 @@ async function gtTrending() {
             }
         } catch (_) { ko = true; /* une vue GT en échec ne bloque pas les autres */ }
         srcStats.push(`${label}:${ko ? 'KO⚠️' : added}`);
-        await new Promise(r => setTimeout(r, 150)); // léger espacement anti-429 GeckoTerminal
+        await new Promise(r => setTimeout(r, 2100)); // 2026-08-09 : 150ms→2.1s — GT gratuit ≈ 30/min (1 par 2s) ;
+        // à 150ms le 1er appel passait et TOUT le reste tombait en 429 (Met-vol1/2 KO = découverte établis morte)
     }
     // DexScreener boosts (1 scan/2) : tokens mis en avant/promus = souvent actifs. Pas de gtPool → la
     // watch retombera sur la pool DexScreener (candles15 essaie GT dessus ; purge si non indexé).
