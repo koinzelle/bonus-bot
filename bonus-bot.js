@@ -1150,6 +1150,19 @@ http.createServer((req, res) => {
         }
         return out;
     })();
+    // AGRÉGAT DOWNTREND vs RANGE (2026-08-09) : le tag downtrendEntry prédit-il les perdants ? Calculé sur
+    // TOUS les trades chiffrés (les closes manuels ont pnlPct null → exclus). Réponse au shadow downtrend.
+    const downtrendVsRange = (() => {
+        const g = (flag) => {
+            const arr = state.trades.filter(t => t.downtrendEntry === flag && typeof t.pnlPct === 'number');
+            if (!arr.length) return { n: 0 };
+            const wins = arr.filter(t => t.pnlPct > 0).length;
+            return { n: arr.length, wr: Math.round(wins / arr.length * 100) + '%',
+                avgPnlPct: +(arr.reduce((s, t) => s + t.pnlPct, 0) / arr.length).toFixed(1),
+                sumPnlSol: +arr.reduce((s, t) => s + (t.pnlSol || 0), 0).toFixed(4) };
+        };
+        return { downtrend: g(true), range: g(false) };
+    })();
     res.end(JSON.stringify({
         mode: 'PAPER', updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
@@ -1159,6 +1172,7 @@ http.createServer((req, res) => {
         // A/B live : trailing (réel) vs TP fixe +6% (ombre) sur les MÊMES entrées
         blockCount: state.blockCount || {}, // compteur cumulé des raisons de non-entrée → voir le vrai goulot
         shadowStats: state.shadowStats || {}, // mesures shadow accumulées (persistées sur le volume)
+        downtrendVsRange, // issue AGRÉGÉE downtrend vs range sur les 141 trades (le shadow enfin exploitable)
         athAgeBins, // issue par tranche d'âge d'ATH à l'entrée (tous les trades) — voir mémoire athage-vs-outcome
         shadowManualCloses: state.shadowManualCloses || [], // regret des coupes manuelles (exit EP possible après ?)
         abFixedVsTrailing: {
