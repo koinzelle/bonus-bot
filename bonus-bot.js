@@ -912,8 +912,7 @@ async function scan() {
             else if (!mcOk) block = 'MC<250k';
             else if (ageH < AGE_MIN_H) block = 'coin<10h';
             else if (!patOk) block = 'pattern-KO';
-            else if (cr == null) block = 'chop-inconnu';
-            else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`;
+            else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`; // cr==null ne bloque plus (2026-08-09) → on tombe sur le vrai blocage suivant
             else if (!atDip) block = `pas-au-creux(<${(dumpThr * 100).toFixed(0)}%${established ? '·établi' : ''})`;
             else if (!rsiLow) block = 'pas-survendu(RSI>40=pompe)';
             else if ((w.athBreaks || 0) >= 4) block = 'ATH-épuisé(4x)';
