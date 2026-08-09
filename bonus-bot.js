@@ -671,6 +671,26 @@ async function scan() {
             // (rate-limit) n'est PAS une pool morte (2026-07-22 : les purges 429 tuaient des tokens
             // QUALIFIÉS comme Jimothy911) → le 429 ne compte plus comme échec, il déclenche le backoff.
             if (!cs || cs.length === 0) {
+                // STOP RÉSILIENT (2026-08-09) : bougies KO ≠ position sans stop. Pour un LIVE, la valeur LP
+                // on-chain ne dépend PAS des bougies → on évalue trail + CUT même en panne de data feed
+                // (sinon un hoquet GMGN laisse la position nue, cas vu le 09/08). Chemin normal inchangé.
+                if (inPos) {
+                    const posO = state.positions[tok];
+                    if (posO.live && live.enabled && live.positionValueSol && posO.live.openValueSol) {
+                        try {
+                            const v = await live.positionValueSol(posO.live);
+                            if (v != null) {
+                                const rg = v / posO.live.openValueSol - 1;
+                                posO.peakGain = Math.max(posO.peakGain || 0, rg);
+                                const armedO = posO.peakGain >= 0.06;
+                                console.log(`📊 ${posO.symbol} | LP ${(rg * 100).toFixed(1)}% | peak ${(posO.peakGain * 100).toFixed(1)}% | ${armedO ? 'armé✓' : 'pas-armé'} | trail≤${((posO.peakGain - 0.01) * 100).toFixed(1)}% | src:live | bougies-KO`);
+                                const exitPx = posO.lastPx || posO.entry;
+                                if (armedO && rg <= posO.peakGain - 0.01) { await closePaper(tok, posO, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(posO.peakGain * 100).toFixed(1)}%, bougies KO)`); continue; }
+                                if (rg <= -0.35) { await closePaper(tok, posO, exitPx, `CUT valeur LP ${(rg * 100).toFixed(1)}% (≤ -35% hors-range, bougies KO)`); continue; }
+                            }
+                        } catch (_) { /* valeur live KO aussi → rien à faire, on garde la position */ }
+                    }
+                }
                 // BACK-OFF du token qui échoue (2026-07-27) : sinon les tokens sans cache sont re-tentés
                 // CHAQUE tick → 429 en boucle (chicken-and-egg : nextCheckAt n'était posé qu'après succès).
                 // On les recule de 90s → ils cessent de marteler GT → GT récupère → fetchs réussis.
@@ -727,6 +747,7 @@ async function scan() {
                 try { const c = pos.established ? await candles15(tok, 200) : await candles5(tok, 200); if (c && c.length >= 5) pcs = c; } catch (_) { /* fallback */ }
                 const plast = pcs[pcs.length - 1];
                 const px = plast[4];
+                pos.lastPx = px;   // mémorisé pour le PnL papier du stop résilient (si les bougies tombent ensuite)
                 const dropFromEntry = 1 - px / pos.entry;
                 const gain = px / pos.entry - 1;
                 const RANGE_DOWN = 0.35, TP_PCT = 0.06;  // uniforme (à recaler sur le % réel d'EP — mesure en cours)
