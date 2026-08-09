@@ -898,11 +898,11 @@ async function scan() {
                 console.log(`🧹 Purge watch: ${w.symbol} (dumper, chop ${(cr * 100).toFixed(0)}% — dumps sans rebond)`);
                 state.purgedAt[tok] = now; delete state.watch[tok]; continue;
             }
-            // Rotation watch (2026-08-09, demande user) : un pattern-KO qui traîne >12h hors position ne
-            // qualifiera pas → on le purge pour libérer le slot (arrête de garder du junk). Re-add possible
-            // via découverte s'il forme le pattern plus tard.
-            if (!patOk && !state.positions[tok] && w.addedAt && (now - w.addedAt) > 12 * 3600e3) {
-                console.log(`🧹 Purge watch: ${w.symbol} (pattern-KO depuis >12h — rotation)`);
+            // Rotation watch (2026-08-09, demande user) : le pattern se base sur l'historique — s'il n'est
+            // pas là après 30 min d'observation, attendre ne le créera pas → purge pour libérer le slot.
+            // Re-add possible via découverte s'il forme un nouveau cycle ATH plus tard.
+            if (!patOk && !state.positions[tok] && w.addedAt && (now - w.addedAt) > 30 * 60e3) {
+                console.log(`🧹 Purge watch: ${w.symbol} (pattern-KO depuis >30min — rotation)`);
                 state.purgedAt[tok] = now; delete state.watch[tok]; continue;
             }
             w.hot = !!(armed && mcOk && chopOk);                     // "chaud" = choppy + armé
