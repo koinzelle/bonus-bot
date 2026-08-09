@@ -283,6 +283,16 @@ async function positionValueSol(pos, dlmmPool = null) {
     return yHuman + feeY + (xHuman + feeX) * priceYperX; // tout en SOL
 }
 
+// Valeur LP + bin actif en un appel (pour la sortie hors-range HAUT : bin actif > upperBinId = prix sorti
+// du range par le haut → valeur LP figée en SOL, ni trail ni RSI ne peuvent fermer → on banke). RPC Solana
+// → marche même quand les bougies (GMGN) tombent.
+async function positionValueAndBin(pos) {
+    const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
+    const activeBin = await dlmmPool.getActiveBin();
+    const valueSol = await positionValueSol(pos, dlmmPool);
+    return { valueSol, activeBinId: activeBin.binId };
+}
+
 // ── Existence d'une position live (réconciliation) — check INDIVIDUEL sur SA pool (méthode éprouvée,
 // = celle du close). Retourne 'open' | 'closed' | 'unknown'. 'unknown' sur erreur RPC → l'appelant ne
 // touche à rien (jamais de faux "fermé" qui nettoierait une position vivante). Plus sûr qu'une liste
@@ -357,4 +367,4 @@ async function closeVerified(pos) {
     }
 }
 
-module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionState, sweepToken, sweepOrphans };
+module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, positionState, sweepToken, sweepOrphans };

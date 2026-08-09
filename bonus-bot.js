@@ -676,15 +676,16 @@ async function scan() {
                 // (sinon un hoquet GMGN laisse la position nue, cas vu le 09/08). Chemin normal inchangé.
                 if (inPos) {
                     const posO = state.positions[tok];
-                    if (posO.live && live.enabled && live.positionValueSol && posO.live.openValueSol) {
+                    if (posO.live && live.enabled && live.positionValueAndBin && posO.live.openValueSol) {
                         try {
-                            const v = await live.positionValueSol(posO.live);
-                            if (v != null) {
-                                const rg = v / posO.live.openValueSol - 1;
+                            const r = await live.positionValueAndBin(posO.live);
+                            if (r && r.valueSol != null) {
+                                const rg = r.valueSol / posO.live.openValueSol - 1;
                                 posO.peakGain = Math.max(posO.peakGain || 0, rg);
                                 const armedO = posO.peakGain >= 0.06;
                                 console.log(`📊 ${posO.symbol} | LP ${(rg * 100).toFixed(1)}% | peak ${(posO.peakGain * 100).toFixed(1)}% | ${armedO ? 'armé✓' : 'pas-armé'} | trail≤${((posO.peakGain - 0.01) * 100).toFixed(1)}% | src:live | bougies-KO`);
                                 const exitPx = posO.lastPx || posO.entry;
+                                if (r.activeBinId != null && posO.live.upperBinId != null && r.activeBinId > posO.live.upperBinId) { await closePaper(tok, posO, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, bougies KO)`); continue; }
                                 if (armedO && rg <= posO.peakGain - 0.01) { await closePaper(tok, posO, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(posO.peakGain * 100).toFixed(1)}%, bougies KO)`); continue; }
                                 if (rg <= -0.35) { await closePaper(tok, posO, exitPx, `CUT valeur LP ${(rg * 100).toFixed(1)}% (≤ -35% hors-range, bougies KO)`); continue; }
                             }
@@ -754,9 +755,18 @@ async function scan() {
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
-                let realGain = gain;
-                if (pos.live && live.enabled && live.positionValueSol && pos.live.openValueSol) {
-                    try { const v = await live.positionValueSol(pos.live); if (v != null) realGain = v / pos.live.openValueSol - 1; } catch (_) { /* fallback prix */ }
+                let realGain = gain, liveBinId = null;
+                if (pos.live && live.enabled && live.positionValueAndBin && pos.live.openValueSol) {
+                    try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { realGain = r.valueSol / pos.live.openValueSol - 1; liveBinId = r.activeBinId; } } catch (_) { /* fallback prix */ }
+                }
+
+                // CUT HORS-RANGE HAUT (2026-08-09, cas LOUIE +50% prix) : prix sorti par le HAUT du ±34 → la
+                // valeur LP est FIGÉE en SOL (plus de token à vendre) → ni trail ni RSI ne peuvent fermer, et
+                // on rend le gain si le prix redescend. Bin actif > upperBinId → on banke et le cycle ré-ouvre
+                // plus bas (règle EP : cassure hors-range = close, HAUT comme bas). 0 fee hors range de toute façon.
+                if (liveBinId != null && pos.live.upperBinId != null && liveBinId > pos.live.upperBinId) {
+                    await closePaper(tok, pos, px, `CUT hors-range HAUT (banké +${(realGain * 100).toFixed(1)}% LP, bin ${liveBinId}>${pos.live.upperBinId})`);
+                    continue;
                 }
 
                 // CUT HORS-RANGE : prix sorti par le bas du ±34 → close (plus de fees hors range).
