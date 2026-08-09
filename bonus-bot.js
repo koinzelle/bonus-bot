@@ -149,21 +149,23 @@ async function gtTrending() {
     // sans volume) → INUTILE, retiré. On cible le FRAIS : trending 1h + 6h à chaque scan, 24h 1 scan/3.
     // Le gtPool ne sert plus (bougies Birdeye token-level) → n'importe quelle source va.
     const urls = [
-        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
-        'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1',
+        { label: 'GT-1h', url: 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1' },
+        { label: 'GT-6h', url: 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1' },
         // POOLS METEORA ACTIVES (2026-08-08, cas KINS/ANSEM) : les choppeurs ÉTABLIS d'EP ne trendent pas
         // toujours (« chops quietly, minimal mentions ») mais génèrent du volume dans leur pool Meteora.
         // On les découvre par volume 24h → capte CATE, ANSEM, STONK, KINS… = l'univers d'EP.
-        'https://api.geckoterminal.com/api/v2/networks/solana/dexes/meteora/pools?sort=h24_volume_usd_desc&page=1',
-        'https://api.geckoterminal.com/api/v2/networks/solana/dexes/meteora/pools?sort=h24_volume_usd_desc&page=2',
+        { label: 'Met-vol1', url: 'https://api.geckoterminal.com/api/v2/networks/solana/dexes/meteora/pools?sort=h24_volume_usd_desc&page=1' },
+        { label: 'Met-vol2', url: 'https://api.geckoterminal.com/api/v2/networks/solana/dexes/meteora/pools?sort=h24_volume_usd_desc&page=2' },
     ];
-    if (gtScan % 3 === 0) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1'); // 24h occasionnel
+    if (gtScan % 3 === 0) urls.push({ label: 'GT-24h', url: 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1' }); // 24h occasionnel
     // Retourne [{ tok, gtPool }] : on GARDE l'adresse de pool GT (garantie indexée pour les bougies —
     // fix 19/07 : la pool DexScreener la plus liquide n'est parfois PAS sur GT → fetch bougies mort
     // en boucle → purge → watch vide alors que le token est bon).
     const out = [];
     const seen = new Set();
-    for (const url of urls) {
+    const srcStats = [];   // santé PAR source (repère une source down directement dans les logs — cas bot 1)
+    for (const { label, url } of urls) {
+        let added = 0, ko = false;
         try {
             const r = await axios.get(url, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
             for (const p of r.data?.data || []) {
@@ -174,14 +176,17 @@ async function gtTrending() {
                 if (addr && addr !== 'So11111111111111111111111111111111111111112' && !seen.has(addr)) {
                     seen.add(addr);
                     out.push({ tok: addr, gtPool });
+                    added++;
                 }
             }
-        } catch (_) { /* une vue GT en échec ne bloque pas les autres */ }
+        } catch (_) { ko = true; /* une vue GT en échec ne bloque pas les autres */ }
+        srcStats.push(`${label}:${ko ? 'KO⚠️' : added}`);
         await new Promise(r => setTimeout(r, 150)); // léger espacement anti-429 GeckoTerminal
     }
     // DexScreener boosts (1 scan/2) : tokens mis en avant/promus = souvent actifs. Pas de gtPool → la
     // watch retombera sur la pool DexScreener (candles15 essaie GT dessus ; purge si non indexé).
     if (gtScan % 2 === 0) {
+        let added = 0, ko = false;
         for (const bu of ['https://api.dexscreener.com/token-boosts/top/v1', 'https://api.dexscreener.com/token-boosts/latest/v1']) {
             try {
                 const r = await axios.get(bu, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
@@ -191,11 +196,14 @@ async function gtTrending() {
                     if (addr && addr !== 'So11111111111111111111111111111111111111112' && !seen.has(addr)) {
                         seen.add(addr);
                         out.push({ tok: addr, gtPool: null });
+                        added++;
                     }
                 }
-            } catch (_) { /* boosts KO → non bloquant */ }
+            } catch (_) { ko = true; /* boosts KO → non bloquant */ }
         }
+        srcStats.push(`DexBoost:${ko ? 'KO⚠️' : added}`);
     }
+    console.log(`📡 Sources découverte: ${srcStats.join(' · ')} → ${out.length} candidats uniques`);
     gtScan++;
     return out;
 }
@@ -647,6 +655,7 @@ async function scan() {
 
         // 2. pour chaque token suivi : setup / entrée / gestion de position papier
         let rl429 = 0; // 429 vus ce tick — au 2e, on arrête de fetch (backoff global, le cache sert le reste)
+        let cOk = 0, cKo = 0; // santé source bougies ce tick (pour le résumé de scan — repère une panne, cas bot 1)
         // ROTATION (2026-07-24, GO user) : l'ordre d'itération était fixe → quand le backoff 429 coupait
         // le tick, c'était TOUJOURS la même queue de liste qui sautait → 8 tokens jamais évalués (diag
         // None depuis des heures). Départ tournant : chaque token passe en tête à tour de rôle.
@@ -697,6 +706,7 @@ async function scan() {
                 // On les recule de 90s → ils cessent de marteler GT → GT récupère → fetchs réussis.
                 if (!inPos) w.nextCheckAt = now + 90e3;
                 if (/429/.test(w.lastFetchErr || '')) { rl429++; if (rl429 === 1) console.log(`  ⏳ GT rate-limit (429) ce tick — backoff, le cache prend le relais`); continue; }
+                cKo++;
                 if (!state.positions[tok]) {
                     w.fetchFails = (w.fetchFails || 0) + 1;
                     if (w.fetchFails >= 8) {
@@ -708,6 +718,7 @@ async function scan() {
                 continue;
             }
             w.fetchFails = 0;
+            cOk++;
             if (cs.length < 15) continue;
             // Purge cadavres (2026-07-19) : MC courante < MC_MIN_ATH (250k, aligné entrée 2026-07-22) →
             // le token ne peut plus entrer et squatte un slot. Cooldown re-add 60min évite l'oscillation.
@@ -792,10 +803,13 @@ async function scan() {
                 const armed = pos.peakGain >= TP_PCT;   // +6% LP atteint
                 const TRAIL = 0.01;   // uniforme
 
-                // LOG position par scan (2026-08-09) : fin du silence de bot 2 + audit de la sortie —
-                // exactement ce que le bot VOIT (realGain, source live-ou-prix, seuil trail, TF).
-                const realSource = (pos.live && live.enabled && live.positionValueSol && pos.live.openValueSol) ? 'live' : 'prix';
-                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | src:${realSource} | ${pos.established ? '15m' : '5m'}`);
+                // LOG position par scan (2026-08-09) : fin du silence de bot 2 + audit sortie. On affiche TOUT
+                // ce que le bot VOIT — LP, prix, RSI2 (= notre critère de sortie), RSI14 (comparable DexScreener,
+                // cas bot 1 où notre RSI divergeait), bin actif→haut du range, source valeur, timeframe.
+                const realSource = liveBinId != null ? 'live' : 'prix';
+                const rsi2v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
+                const rsi14v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 14);
+                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource} | ${pos.established ? '15m' : '5m'}`);
 
                 // TRAILING TEMPS RÉEL (2026-08-09, cas STONK sorti à la main) : le trail est un STOP de
                 // protection → il agit sur la valeur LP live à CHAQUE scan, PLUS derrière candleAfterEntry
@@ -1021,6 +1035,7 @@ async function scan() {
                 }
             }
         }
+        console.log(`🔍 Scan ${hotOnly ? 'HOT' : 'complet'} | watch ${Object.keys(state.watch).length} | pos ${Object.keys(state.positions).length} | bougies OK ${cOk}/vide ${cKo}${rl429 ? `/429×${rl429}` : ''}${cOk === 0 && (cKo + rl429) > 0 ? ' ⚠️ SOURCE BOUGIES DOWN' : ''}`);
     } finally { scanning = false; save(); }
 }
 
