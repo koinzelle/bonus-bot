@@ -729,7 +729,7 @@ async function scan() {
                 const px = plast[4];
                 const dropFromEntry = 1 - px / pos.entry;
                 const gain = px / pos.entry - 1;
-                const RANGE_DOWN = 0.35, TP_PCT = pos.established ? 0.025 : 0.06;  // établi bounce doux ~+2.5% / volatil +6% (new inchangé)
+                const RANGE_DOWN = 0.35, TP_PCT = 0.06;  // uniforme (à recaler sur le % réel d'EP — mesure en cours)
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
@@ -759,7 +759,7 @@ async function scan() {
                 //   pump, ex JLY +12%). - Petit bounce pas encore armé : RSI2>90 + profit (scalp). Sur realGain.
                 pos.peakGain = Math.max(pos.peakGain || 0, realGain);
                 const armed = pos.peakGain >= TP_PCT;   // +6% LP atteint
-                const TRAIL = pos.established ? 0.005 : 0.01;   // trail plus serré pour le chop doux des établis
+                const TRAIL = 0.01;   // uniforme
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
                 if (candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
