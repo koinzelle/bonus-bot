@@ -300,12 +300,23 @@ async function birdeyeOhlcv(mint, type, limit, intervalSec) {
     return (r.data?.data?.items || []).map(k => [k.unixTime, +k.o, +k.h, +k.l, +k.c, +k.v]).sort((a, b) => a[0] - b[0]);
 }
 const candleCache = new Map(); // (mint+res) -> { cs, ts }
+let birdeyeBackoffUntil = 0, birdeye429Warned = false; // BACKOFF 429 (outage 10/08) : sur 429, on ARRÊTE de taper
+// Birdeye 60s → l'IP Railway refroidit → Birdeye lève le throttle → 1er appel OK → le cache s'amorce → moins
+// d'appels. Sans ça, le bot re-tape 13×/scan et ENTRETIENT le throttle (jamais de récup).
 async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs) {
     const key = mint + gmgnRes;
     const c = candleCache.get(key);
     if (c && Date.now() - c.ts < ttlMs) return c.cs; // cache : ÉVITE l'appel (le principal minimiseur)
     let cs = [];
-    try { cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec)); } catch (_) {} // PRIMAIRE
+    if (Date.now() >= birdeyeBackoffUntil) { // pas en backoff → on tente Birdeye (PRIMAIRE)
+        try { cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec)); birdeye429Warned = false; }
+        catch (e) {
+            if (e && e.response && e.response.status === 429) {
+                birdeyeBackoffUntil = Date.now() + 60000; // pause 60s : cesse de taper pour laisser l'IP refroidir
+                if (!birdeye429Warned) { birdeye429Warned = true; console.log("  ⏳ Birdeye 429 — backoff 60s (on cesse de taper, le cache/GMGN prend le relais)"); }
+            }
+        }
+    }
     if (cs.length < 15) { // Birdeye vide/rate-limité → fallback GMGN (épargné au max)
         try { const g = await throttled(() => gmgnKline(mint, gmgnRes, limit, intervalSec)); if (g.length > cs.length) cs = g; } catch (_) {}
     }
