@@ -1016,6 +1016,10 @@ async function scan() {
                 console.log(`🧹 Purge watch: ${w.symbol} (pattern-KO depuis >30min — rotation)`);
                 state.purgedAt[tok] = now; delete state.watch[tok]; continue;
             }
+            // PLANCHER FEES/TVL (2026-08-10, cas Jimothy 0.15%) : n'entrer QUE sur des pools qui génèrent des
+            // fees (≥5% fees/TVL 24h via la map découverte). Fail-open si map vide (hoquet datapi → pas de blocage).
+            const feeTvl = feeTvlMap.get(tok) || 0;
+            const feesOk = feeTvlMap.size === 0 || feeTvl >= FEE_TVL_FLOOR;
             w.hot = !!(armed && mcOk && chopOk);                     // "chaud" = choppy + armé
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
@@ -1028,6 +1032,7 @@ async function scan() {
             else if (!rsiLow) block = 'pas-survendu(RSI>40=pompe)';
             else if ((w.athBreaks || 0) >= 4) block = 'ATH-épuisé(4x)';
             else if (!canReenter) block = 'coin-mourant';
+            else if (!feesOk) block = `fees<${FEE_TVL_FLOOR}%(${feeTvl.toFixed(0)}%)`; // pool ne génère pas assez de fees → LP mort
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (onCooldown) block = 'cooldown';
             else if (Object.keys(state.positions).length >= MAX_POSITIONS) block = 'max-pos';
@@ -1043,12 +1048,13 @@ async function scan() {
                 distToST_pct: (line > 0) ? +(((curPrice / line) - 1) * 100).toFixed(1) : null,
                 distEMA34_pct: ema34 != null ? +(((curPrice / ema34) - 1) * 100).toFixed(1) : null,
                 nearST, nearEMA34, nearBBlo, atSupport, cooldown: !!onCooldown,
+                feeTvl24h: +feeTvl.toFixed(1),                           // rendement LP de la pool (plancher ≥5%)
             };
             if (ddOk) w.dd35Logged = false;
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
             // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && rsiLow && canReenter && (w.athBreaks || 0) < 4 && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && rsiLow && canReenter && feesOk && (w.athBreaks || 0) < 4 && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 // Pool Meteora viable requise en LIVE (sélection EP "coin AND pool selection") — lazy, cachée 30min.
                 if (live.enabled && live.findMeteoraPool) {
                     if (w.meteoraOk == null || now - (w.meteoraCheckedAt || 0) > 30 * 60e3) {
