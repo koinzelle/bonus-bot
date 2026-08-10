@@ -820,7 +820,10 @@ async function scan() {
                     if (!pos._lv || Date.now() - pos._lv.ts > lvTtl) {
                         try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) pos._lv = { rg: r.valueSol / pos.live.openValueSol - 1, bin: r.activeBinId, ts: Date.now() }; } catch (_) { /* garde l'ancien cache / fallback prix */ }
                     }
-                    if (pos._lv) { realGain = pos._lv.rg; liveBinId = pos._lv.bin; }
+                    // On ne trust le cache LP que s'il a été rafraîchi récemment (TTL + 60s de marge). Si les
+                    // lectures RPC échouent trop longtemps, le cache FIGE → on retombe sur le PRIX (qui se met à
+                    // jour) pour NE PAS masquer un pump-dump (cas 奶蛙 armé figé à 6% pendant un 429 RPC).
+                    if (pos._lv && Date.now() - pos._lv.ts < lvTtl + 60000) { realGain = pos._lv.rg; liveBinId = pos._lv.bin; }
                 }
 
                 // CUT HORS-RANGE HAUT (2026-08-09, cas LOUIE +50% prix) : prix sorti par le HAUT du ±34 → la

@@ -266,15 +266,26 @@ async function openBidAsk(poolAddress) {
 // PnL réel d'une position = valeur_close − valeur_open, indépendant du bruit wallet. Passe par
 // getPositionsByUserAndLbPair (getPosition seul throw "Cannot read null" sur ce SDK). Retourne null si
 // introuvable (position déjà vidée). dlmmPool optionnel (réutilise si fourni).
-async function positionValueSol(pos, dlmmPool = null) {
-    dlmmPool = dlmmPool || await DLMM.create(connection, new PublicKey(pos.poolAddress));
+// Cache d'instances DLMM par pool (2026-08-10) : DLMM.create recharge TOUTE la pool (config + bins) = coûteux
+// en RPC. La config est statique → on réutilise l'instance ~10 min ; getActiveBin/getPositions relisent le live
+// dessus (données fraîches). Divise les appels RPC par lecture de position → tue le 429 Helius.
+const _dlmmCache = new Map(); // poolAddress -> { pool, ts }
+async function getDlmm(poolAddress) {
+    const c = _dlmmCache.get(poolAddress);
+    if (c && Date.now() - c.ts < 10 * 60 * 1000) return c.pool;
+    const pool = await DLMM.create(connection, new PublicKey(poolAddress));
+    _dlmmCache.set(poolAddress, { pool, ts: Date.now() });
+    return pool;
+}
+async function positionValueSol(pos, dlmmPool = null, activeBin = null) {
+    dlmmPool = dlmmPool || await getDlmm(pos.poolAddress);
     const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(keypair.publicKey);
     const p = userPositions.find(u => u.publicKey.toString() === pos.positionKeypairPub);
     if (!p) return null;
     const d = p.positionData;
     const xDec = dlmmPool.tokenX.decimal ?? dlmmPool.tokenX.mint?.decimals ?? 6;
     const yDec = dlmmPool.tokenY.decimal ?? dlmmPool.tokenY.mint?.decimals ?? 9;
-    const activeBin = await dlmmPool.getActiveBin();
+    activeBin = activeBin || await dlmmPool.getActiveBin();
     const priceYperX = parseFloat(activeBin.pricePerToken); // SOL par token (unités humaines)
     const xHuman = Number(d.totalXAmount?.toString() ?? 0) / 10 ** xDec;
     const yHuman = Number(d.totalYAmount?.toString() ?? 0) / 10 ** yDec;
@@ -287,9 +298,9 @@ async function positionValueSol(pos, dlmmPool = null) {
 // du range par le haut → valeur LP figée en SOL, ni trail ni RSI ne peuvent fermer → on banke). RPC Solana
 // → marche même quand les bougies (GMGN) tombent.
 async function positionValueAndBin(pos) {
-    const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
-    const activeBin = await dlmmPool.getActiveBin();
-    const valueSol = await positionValueSol(pos, dlmmPool);
+    const dlmmPool = await getDlmm(pos.poolAddress);                    // instance cachée (pas de re-download)
+    const activeBin = await dlmmPool.getActiveBin();                   // bin actif lu UNE fois
+    const valueSol = await positionValueSol(pos, dlmmPool, activeBin); // réutilise le bin → pas de 2e lecture
     return { valueSol, activeBinId: activeBin.binId };
 }
 
