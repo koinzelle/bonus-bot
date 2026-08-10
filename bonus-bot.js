@@ -204,6 +204,27 @@ async function gtTrending() {
         }
         srcStats.push(`DexBoost:${ko ? 'KO⚠️' : added}`);
     }
+    // SOURCE FEES/TVL (2026-08-10, cas FOMO) : les MEILLEURES pools LP (fort rendement fees/TVL) sont souvent
+    // PETITES (FOMO $13k TVL, 43% fees/TVL) → invisibles au tri par volume absolu (elles ne rentrent pas dans
+    // le top 40). On les capte via l'API Meteora datapi triée par fee_tvl_ratio_24h. Le token passe ENSUITE
+    // tous les filtres normaux (dexInfo, volume, qualité GMGN, pattern, dump, RSI, pool viable).
+    try {
+        const MIN_TVL = 10000, MIN_FEE_RATIO = 30, USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+        const SOLM = 'So11111111111111111111111111111111111111112';
+        const mr = await axios.get('https://dlmm.datapi.meteora.ag/pools', {
+            params: { page: 1, page_size: 100, sort_by: 'fee_tvl_ratio_24h:desc', filter_by: `tvl>=${MIN_TVL} && is_blacklisted=false` },
+            headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000,
+        });
+        let added = 0;
+        for (const p of mr.data?.data || []) {
+            const ratio = (p.fee_tvl_ratio && p.fee_tvl_ratio['24h']) || 0;
+            if (ratio < MIN_FEE_RATIO || (p.tvl || 0) < MIN_TVL) continue; // fort rendement LP uniquement
+            const xm = p.token_x && p.token_x.address, ym = p.token_y && p.token_y.address;
+            const tok = (xm === SOLM || xm === USDC) ? ym : (ym === SOLM || ym === USDC) ? xm : xm; // côté non-SOL/USDC
+            if (tok && tok !== SOLM && tok !== USDC && !seen.has(tok)) { seen.add(tok); out.push({ tok, gtPool: null }); added++; }
+        }
+        srcStats.push(`Met-fees:${added}`);
+    } catch (_) { srcStats.push('Met-fees:KO⚠️'); }
     console.log(`📡 Sources découverte: ${srcStats.join(' · ')} → ${out.length} candidats uniques`);
     gtScan++;
     return out;
