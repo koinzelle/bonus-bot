@@ -955,7 +955,7 @@ async function scan() {
             // fenêtre → sinon l'entrée -40%/6h ne se déclenche JAMAIS sur les établis (KINS/ANSEM = 0 trade).
             const established = curMc >= 5_000_000;
             const winN = established ? 96 : 24;                      // haut récent : 24h (établi, 1h de chop lent) vs 6h (volatil)
-            const dumpThr = established ? 0.12 : 0.40;               // établi -12% (dips ANSEM ~11%) / volatil -40%
+            const dumpThr = established ? 0.12 : 0.35;               // établi -12% (dips ANSEM ~11%) / volatil -35% (2026-08-10 : -40%→-35%, backtest FOMO WR 73%→81% +13 entrées gagnantes = cadence EP)
             const recentHigh = Math.max(...cs.slice(-winN).map(c => c[2]));
             const dumpedFromHigh = recentHigh > 0 ? 1 - curPrice / recentHigh : 0;
             const atDip = dumpedFromHigh >= dumpThr;
