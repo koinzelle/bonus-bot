@@ -304,6 +304,35 @@ async function positionValueAndBin(pos) {
     return { valueSol, activeBinId: activeBin.binId };
 }
 
+// LECTURE GROUPÉE (2026-08-10) : 1 appel getAllLbPairPositionsByUser → TOUTES les positions (toutes pools)
+// → coût RPC ~plat quel que soit le nombre de positions (permet de scaler le max). Le PRIX est pris via
+// getActiveBin par pool UNIQUE (instance cachée) = MÊME source/formule que positionValueSol → aucun calcul
+// de prix maison, aucun risque de valeur fausse. Renvoie Map<positionKeypairPub, {valueSol, activeBinId}>.
+async function allPositionValues() {
+    const byPair = await DLMM.getAllLbPairPositionsByUser(connection, keypair.publicKey);
+    const out = new Map();
+    for (const [poolAddr, info] of byPair) {
+        let priceYperX, activeBinId, xDec, yDec;
+        try {
+            const dlmm = await getDlmm(poolAddr);
+            const ab = await dlmm.getActiveBin();
+            priceYperX = parseFloat(ab.pricePerToken);
+            activeBinId = ab.binId;
+            xDec = dlmm.tokenX.decimal ?? dlmm.tokenX.mint?.decimals ?? 6;
+            yDec = dlmm.tokenY.decimal ?? dlmm.tokenY.mint?.decimals ?? 9;
+        } catch (_) { continue; } // pool illisible → les positions dessus retomberont sur le fallback individuel
+        for (const lp of info.lbPairPositionsData || []) {
+            const d = lp.positionData;
+            const xHuman = Number(d.totalXAmount?.toString() ?? 0) / 10 ** xDec;
+            const yHuman = Number(d.totalYAmount?.toString() ?? 0) / 10 ** yDec;
+            const feeX = Number(d.feeX?.toString() ?? 0) / 10 ** xDec;
+            const feeY = Number(d.feeY?.toString() ?? 0) / 10 ** yDec;
+            out.set(lp.publicKey.toString(), { valueSol: yHuman + feeY + (xHuman + feeX) * priceYperX, activeBinId });
+        }
+    }
+    return out;
+}
+
 // ── Existence d'une position live (réconciliation) — check INDIVIDUEL sur SA pool (méthode éprouvée,
 // = celle du close). Retourne 'open' | 'closed' | 'unknown'. 'unknown' sur erreur RPC → l'appelant ne
 // touche à rien (jamais de faux "fermé" qui nettoierait une position vivante). Plus sûr qu'une liste
@@ -378,4 +407,4 @@ async function closeVerified(pos) {
     }
 }
 
-module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, positionState, sweepToken, sweepOrphans };
+module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionState, sweepToken, sweepOrphans };

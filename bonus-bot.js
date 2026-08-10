@@ -641,6 +641,16 @@ async function reconcileLivePositions() {
 let scanning = false;
 let scanOffset = 0; // rotation du point de départ de la boucle watch (équité sous backoff 429)
 let scanTick = 0;
+// Cache de la LECTURE GROUPÉE des positions (2026-08-10) : 1 appel live pour TOUTES les positions, réutilisé
+// ~20s → la 1re position du scan déclenche le fetch, les autres lisent le lot en cache (coût RPC ~plat).
+let _batchLv = { map: new Map(), ts: 0 };
+async function batchedPositionValues() {
+    if (Date.now() - _batchLv.ts < 20000) return _batchLv.map;
+    if (live.enabled && live.allPositionValues) {
+        try { const m = await live.allPositionValues(); if (m) _batchLv = { map: m, ts: Date.now() }; } catch (_) { /* garde l'ancien lot */ }
+    }
+    return _batchLv.map;
+}
 async function scan() {
     if (scanning) return; scanning = true;
     try {
@@ -811,19 +821,20 @@ async function scan() {
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
                 let realGain = gain, liveBinId = null;
-                if (pos.live && live.enabled && live.positionValueAndBin && pos.live.openValueSol) {
-                    // CACHE valeur live ADAPTATIF (2026-08-10) : lire la valeur on-chain de CHAQUE position à
-                    // CHAQUE scan (30s) × N positions sature le RPC Helius (429). ARMÉ → 0 cache (trail réactif,
-                    // check tous les 30s) ; NON armé → cache 90s (économise le RPC). Le CUT -35% reste vérifié
-                    // chaque scan via le PRIX (dropFromEntry, indépendant), donc aucun risque sur le downside.
-                    const lvTtl = (pos.peakGain || 0) >= TP_PCT ? 0 : 90000;
-                    if (!pos._lv || Date.now() - pos._lv.ts > lvTtl) {
+                if (pos.live && live.enabled && pos.live.openValueSol) {
+                    // LECTURE GROUPÉE (2026-08-10) : la valeur vient d'UN seul appel pour TOUTES les positions
+                    // (cache 20s) → coût RPC ~plat quel que soit le nombre de positions. Fallback lecture
+                    // individuelle si la position manque du lot (edge). Le CUT -35% reste vérifié chaque scan via
+                    // le PRIX (dropFromEntry), donc le downside est sûr même sans valeur live.
+                    const bmap = await batchedPositionValues();
+                    const bv = bmap && bmap.get(pos.live.positionKeypairPub);
+                    if (bv) pos._lv = { rg: bv.valueSol / pos.live.openValueSol - 1, bin: bv.activeBinId, ts: Date.now() };
+                    else if ((!pos._lv || Date.now() - pos._lv.ts > 60000) && live.positionValueAndBin) {
                         try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) pos._lv = { rg: r.valueSol / pos.live.openValueSol - 1, bin: r.activeBinId, ts: Date.now() }; } catch (_) { /* garde l'ancien cache / fallback prix */ }
                     }
-                    // On ne trust le cache LP que s'il a été rafraîchi récemment (TTL + 60s de marge). Si les
-                    // lectures RPC échouent trop longtemps, le cache FIGE → on retombe sur le PRIX (qui se met à
-                    // jour) pour NE PAS masquer un pump-dump (cas 奶蛙 armé figé à 6% pendant un 429 RPC).
-                    if (pos._lv && Date.now() - pos._lv.ts < lvTtl + 60000) { realGain = pos._lv.rg; liveBinId = pos._lv.bin; }
+                    // Garde anti-cache-figé : on ne trust le cache LP que <90s. Si les lectures échouent trop
+                    // longtemps, on retombe sur le PRIX (qui se met à jour) → ne JAMAIS figer le trail (cas 奶蛙).
+                    if (pos._lv && Date.now() - pos._lv.ts < 90000) { realGain = pos._lv.rg; liveBinId = pos._lv.bin; }
                 }
 
                 // CUT HORS-RANGE HAUT (2026-08-09, cas LOUIE +50% prix) : prix sorti par le HAUT du ±34 → la
