@@ -70,8 +70,8 @@ const AGE_MAX_H = 24 * 365;       // garde-fou zombies 1 an — pas de MAX (EP j
 const AGE_MIN_H = 10;             // MINIMUM d'âge de coin (2026-07-28, abaissé 24h→10h) : 24h bloquait Looks (16h) qui a fait +66% en V — l'âge n'est PAS un bon discriminateur (le plus jeune a gagné, les vieux saignent). 10h ne vire que les launch snipes purs (<10h) ; le pattern + anti-pump-explosif font le vrai tri.
 const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener exact d'EP (aligné 2026-07-22, avant 500k)
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
-const MAX_POSITIONS = 8;          // positions papier simultanées (EP : beaucoup de petites positions, pas all-in)
-const MAX_LIVE_POSITIONS = parseInt(process.env.MAX_LIVE_POSITIONS || '5', 10); // positions RÉELLES max (3→5, 2026-07-28 demande user)
+const MAX_POSITIONS = 10;         // positions papier simultanées (8→10, 2026-08-10 ; EP : beaucoup de petites positions, pas all-in)
+const MAX_LIVE_POSITIONS = parseInt(process.env.MAX_LIVE_POSITIONS || '10', 10); // positions RÉELLES max (5→10, 2026-08-10 demande user ; RPC ok via lecture groupée)
 // Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
 // tous les tokens, comme avant à 60s) ; l'autre tick = UNIQUEMENT les tokens "chauds" (4/5 conditions,
 // il ne manque que le retracement vers la ST) + positions ouvertes (TP/SL 2× plus réactifs). Le prix
