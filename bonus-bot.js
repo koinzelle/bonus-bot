@@ -273,7 +273,7 @@ let candleChain = Promise.resolve();
 let candleLast = 0;
 function throttled(fn) {
     const run = candleChain.then(async () => {
-        const wait = Math.max(0, 1500 - (Date.now() - candleLast));
+        const wait = Math.max(0, 2500 - (Date.now() - candleLast));  // 2026-08-10 : 1.5s→2.5s (Birdeye 429 IP Railway)
         if (wait) await new Promise(r => setTimeout(r, wait));
         candleLast = Date.now();
         return fn();
@@ -300,7 +300,7 @@ async function birdeyeOhlcv(mint, type, limit, intervalSec) {
     return (r.data?.data?.items || []).map(k => [k.unixTime, +k.o, +k.h, +k.l, +k.c, +k.v]).sort((a, b) => a[0] - b[0]);
 }
 const candleCache = new Map(); // (mint+res) -> { cs, ts }
-let birdeyeBackoffUntil = 0, birdeye429Warned = false; // BACKOFF 429 (outage 10/08) : sur 429, on ARRÊTE de taper
+let birdeyeBackoffUntil = 0, birdeye429Warned = false, birdeyeFails = 0; // BACKOFF (outage 10/08) : sur 429/échecs, on ARRÊTE de taper
 // Birdeye 60s → l'IP Railway refroidit → Birdeye lève le throttle → 1er appel OK → le cache s'amorce → moins
 // d'appels. Sans ça, le bot re-tape 13×/scan et ENTRETIENT le throttle (jamais de récup).
 async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs) {
@@ -309,12 +309,12 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs) 
     if (c && Date.now() - c.ts < ttlMs) return c.cs; // cache : ÉVITE l'appel (le principal minimiseur)
     let cs = [];
     if (Date.now() >= birdeyeBackoffUntil) { // pas en backoff → on tente Birdeye (PRIMAIRE)
-        try { cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec)); birdeye429Warned = false; }
+        try { cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec)); birdeye429Warned = false; birdeyeFails = 0; }
         catch (e) {
-            if (e && e.response && e.response.status === 429) {
-                birdeyeBackoffUntil = Date.now() + 60000; // pause 60s : cesse de taper pour laisser l'IP refroidir
-                if (!birdeye429Warned) { birdeye429Warned = true; console.log("  ⏳ Birdeye 429 — backoff 60s (on cesse de taper, le cache/GMGN prend le relais)"); }
-            }
+            const st = (e && e.response && e.response.status) || (e && e.code) || String(e && e.message).slice(0, 30);
+            birdeyeFails++;
+            if (st === 429 || birdeyeFails >= 3) { birdeyeBackoffUntil = Date.now() + 60000; birdeyeFails = 0; } // 429 OU 3 échecs → pause 60s
+            if (!birdeye429Warned) { birdeye429Warned = true; console.log(`  ⏳ Birdeye échec (${st}) — backoff 60s (cache prend le relais)`); }
         }
     }
     if (cs.length < 15) { // Birdeye vide/rate-limité → fallback GMGN (épargné au max)
@@ -324,8 +324,8 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs) 
     return cs.length ? cs : (c ? c.cs : []);
 }
 // TTL longs = moins d'appels : 15m→120s (support/exit) ; 1H→20min ; daily→60min (macro = lent).
-const candles5 = (mint, limit = 200) => candlesTF(mint, '5m', '5m', limit, 300, 60 * 1000);
-const candles15 = (mint, limit = 192) => candlesTF(mint, '15m', '15m', limit, 900, 120 * 1000);
+const candles5 = (mint, limit = 200) => candlesTF(mint, '5m', '5m', limit, 300, 120 * 1000);   // cache 60s→120s (charge Birdeye)
+const candles15 = (mint, limit = 192) => candlesTF(mint, '15m', '15m', limit, 900, 300 * 1000); // cache 120s→300s (charge Birdeye)
 const candles1h = (mint, limit = 720) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000);
 const candlesDay = (mint, limit = 1000) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000);
 
@@ -656,7 +656,7 @@ async function scan() {
             if (state.watch[tok] || state.positions[tok]) continue;
             // cooldown re-add 30min après purge (sinon cycle purge→re-add sur les tokens trending morts)
             if (state.purgedAt[tok] && now - state.purgedAt[tok] < 30 * 60 * 1000) continue;
-            if (Object.keys(state.watch).length >= 18) break; // cap suivi 12→18 (2026-07-19, budget GT ok avec ticks alternés)
+            if (Object.keys(state.watch).length >= 18) break; // cap suivi (la charge est bornée par le budget-fetch/scan, pas par le cap)
             try {
                 const d = await dexInfo(tok);
                 if (!d || !d.birthMs || !d.supply) continue;
@@ -689,6 +689,7 @@ async function scan() {
         // 2. pour chaque token suivi : setup / entrée / gestion de position papier
         let rl429 = 0; // 429 vus ce tick — au 2e, on arrête de fetch (backoff global, le cache sert le reste)
         let cOk = 0, cKo = 0; // santé source bougies ce tick (pour le résumé de scan — repère une panne, cas bot 1)
+        let fetchBudget = 6;  // max vraies requêtes bougies Birdeye par scan (borne le burst → évite le 429)
         // ROTATION (2026-07-24, GO user) : l'ordre d'itération était fixe → quand le backoff 429 coupait
         // le tick, c'était TOUJOURS la même queue de liste qui sautait → 8 tokens jamais évalués (diag
         // None depuis des heures). Départ tournant : chaque token passe en tête à tour de rôle.
@@ -705,10 +706,17 @@ async function scan() {
             const ageH = (now - w.birthMs) / 3.6e6;
             if (ageH >= AGE_MAX_H && !inPos) { delete state.watch[tok]; continue; } // garde-fou zombies 1 an
             if (rl429 >= 3 && !inPos) continue; // backoff : GT sature, on réessaie au prochain tick (seuil 2→3)
+            // BUDGET FETCH/SCAN (2026-08-10, demande user) : borne le BURST Birdeye — au plus fetchBudget vraies
+            // requêtes bougies par scan. Un coin au cache FRAIS ne coûte rien (pas d'appel) ; les autres, une
+            // fois le budget épuisé, passent au prochain tick (la rotation garantit qu'ils seront servis).
+            // Les positions ne sont JAMAIS budgétées (sortie toujours vérifiée).
+            const cacheFresh15 = (() => { const cc = candleCache.get(tok + '15m'); return !!(cc && Date.now() - cc.ts < 300 * 1000); })();
+            if (!inPos && !cacheFresh15 && fetchBudget <= 0) continue;
             let cs;
             // Birdeye TOKEN-LEVEL (tok = mint) : 192×15m=48h pour support/sortie. Suit la migration
             // nativement → plus de bricolage pool (poolAlt/origine supprimé). Le throttle est global.
             try { cs = await candles15(tok, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); }
+            if (!inPos && !cacheFresh15) fetchBudget--;
             // Purge fetch cassé (2026-07-19) : après 8 échecs consécutifs, on libère le slot — MAIS un 429
             // (rate-limit) n'est PAS une pool morte (2026-07-22 : les purges 429 tuaient des tokens
             // QUALIFIÉS comme Jimothy911) → le 429 ne compte plus comme échec, il déclenche le backoff.
