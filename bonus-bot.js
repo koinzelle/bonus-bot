@@ -645,7 +645,7 @@ let scanTick = 0;
 // ~20s → la 1re position du scan déclenche le fetch, les autres lisent le lot en cache (coût RPC ~plat).
 let _batchLv = { map: new Map(), ts: 0 };
 async function batchedPositionValues() {
-    if (Date.now() - _batchLv.ts < 20000) return _batchLv.map;
+    if (Date.now() - _batchLv.ts < 8000) return _batchLv.map; // 8s : la boucle rapide (10s) a du frais
     if (live.enabled && live.allPositionValues) {
         try { const m = await live.allPositionValues(); if (m) _batchLv = { map: m, ts: Date.now() }; } catch (_) { /* garde l'ancien lot */ }
     }
@@ -1124,6 +1124,8 @@ function closeFixedShadow(tok, fx, exitPrice, reason) {
 }
 
 async function closePaper(tok, pos, exitPrice, reason) {
+    if (pos._closing) return;   // anti double-close (scan + boucle rapide ne ferment JAMAIS 2× la même position)
+    pos._closing = true;
     // ── LIVE : fermer la vraie position D'ABORD. Si le close réel échoue → on GARDE le tracking
     // (pattern anti-world de bot 1 : jamais supprimer une position pas vidée on-chain).
     let pnlSolLive = null;
@@ -1134,7 +1136,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         const alertThrottled = (msg) => { const n = Date.now(); if (!pos.lastCloseAlert || n - pos.lastCloseAlert > 15 * 60 * 1000) { tg(msg); pos.lastCloseAlert = n; } };
         try {
             const r = await live.closeVerified(pos.live);
-            if (!r || !r.ok) { alertThrottled(`🚨 LIVE ${pos.symbol}: close INCOMPLET — position GARDÉE, re-tentée à chaque tick, vérifier on-chain`); return; }
+            if (!r || !r.ok) { alertThrottled(`🚨 LIVE ${pos.symbol}: close INCOMPLET — position GARDÉE, re-tentée à chaque tick, vérifier on-chain`); pos._closing = false; return; }
             // PnL RÉEL = valeur on-chain close − open (X+Y+fees, insensible au bruit wallet). Fallback sur
             // le flat-to-flat seulement si la lecture on-chain a échoué (2026-07-25, fix mesure).
             if (r.closeValueSol != null && pos.live.openValueSol != null) {
@@ -1143,7 +1145,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
                 pnlSolLive = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
                 console.log(`  ⚠️ PnL live via flat-to-flat (lecture on-chain KO) — moins fiable`);
             }
-        } catch (e) { alertThrottled(`🚨 LIVE ${pos.symbol}: close erreur (${String(e.message).slice(0, 60)}) — position GARDÉE`); return; }
+        } catch (e) { alertThrottled(`🚨 LIVE ${pos.symbol}: close erreur (${String(e.message).slice(0, 60)}) — position GARDÉE`); pos._closing = false; return; }
     }
     const pnlPct = exitPrice / pos.entry - 1;
     const trade = {
@@ -1263,3 +1265,35 @@ tg('🚀 Bot démarré (paper). Refonte EP : entrée = pattern breakup→breakdo
 const safeScan = () => scan().catch(e => console.log('⚠️ scan tick (survécu):', String(e?.stack || e?.message || e).slice(0, 200)));
 setInterval(safeScan, SCAN_INTERVAL_MS);
 safeScan();
+
+// BOUCLE RAPIDE POSITIONS (2026-08-10) : le scan principal (18 coins + throttles bougies) prend ~40s → trop
+// lent pour le trail (valeur lag, ex TOAD bot 11% vs Meteora 16%). Cette boucle checke UNIQUEMENT les positions
+// toutes les 10s via la lecture GROUPÉE (1 seul appel RPC), et applique les sorties VALEUR-LIVE : trail,
+// hors-range HAUT, CUT -35% live. Le RSI + CUT prix restent au scan 30s. _closing empêche tout double-close.
+let fastChecking = false;
+async function fastPositionCheck() {
+    if (fastChecking || !live.enabled || !Object.keys(state.positions).length) return;
+    fastChecking = true;
+    try {
+        const bmap = await batchedPositionValues();
+        const TP = 0.06, TRAIL = 0.01, RANGE_DOWN = 0.35;
+        for (const [tok, pos] of Object.entries(state.positions)) {
+            if (!pos.live || !pos.live.openValueSol || pos._closing) continue;
+            const bv = bmap.get(pos.live.positionKeypairPub);
+            if (!bv || bv.valueSol == null) continue;
+            const rg = bv.valueSol / pos.live.openValueSol - 1;
+            pos._lv = { rg, bin: bv.activeBinId, ts: Date.now() };
+            pos.peakGain = Math.max(pos.peakGain || 0, rg);
+            const armed = pos.peakGain >= TP, exitPx = pos.lastPx || pos.entry;
+            if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId) {
+                await closePaper(tok, pos, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, rapide)`);
+            } else if (armed && rg <= pos.peakGain - TRAIL) {
+                await closePaper(tok, pos, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(pos.peakGain * 100).toFixed(1)}%, rapide)`);
+            } else if (rg <= -RANGE_DOWN) {
+                await closePaper(tok, pos, exitPx, `CUT valeur LP ${(rg * 100).toFixed(1)}% (≤ -35%, rapide)`);
+            }
+        }
+    } catch (e) { console.log('⚠️ fast pos check:', String(e.message).slice(0, 80)); }
+    finally { fastChecking = false; }
+}
+setInterval(() => fastPositionCheck().catch(() => {}), 10000);
