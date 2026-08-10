@@ -136,6 +136,8 @@ async function tg(msg) {
 
 // ── Data ──────────────────────────────────────────────────────
 let gtScan = 0;
+let feeTvlMap = new Map(); // mint -> meilleur fees/TVL 24h (rafraîchi à chaque découverte) — plancher d'entrée
+const FEE_TVL_FLOOR = 5;   // % : on n'ENTRE que sur des pools qui génèrent des fees (≥5%) — cas Jimothy 0.15% = LP mort
 async function gtTrending() {
     // Priorité TRENDING (2026-07-19, demande user) : comme bot 1, la découverte lit les pools trending
     // GeckoTerminal (24h + 1h) à CHAQUE scan — new_pools seulement 1 scan sur 3, en fin de liste
@@ -209,20 +211,21 @@ async function gtTrending() {
     // le top 40). On les capte via l'API Meteora datapi triée par fee_tvl_ratio_24h. Le token passe ENSUITE
     // tous les filtres normaux (dexInfo, volume, qualité GMGN, pattern, dump, RSI, pool viable).
     try {
-        const MIN_TVL = 10000, MIN_FEE_RATIO = 30, USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-        const SOLM = 'So11111111111111111111111111111111111111112';
+        const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', SOLM = 'So11111111111111111111111111111111111111112';
         const mr = await axios.get('https://dlmm.datapi.meteora.ag/pools', {
-            params: { page: 1, page_size: 100, sort_by: 'fee_tvl_ratio_24h:desc', filter_by: `tvl>=${MIN_TVL} && is_blacklisted=false` },
+            params: { page: 1, page_size: 100, sort_by: 'fee_tvl_ratio_24h:desc', filter_by: `fee_tvl_ratio_24h>=${FEE_TVL_FLOOR} && tvl>=5000 && is_blacklisted=false` },
             headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000,
         });
-        let added = 0;
+        const nm = new Map(); let added = 0;
         for (const p of mr.data?.data || []) {
             const ratio = (p.fee_tvl_ratio && p.fee_tvl_ratio['24h']) || 0;
-            if (ratio < MIN_FEE_RATIO || (p.tvl || 0) < MIN_TVL) continue; // fort rendement LP uniquement
             const xm = p.token_x && p.token_x.address, ym = p.token_y && p.token_y.address;
             const tok = (xm === SOLM || xm === USDC) ? ym : (ym === SOLM || ym === USDC) ? xm : xm; // côté non-SOL/USDC
-            if (tok && tok !== SOLM && tok !== USDC && !seen.has(tok)) { seen.add(tok); out.push({ tok, gtPool: null }); added++; }
+            if (!tok || tok === SOLM || tok === USDC) continue;
+            nm.set(tok, Math.max(nm.get(tok) || 0, ratio)); // map mint → meilleur fees/TVL (plancher + tri d'entrée)
+            if (!seen.has(tok)) { seen.add(tok); out.push({ tok, gtPool: null }); added++; } // ces coins = les vraies machines à fees
         }
+        if (nm.size) feeTvlMap = nm; // remplace seulement si succès (persiste sur un hoquet datapi → pas de faux blocage)
         srcStats.push(`Met-fees:${added}`);
     } catch (_) { srcStats.push('Met-fees:KO⚠️'); }
     console.log(`📡 Sources découverte: ${srcStats.join(' · ')} → ${out.length} candidats uniques`);
@@ -809,7 +812,15 @@ async function scan() {
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
                 let realGain = gain, liveBinId = null;
                 if (pos.live && live.enabled && live.positionValueAndBin && pos.live.openValueSol) {
-                    try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { realGain = r.valueSol / pos.live.openValueSol - 1; liveBinId = r.activeBinId; } } catch (_) { /* fallback prix */ }
+                    // CACHE valeur live ADAPTATIF (2026-08-10) : lire la valeur on-chain de CHAQUE position à
+                    // CHAQUE scan (30s) × N positions sature le RPC Helius (429). ARMÉ → 0 cache (trail réactif,
+                    // check tous les 30s) ; NON armé → cache 90s (économise le RPC). Le CUT -35% reste vérifié
+                    // chaque scan via le PRIX (dropFromEntry, indépendant), donc aucun risque sur le downside.
+                    const lvTtl = (pos.peakGain || 0) >= TP_PCT ? 0 : 90000;
+                    if (!pos._lv || Date.now() - pos._lv.ts > lvTtl) {
+                        try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) pos._lv = { rg: r.valueSol / pos.live.openValueSol - 1, bin: r.activeBinId, ts: Date.now() }; } catch (_) { /* garde l'ancien cache / fallback prix */ }
+                    }
+                    if (pos._lv) { realGain = pos._lv.rg; liveBinId = pos._lv.bin; }
                 }
 
                 // CUT HORS-RANGE HAUT (2026-08-09, cas LOUIE +50% prix) : prix sorti par le HAUT du ±34 → la
