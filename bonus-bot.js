@@ -669,7 +669,7 @@ async function scan() {
             if (state.watch[tok] || state.positions[tok]) continue;
             // cooldown re-add 30min après purge (sinon cycle purge→re-add sur les tokens trending morts)
             if (state.purgedAt[tok] && now - state.purgedAt[tok] < 30 * 60 * 1000) continue;
-            if (Object.keys(state.watch).length >= 18) break; // cap suivi (la charge est bornée par le budget-fetch/scan, pas par le cap)
+            if (Object.keys(state.watch).length >= 35) break; // cap suivi 18→35 (2026-08-11 ; charge bornée par le budget-fetch/scan, pas par le cap)
             try {
                 const d = await dexInfo(tok);
                 if (!d || !d.birthMs || !d.supply) continue;
