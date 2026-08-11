@@ -644,12 +644,14 @@ let scanTick = 0;
 // Cache de la LECTURE GROUPÉE des positions (2026-08-10) : 1 appel live pour TOUTES les positions, réutilisé
 // ~20s → la 1re position du scan déclenche le fetch, les autres lisent le lot en cache (coût RPC ~plat).
 let _batchLv = { map: new Map(), ts: 0 };
+let _batchErrWarned = false;
 async function batchedPositionValues() {
-    if (Date.now() - _batchLv.ts < 8000) return _batchLv.map; // 8s : la boucle rapide (10s) a du frais
+    if (Date.now() - _batchLv.ts < 8000) return { map: _batchLv.map, fresh: true }; // succès <8s = frais
     if (live.enabled && live.allPositionValues) {
-        try { const m = await live.allPositionValues(); if (m) _batchLv = { map: m, ts: Date.now() }; } catch (_) { /* garde l'ancien lot */ }
+        try { const m = await live.allPositionValues(); if (m) { _batchLv = { map: m, ts: Date.now() }; _batchErrWarned = false; return { map: m, fresh: true }; } }
+        catch (e) { if (!_batchErrWarned) { _batchErrWarned = true; console.log(`  ⚠️ lecture groupée échouée (${String(e.message).slice(0, 70)}) → bascule lecture individuelle`); } }
     }
-    return _batchLv.map;
+    return { map: _batchLv.map, fresh: false }; // échec → PÉRIMÉ : l'appelant NE doit PAS figer dessus (lecture individuelle)
 }
 async function scan() {
     if (scanning) return; scanning = true;
@@ -824,14 +826,13 @@ async function scan() {
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
                 let realGain = gain, liveBinId = null, lvSrc = 'prix';
                 if (pos.live && live.enabled && pos.live.openValueSol) {
-                    const bmap = await batchedPositionValues();
-                    const bv = bmap && bmap.get(pos.live.positionKeypairPub);
-                    if (bv) { const nrg = bv.valueSol / pos.live.openValueSol - 1; lvSrc = (pos._lv && Math.abs(nrg - pos._lv.rg) < 1e-6) ? 'lot-FIGÉ' : 'lot'; pos._lv = { rg: nrg, bin: bv.activeBinId, ts: Date.now() }; }
-                    else if ((!pos._lv || Date.now() - pos._lv.ts > 60000) && live.positionValueAndBin) {
+                    const b = await batchedPositionValues();
+                    const bv = b.fresh ? b.map.get(pos.live.positionKeypairPub) : null; // lot PÉRIMÉ = on l'ignore (plus de gel)
+                    if (bv) { pos._lv = { rg: bv.valueSol / pos.live.openValueSol - 1, bin: bv.activeBinId, ts: Date.now() }; lvSrc = 'lot'; }
+                    else if ((!pos._lv || Date.now() - pos._lv.ts > 20000) && live.positionValueAndBin) { // lot périmé/absent → individuel FRAIS (throttlé 20s)
                         try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { pos._lv = { rg: r.valueSol / pos.live.openValueSol - 1, bin: r.activeBinId, ts: Date.now() }; lvSrc = 'indiv'; } } catch (_) { /* garde l'ancien cache / fallback prix */ }
                     } else if (pos._lv) { lvSrc = `cache${Math.round((Date.now() - pos._lv.ts) / 1000)}s`; }
-                    // Garde anti-cache-figé : on ne trust le cache LP que <90s. Si les lectures échouent trop
-                    // longtemps, on retombe sur le PRIX (qui se met à jour) → ne JAMAIS figer le trail (cas 奶蛙).
+                    // Garde anti-cache-figé : on ne trust le cache LP que <90s. Sinon on retombe sur le PRIX.
                     if (pos._lv && Date.now() - pos._lv.ts < 90000) { realGain = pos._lv.rg; liveBinId = pos._lv.bin; }
                 }
 
@@ -1299,7 +1300,9 @@ async function fastPositionCheck() {
     if (fastChecking || !live.enabled || !Object.keys(state.positions).length) return;
     fastChecking = true;
     try {
-        const bmap = await batchedPositionValues();
+        const b = await batchedPositionValues();
+        if (!b.fresh) { fastChecking = false; return; } // lot périmé → on NE traile PAS sur du gelé (le scan fera l'individuel)
+        const bmap = b.map;
         const TP = 0.06, TRAIL = 0.01;
         for (const [tok, pos] of Object.entries(state.positions)) {
             if (!pos.live || !pos.live.openValueSol || pos._closing) continue;
