@@ -816,7 +816,9 @@ async function scan() {
                 pos.lastPx = px;   // mémorisé pour le PnL papier du stop résilient (si les bougies tombent ensuite)
                 const dropFromEntry = 1 - px / pos.entry;
                 const gain = px / pos.entry - 1;
-                const RANGE_DOWN = 0.35, TP_PCT = 0.06;  // uniforme (à recaler sur le % réel d'EP — mesure en cours)
+                // CUT hors-range ADAPTATIF (2026-08-11, cas Jimothy coupé puis pump +30min) : gros coin établi
+                // (MC≥3M) rug rarement + rebondit (cf Remus) → -50% de marge ; petit volatil peut rug → -35%.
+                const RANGE_DOWN = (pos.entryMcK || 0) >= 3000 ? 0.50 : 0.35, TP_PCT = 0.06;
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
@@ -1298,7 +1300,7 @@ async function fastPositionCheck() {
     fastChecking = true;
     try {
         const bmap = await batchedPositionValues();
-        const TP = 0.06, TRAIL = 0.01, RANGE_DOWN = 0.35;
+        const TP = 0.06, TRAIL = 0.01;
         for (const [tok, pos] of Object.entries(state.positions)) {
             if (!pos.live || !pos.live.openValueSol || pos._closing) continue;
             const bv = bmap.get(pos.live.positionKeypairPub);
@@ -1307,6 +1309,7 @@ async function fastPositionCheck() {
             pos._lv = { rg, bin: bv.activeBinId, ts: Date.now() };
             pos.peakGain = Math.max(pos.peakGain || 0, rg);
             const armed = pos.peakGain >= TP, exitPx = pos.lastPx || pos.entry;
+            const RANGE_DOWN = (pos.entryMcK || 0) >= 3000 ? 0.50 : 0.35; // CUT adaptatif : ≥3M MC = -50%, sinon -35%
             if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId) {
                 await closePaper(tok, pos, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, rapide)`);
             } else if (armed && rg <= pos.peakGain - TRAIL) {
