@@ -1167,8 +1167,16 @@ async function closePaper(tok, pos, exitPrice, reason) {
     const liveOpenVal = pos.live?.openValueSol;
     const livePct = (pnlSolLive != null && liveOpenVal) ? (pnlSolLive / liveOpenVal) * 100 : null;
     const liveLine = pnlSolLive != null ? `\n💵 PnL LP RÉEL: ${livePct != null ? `${livePct > 0 ? '+' : ''}${livePct.toFixed(0)}% (` : ''}${pnlSolLive > 0 ? '+' : ''}${pnlSolLive} SOL${livePct != null ? ')' : ''} — fees incluses` : '';
-    const msg = `${pnlPct > 0 ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason}\nPnL: ${(pnlPct * 100).toFixed(1)}% (${trade.pnlSol > 0 ? '+' : ''}${trade.pnlSol} SOL papier, ${trade.durMin} min)${liveLine}\n📒 Total papier: ${state.trades.length} trades | WR ${wr.toFixed(0)}% | ${tot > 0 ? '+' : ''}${tot.toFixed(3)} SOL`;
-    console.log(msg.replace(/\n/g, ' | ')); if (pos.live) tg(msg); // Telegram RÉEL uniquement (2026-08-11) : pas de notif pour les sorties papier
+    // Console = complet (papier + réel) pour le debug.
+    console.log(`${pnlPct > 0 ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason} | PnL prix ${(pnlPct * 100).toFixed(1)}% (${trade.pnlSol > 0 ? '+' : ''}${trade.pnlSol} SOL papier, ${trade.durMin} min)${liveLine.replace(/\n/g, ' ')} | 📒 ${state.trades.length} trades WR ${wr.toFixed(0)}%`);
+    // Telegram = RÉEL uniquement, PnL LP RÉEL en avant (plus de PnL papier) — 2026-08-11.
+    if (pos.live) {
+        const good = (pnlSolLive != null ? pnlSolLive : pnlPct) > 0;
+        const realPnl = pnlSolLive != null
+            ? `${livePct != null ? `${livePct > 0 ? '+' : ''}${livePct.toFixed(0)}% ` : ''}(${pnlSolLive > 0 ? '+' : ''}${pnlSolLive} SOL, fees incluses)`
+            : `${(pnlPct * 100).toFixed(1)}%`;
+        tg(`${good ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason}\n💵 PnL LP réel: ${realPnl} | ${trade.durMin} min`);
+    }
 }
 
 // ── Serveur HTTP minimal : requis pour que Railway marque le déploiement Actif
@@ -1236,6 +1244,23 @@ http.createServer((req, res) => {
         };
         return { downtrend: g(true), range: g(false) };
     })();
+    // ANALYSE PERDANTS (2026-08-11) : TOUS les trades ≤ -15% avec features + raison de sortie (le CUT hors-range
+    // est-il le coupable ? EP tient hors-range) + répartition par raison + comparaison features gagnants/perdants.
+    const losersAnalysis = (() => {
+        const T = state.trades.filter(t => typeof t.pnlPct === 'number');
+        const losers = T.filter(t => t.pnlPct <= -15);
+        const wins = T.filter(t => t.pnlPct > 0);
+        const byReason = {};
+        for (const t of losers) { const k = (t.reason || '?').replace(/\(.*/, '').trim(); byReason[k] = (byReason[k] || 0) + 1; }
+        const avg = (arr, k) => { const v = arr.map(x => x[k]).filter(x => typeof x === 'number'); return v.length ? +(v.reduce((s, x) => s + x, 0) / v.length).toFixed(1) : null; };
+        return {
+            nLosers: losers.length, nWins: wins.length, nTotal: T.length,
+            losersByReason: byReason,
+            losersAvg: { dumpDepth: avg(losers, 'dumpDepthPct'), drawdown: avg(losers, 'drawdownPct'), athAgeH: avg(losers, 'athAgeH'), durMin: avg(losers, 'durMin') },
+            winsAvg: { dumpDepth: avg(wins, 'dumpDepthPct'), drawdown: avg(wins, 'drawdownPct'), athAgeH: avg(wins, 'athAgeH'), durMin: avg(wins, 'durMin') },
+            losersList: losers.slice(-45).map(t => ({ s: t.symbol, pnl: t.pnlPct, r: t.reason, dump: t.dumpDepthPct, dd: t.drawdownPct, dt: t.downtrendEntry, ath: t.athAgeH, dur: t.durMin })),
+        };
+    })();
     res.end(JSON.stringify({
         mode: 'PAPER', updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
@@ -1246,6 +1271,7 @@ http.createServer((req, res) => {
         blockCount: state.blockCount || {}, // compteur cumulé des raisons de non-entrée → voir le vrai goulot
         shadowStats: state.shadowStats || {}, // mesures shadow accumulées (persistées sur le volume)
         downtrendVsRange, // issue AGRÉGÉE downtrend vs range sur les 141 trades (le shadow enfin exploitable)
+        losersAnalysis,   // TOUS les perdants ≤-15% + raison de sortie + features (analyse CUT hors-range)
         athAgeBins, // issue par tranche d'âge d'ATH à l'entrée (tous les trades) — voir mémoire athage-vs-outcome
         shadowManualCloses: state.shadowManualCloses || [], // regret des coupes manuelles (exit EP possible après ?)
         abFixedVsTrailing: {
