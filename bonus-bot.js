@@ -820,18 +820,14 @@ async function scan() {
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
-                let realGain = gain, liveBinId = null;
+                let realGain = gain, liveBinId = null, lvSrc = 'prix';
                 if (pos.live && live.enabled && pos.live.openValueSol) {
-                    // LECTURE GROUPÉE (2026-08-10) : la valeur vient d'UN seul appel pour TOUTES les positions
-                    // (cache 20s) → coût RPC ~plat quel que soit le nombre de positions. Fallback lecture
-                    // individuelle si la position manque du lot (edge). Le CUT -35% reste vérifié chaque scan via
-                    // le PRIX (dropFromEntry), donc le downside est sûr même sans valeur live.
                     const bmap = await batchedPositionValues();
                     const bv = bmap && bmap.get(pos.live.positionKeypairPub);
-                    if (bv) pos._lv = { rg: bv.valueSol / pos.live.openValueSol - 1, bin: bv.activeBinId, ts: Date.now() };
+                    if (bv) { const nrg = bv.valueSol / pos.live.openValueSol - 1; lvSrc = (pos._lv && Math.abs(nrg - pos._lv.rg) < 1e-6) ? 'lot-FIGÉ' : 'lot'; pos._lv = { rg: nrg, bin: bv.activeBinId, ts: Date.now() }; }
                     else if ((!pos._lv || Date.now() - pos._lv.ts > 60000) && live.positionValueAndBin) {
-                        try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) pos._lv = { rg: r.valueSol / pos.live.openValueSol - 1, bin: r.activeBinId, ts: Date.now() }; } catch (_) { /* garde l'ancien cache / fallback prix */ }
-                    }
+                        try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { pos._lv = { rg: r.valueSol / pos.live.openValueSol - 1, bin: r.activeBinId, ts: Date.now() }; lvSrc = 'indiv'; } } catch (_) { /* garde l'ancien cache / fallback prix */ }
+                    } else if (pos._lv) { lvSrc = `cache${Math.round((Date.now() - pos._lv.ts) / 1000)}s`; }
                     // Garde anti-cache-figé : on ne trust le cache LP que <90s. Si les lectures échouent trop
                     // longtemps, on retombe sur le PRIX (qui se met à jour) → ne JAMAIS figer le trail (cas 奶蛙).
                     if (pos._lv && Date.now() - pos._lv.ts < 90000) { realGain = pos._lv.rg; liveBinId = pos._lv.bin; }
@@ -872,7 +868,7 @@ async function scan() {
                 // LOG position par scan (2026-08-09) : fin du silence de bot 2 + audit sortie. On affiche TOUT
                 // ce que le bot VOIT — LP, prix, RSI2 (= notre critère de sortie), RSI14 (comparable DexScreener,
                 // cas bot 1 où notre RSI divergeait), bin actif→haut du range, source valeur, timeframe.
-                const realSource = liveBinId != null ? 'live' : 'prix';
+                const realSource = lvSrc; // diagnostic gel valeur (2026-08-11) : lot / lot-FIGÉ / indiv / cacheXs / prix
                 const rsi2v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
                 const rsi14v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 14);
                 console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource} | ${pos.established ? '15m' : '5m'}`);
