@@ -1088,7 +1088,7 @@ async function scan() {
                 save();
                 if (downtrend) { console.log(`  · [SHADOW downtrend] ${w.symbol} : entrée en LOWER-HIGHS (haut récent -${((1 - recentHigh12 / priorHigh12) * 100).toFixed(0)}% vs avant) — mesure, on juge l'issue (dead-cat ?)`); recordShadow('downtrend', { symbol: w.symbol, dropHighPct: +((1 - recentHigh12 / priorHigh12) * 100).toFixed(0) }); }
                 const msg = `🎯 ENTRÉE ${w.symbol} (chop-cycle${downtrend ? ' ⚠️downtrend' : ''})\nprix: $${entry.toFixed(8)} | chop ${(cr * 100).toFixed(0)}% | dumpé -${(dumpedFromHigh * 100).toFixed(0)}% sous le haut récent\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: TP +6% OU RSI(2)>90 | cut hors-range -35% | on cycle`;
-                console.log(msg.replace(/\n/g, ' | ')); tg(msg);
+                console.log(msg.replace(/\n/g, ' | '));   // Telegram RÉEL uniquement (2026-08-11) : la notif part seulement si l'ouverture live réussit (voir plus bas)
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
                 // Cap MAX_LIVE_POSITIONS (défaut 1, 2026-07-22) : limite le blast radius en dry-run —
                 // le paper peut suivre jusqu'à MAX_POSITIONS, mais on n'ouvre au réel qu'une position
@@ -1101,8 +1101,8 @@ async function scan() {
                         const poolAddr = await live.findMeteoraPool(tok);
                         if (poolAddr) {
                             const lp = await live.openBidAsk(poolAddr);
-                            if (lp) { state.positions[tok].live = lp; save(); tg(`🟢 LIVE ${w.symbol}: position réelle ouverte — ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); }
-                        } else { console.log('  ⚠️ LIVE: aucune pool DLMM viable — trade papier seulement'); tg(`⚠️ LIVE ${w.symbol}: pas de pool DLMM viable, papier seulement`); }
+                            if (lp) { state.positions[tok].live = lp; save(); tg(`${msg}\n🟢 RÉEL ouvert: ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); } // notif Telegram = uniquement l'entrée RÉELLE (avec tous les détails)
+                        } else { console.log('  ⚠️ LIVE: aucune pool DLMM viable — trade papier seulement'); } // pas de notif Telegram pour le papier
                     } catch (e) { console.log(`  ⚠️ LIVE open échoué: ${String(e.message).slice(0, 80)} — papier seulement`); tg(`⚠️ LIVE ${w.symbol}: open échoué (${String(e.message).slice(0, 50)})`); }
                 }
             }
@@ -1168,7 +1168,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
     const livePct = (pnlSolLive != null && liveOpenVal) ? (pnlSolLive / liveOpenVal) * 100 : null;
     const liveLine = pnlSolLive != null ? `\n💵 PnL LP RÉEL: ${livePct != null ? `${livePct > 0 ? '+' : ''}${livePct.toFixed(0)}% (` : ''}${pnlSolLive > 0 ? '+' : ''}${pnlSolLive} SOL${livePct != null ? ')' : ''} — fees incluses` : '';
     const msg = `${pnlPct > 0 ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason}\nPnL: ${(pnlPct * 100).toFixed(1)}% (${trade.pnlSol > 0 ? '+' : ''}${trade.pnlSol} SOL papier, ${trade.durMin} min)${liveLine}\n📒 Total papier: ${state.trades.length} trades | WR ${wr.toFixed(0)}% | ${tot > 0 ? '+' : ''}${tot.toFixed(3)} SOL`;
-    console.log(msg.replace(/\n/g, ' | ')); tg(msg);
+    console.log(msg.replace(/\n/g, ' | ')); if (pos.live) tg(msg); // Telegram RÉEL uniquement (2026-08-11) : pas de notif pour les sorties papier
 }
 
 // ── Serveur HTTP minimal : requis pour que Railway marque le déploiement Actif
