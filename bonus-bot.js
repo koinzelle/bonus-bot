@@ -1150,7 +1150,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
     const pnlPct = exitPrice / pos.entry - 1;
     const trade = {
         pnlSolLive, // PnL RÉEL fees incluses (null en paper pur) — à comparer au pnlSol prix
-        symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
+        tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         drawdownPct: pos.drawdownPct ?? null, dumpDepthPct: pos.dumpDepthPct ?? null, entryMcK: pos.entryMcK ?? null, trueAthMc: pos.trueAthMc ?? null, pctOfTrueAth: pos.pctOfTrueAth ?? null, vol24hK: pos.vol24hK ?? null, downtrendEntry: pos.downtrendEntry ?? null,
@@ -1258,7 +1258,7 @@ http.createServer((req, res) => {
             losersByReason: byReason,
             losersAvg: { dumpDepth: avg(losers, 'dumpDepthPct'), drawdown: avg(losers, 'drawdownPct'), athAgeH: avg(losers, 'athAgeH'), durMin: avg(losers, 'durMin') },
             winsAvg: { dumpDepth: avg(wins, 'dumpDepthPct'), drawdown: avg(wins, 'drawdownPct'), athAgeH: avg(wins, 'athAgeH'), durMin: avg(wins, 'durMin') },
-            losersList: losers.slice(-45).map(t => ({ s: t.symbol, pnl: t.pnlPct, r: t.reason, dump: t.dumpDepthPct, dd: t.drawdownPct, dt: t.downtrendEntry, ath: t.athAgeH, dur: t.durMin })),
+            losersList: losers.slice(-45).map(t => ({ s: t.symbol, tok: t.tok || null, pnl: t.pnlPct, r: (t.reason || '').slice(0, 24), entry: t.entry, closedAt: t.closedAt, dur: t.durMin })),
         };
     })();
     res.end(JSON.stringify({
