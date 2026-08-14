@@ -667,11 +667,12 @@ async function scan() {
         // 1. découverte : nouveaux candidats < 48h (ticks complets uniquement)
         let discovered = [];
         if (!hotOnly) { try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); } }
+        let replaceBudget = 3; // remplacements watch max/scan (2026-08-14) : la watch se rafraîchit progressivement, pas de thrashing
         for (const { tok, gtPool } of discovered.slice(0, 60)) { // 4-6 sources fusionnées (GT p1-3 + 1h + new + DexScreener) — trending d'abord
             if (state.watch[tok] || state.positions[tok]) continue;
             // cooldown re-add 30min après purge (sinon cycle purge→re-add sur les tokens trending morts)
             if (state.purgedAt[tok] && now - state.purgedAt[tok] < 30 * 60 * 1000) continue;
-            if (Object.keys(state.watch).length >= 35) break; // cap suivi 18→35 (2026-08-11 ; charge bornée par le budget-fetch/scan, pas par le cap)
+            if (Object.keys(state.watch).length >= 35 && replaceBudget <= 0) break; // pleine + plus de remplacement ce scan → stop
             try {
                 const d = await dexInfo(tok);
                 if (!d || !d.birthMs || !d.supply) continue;
@@ -696,6 +697,19 @@ async function scan() {
                 // bougies : pool GT du trending (garantie indexée) en priorité, DexScreener en fallback
                 // pool = ORIGINE (historique complet, fix migration 2026-07-25) ; poolAlt = fallback (GT
                 // trending / plus liquide) si l'origine n'est pas indexée par GeckoTerminal.
+                // WATCH PLEINE → REMPLACEMENT (2026-08-14, option 2) : le coin a passé TOUS les filtres = bonne
+                // pépite → on éjecte le plus VIEUX candidat ordinaire (ni position, ni fee-machine) pour lui faire
+                // de la place. Garantit que les résurrections entrent toujours ; les coins morts/dormants sortent.
+                if (Object.keys(state.watch).length >= 35) {
+                    let oldest = null, oldestTs = Infinity;
+                    for (const [t, ww] of Object.entries(state.watch)) {
+                        if (state.positions[t] || feeTvlMap.has(t)) continue; // protégés : positions + fee-machines (on farme)
+                        if ((ww.addedAt || 0) < oldestTs) { oldestTs = ww.addedAt || 0; oldest = t; }
+                    }
+                    if (!oldest) continue; // rien d'éjectable (tout est position/fee-machine) → on n'ajoute pas ce coin
+                    console.log(`🔄 Remplacement watch: ${state.watch[oldest].symbol} (plus vieux, dormant) ← ${d.symbol}`);
+                    state.purgedAt[oldest] = now; delete state.watch[oldest]; replaceBudget--;
+                }
                 state.watch[tok] = { symbol: d.symbol, pool: d.poolAnalysis || gtPool || d.pool, poolAlt: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now, nextCheckAt: now + Math.floor(Math.random() * 30e3) };
                 console.log(`👀 Suivi: ${d.symbol} (âge ${ageH.toFixed(1)}h, vol $${Math.round(d.vol24h / 1000)}k, pool ${gtPool ? 'GT' : 'dex'})`);
             } catch (_) {}
@@ -704,7 +718,7 @@ async function scan() {
         // 2. pour chaque token suivi : setup / entrée / gestion de position papier
         let rl429 = 0; // 429 vus ce tick — au 2e, on arrête de fetch (backoff global, le cache sert le reste)
         let cOk = 0, cKo = 0; // santé source bougies ce tick (pour le résumé de scan — repère une panne, cas bot 1)
-        let fetchBudget = 6;  // max vraies requêtes bougies Birdeye par scan (borne le burst → évite le 429)
+        let fetchBudget = 9;  // max vraies requêtes bougies Birdeye par scan (6→9 le 2026-08-14 : mieux surveiller la watch de 35)
         // ROTATION (2026-07-24, GO user) : l'ordre d'itération était fixe → quand le backoff 429 coupait
         // le tick, c'était TOUJOURS la même queue de liste qui sautait → 8 tokens jamais évalués (diag
         // None depuis des heures). Départ tournant : chaque token passe en tête à tour de rôle.
