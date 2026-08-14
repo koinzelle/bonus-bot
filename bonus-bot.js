@@ -1297,6 +1297,23 @@ http.createServer((req, res) => {
             petits_dippers: g(dippers.filter(t => (t.entryMcK || 0) < 3000)),
         };
     })();
+    // ANALYSE TAILLE + PROFONDEUR D'ENTRÉE (2026-08-15, lecture seule) : gros vs petits coins gagnent-ils plus ?
+    // Et les entrées PROFONDES (coin déjà bien dumpé) gagnent-elles mieux ? (EP : "lower entry = better margin")
+    const sizeAnalysis = (() => {
+        const T = state.trades.filter(t => typeof t.pnlPct === 'number');
+        const g = (arr) => arr.length ? { n: arr.length, wr: Math.round(arr.filter(t => t.pnlPct > 0).length / arr.length * 100) + '%', avgPnl: +(arr.reduce((s, t) => s + t.pnlPct, 0) / arr.length).toFixed(1) } : { n: 0 };
+        const byDepth = {};
+        for (const [lbl, lo, hi] of [['entree_dump_0-15%', 0, 15], ['entree_dump_15-30%', 15, 30], ['entree_dump_30-50%', 30, 50], ['entree_dump_50%+', 50, 999]])
+            byDepth[lbl] = g(T.filter(t => (t.dumpDepthPct || 0) >= lo && (t.dumpDepthPct || 0) < hi));
+        return {
+            gros_MC3M: g(T.filter(t => (t.entryMcK || 0) >= 3000)),
+            petits: g(T.filter(t => (t.entryMcK || 0) < 3000)),
+            parProfondeurEntree: byDepth,
+            // croisement : les GROS entrés PEU profond (dump<30%) vs entrés PROFOND (dump≥30%)
+            gros_entree_peu_profonde: g(T.filter(t => (t.entryMcK || 0) >= 3000 && (t.dumpDepthPct || 0) < 30)),
+            gros_entree_profonde: g(T.filter(t => (t.entryMcK || 0) >= 3000 && (t.dumpDepthPct || 0) >= 30)),
+        };
+    })();
     res.end(JSON.stringify({
         mode: 'PAPER', updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
@@ -1309,6 +1326,7 @@ http.createServer((req, res) => {
         downtrendVsRange, // issue AGRÉGÉE downtrend vs range sur les 141 trades (le shadow enfin exploitable)
         losersAnalysis,   // TOUS les perdants ≤-15% + raison de sortie + features (analyse CUT hors-range)
         stackingAnalysis, // WR/pnl par niveau de dip (-10/-20/-30%) : stacker paie-t-il, et sur quels coins ?
+        sizeAnalysis,     // WR/pnl gros vs petits coins + par profondeur d'entrée (faut-il entrer plus profond sur les gros ?)
         athAgeBins, // issue par tranche d'âge d'ATH à l'entrée (tous les trades) — voir mémoire athage-vs-outcome
         shadowManualCloses: state.shadowManualCloses || [], // regret des coupes manuelles (exit EP possible après ?)
         abFixedVsTrailing: {
