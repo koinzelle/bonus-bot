@@ -1281,6 +1281,22 @@ http.createServer((req, res) => {
             losersList: losers.slice(-45).map(t => ({ s: t.symbol, tok: t.tok || null, pnl: t.pnlPct, r: (t.reason || '').slice(0, 24), entry: t.entry, closedAt: t.closedAt, dur: t.durMin })),
         };
     })();
+    // ANALYSE STACKING (2026-08-15, lecture seule) : un coin qui a dippé -X% (maxStackLevel) a-t-il rebondi ?
+    // WR + pnl moyen par niveau de dip → dit si stacker (moyenner à -10%) est gagnant, et sur quels coins.
+    const stackingAnalysis = (() => {
+        const T = state.trades.filter(t => typeof t.pnlPct === 'number');
+        const g = (arr) => arr.length ? { n: arr.length, wr: Math.round(arr.filter(t => t.pnlPct > 0).length / arr.length * 100) + '%', avgPnl: +(arr.reduce((s, t) => s + t.pnlPct, 0) / arr.length).toFixed(1) } : { n: 0 };
+        const parNiveau = {};
+        for (let lvl = 0; lvl <= 6; lvl++) { const arr = T.filter(t => (t.maxStackLevel || 0) === lvl); if (arr.length) parNiveau[lvl === 0 ? 'pas_de_dip' : `dip_-${lvl * 10}%`] = g(arr); }
+        const dippers = T.filter(t => (t.maxStackLevel || 0) >= 1);
+        return {
+            parNiveau,
+            nonDippers: g(T.filter(t => (t.maxStackLevel || 0) === 0)),
+            dippers_moins10: g(dippers),
+            gros_etablis_dippers: g(dippers.filter(t => (t.entryMcK || 0) >= 3000)), // stacker seulement là ?
+            petits_dippers: g(dippers.filter(t => (t.entryMcK || 0) < 3000)),
+        };
+    })();
     res.end(JSON.stringify({
         mode: 'PAPER', updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
@@ -1292,6 +1308,7 @@ http.createServer((req, res) => {
         shadowStats: state.shadowStats || {}, // mesures shadow accumulées (persistées sur le volume)
         downtrendVsRange, // issue AGRÉGÉE downtrend vs range sur les 141 trades (le shadow enfin exploitable)
         losersAnalysis,   // TOUS les perdants ≤-15% + raison de sortie + features (analyse CUT hors-range)
+        stackingAnalysis, // WR/pnl par niveau de dip (-10/-20/-30%) : stacker paie-t-il, et sur quels coins ?
         athAgeBins, // issue par tranche d'âge d'ATH à l'entrée (tous les trades) — voir mémoire athage-vs-outcome
         shadowManualCloses: state.shadowManualCloses || [], // regret des coupes manuelles (exit EP possible après ?)
         abFixedVsTrailing: {
