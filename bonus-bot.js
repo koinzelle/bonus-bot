@@ -1358,7 +1358,7 @@ http.createServer((req, res) => {
             shadowOpen: Object.keys(state.fixedShadow).length,
         },
         lastTrades: state.trades.slice(-10),
-        watch: Object.entries(state.watch).map(([tok, w]) => ({ symbol: w.symbol, ...(w.diag || { pending: true }) })),
+        watch: Object.entries(state.watch).map(([tok, w]) => ({ symbol: w.symbol, mint: tok, pool: w.pool, lastSkip: w.lastSkip, fetchFails: w.fetchFails || 0, ...(w.diag || { pending: true }) })),
     }, null, 2));
 }).listen(process.env.PORT || 3000, () => console.log(`🌐 /status sur port ${process.env.PORT || 3000}`));
 
