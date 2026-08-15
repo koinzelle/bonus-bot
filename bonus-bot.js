@@ -727,13 +727,6 @@ async function scan() {
         const rotated = [...watchEntries.slice(scanOffset), ...watchEntries.slice(0, scanOffset)];
         for (const [tok, w] of rotated) {
             const inPos = !!state.positions[tok];
-            // PURGE None BLOQUÉ (2026-08-15) : un coin JAMAIS évalué (pas de w.diag) depuis >25min = junk/no-data
-            // Birdeye (scam sans bougies) qui squatte un slot → on le dégage AVANT le gate budget, sinon il n'est
-            // jamais fetché → jamais 8 échecs → jamais purgé (il traînait des heures). Protégés : positions + fee-machines.
-            if (!inPos && !w.diag && w.addedAt && (now - w.addedAt) > 25 * 60e3 && !feeTvlMap.has(tok)) {
-                console.log(`🧹 Purge watch: ${w.symbol} (jamais évalué depuis >25min — no-data/junk)`);
-                state.purgedAt[tok] = now; delete state.watch[tok]; continue;
-            }
             // FRÉQUENCE ADAPTATIVE (2026-07-27, idée user) : un token LOIN de l'entrée (-35%) n'a pas besoin
             // d'être checké souvent → on concentre les appels GT là où ça compte (proche entrée / positions).
             // dd<20% → 10min ; 20-30% → 3min ; ≥30% → 1min ; position → chaque tick (pour la sortie).
