@@ -993,8 +993,7 @@ async function scan() {
             const mcOk = curMc >= MC_MIN_ATH;
             const drawdown = ath > 0 ? 1 - curPrice / ath : 0;      // retracement depuis l'ATH courant
             const ddOk = drawdown >= 0.40;                          // tolérance dès -40% (2026-07-27, demande user — avant 35%)
-            // fréquence adaptative : prochain check plus tôt à mesure qu'on approche l'entrée (-40%)
-            w.nextCheckAt = now + (drawdown >= 0.35 ? 60e3 : drawdown >= 0.25 ? 180e3 : 600e3);
+            // (cadence adaptative DÉPLACÉE plus bas — FIX 3 2026-08-15 : indexée sur dumpedFromHigh, pas drawdown-ATH)
             const ddShadow35 = drawdown >= 0.35 && drawdown < 0.40; // SHADOW : ce que le seuil 35% donnerait en plus
             // supports (±4% = NOTRE calibration ; EP dit juste "near support")
             const nearST = line > 0 && Math.abs(curPrice / line - 1) <= 0.04;
@@ -1031,6 +1030,15 @@ async function scan() {
             const recentHigh = Math.max(...cs.slice(-winN).map(c => c[2]));
             const dumpedFromHigh = recentHigh > 0 ? 1 - curPrice / recentHigh : 0;
             const atDip = dumpedFromHigh >= dumpThr;
+            // FIX 3 (2026-08-15) : cadence de check indexée sur la PROXIMITÉ D'ENTRÉE (dump sous le haut récent
+            // vs seuil), pas sur le drawdown-sous-ATH. Un cadavre à -80% ATH dont le haut-6h a fondu (dump≈0)
+            // n'est PAS près d'un déclenchement → check lent (10min) → libère le budget-fetch pour les frais.
+            // Un token qui approche le -35% (ou -12% établi) → check rapide (60s). Corrige la famine où les
+            // cadavres monopolisaient le 60s. dipProx=1.0 = pile au seuil ; marche pour établi ET volatil.
+            if (!inPos) {
+                const dipProx = dumpThr > 0 ? dumpedFromHigh / dumpThr : 0;
+                w.nextCheckAt = now + (dipProx >= 0.85 ? 60e3 : dipProx >= 0.5 ? 180e3 : 600e3);
+            }
             const atST = line != null && line > 0 ? curPrice <= line * 1.02 : true; // retrace VERS la ST (EP, ST intouchable) — prix à/sous la ligne ST
             // ANTI-COIN-MOURANT (2026-08-04, règle user) : après un close on ne RÉ-OUVRE que si le prix a
             // re-dépassé notre dernière entrée (= il chope encore). S'il ne fait que des lower lows sous notre
