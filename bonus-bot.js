@@ -731,16 +731,16 @@ async function scan() {
             // d'être checké souvent → on concentre les appels GT là où ça compte (proche entrée / positions).
             // dd<20% → 10min ; 20-30% → 3min ; ≥30% → 1min ; position → chaque tick (pour la sortie).
             // Divise la charge GT ~×5-8 → fin de la famine 429 (13/18 tokens jamais évalués).
-            if (!inPos && w.nextCheckAt && now < w.nextCheckAt) continue;
+            if (!inPos && w.nextCheckAt && now < w.nextCheckAt) { if (!w.diag) w.lastSkip = 'nextCheck-pas-dû'; continue; }
             const ageH = (now - w.birthMs) / 3.6e6;
             if (ageH >= AGE_MAX_H && !inPos) { delete state.watch[tok]; continue; } // garde-fou zombies 1 an
-            if (rl429 >= 3 && !inPos) continue; // backoff : GT sature, on réessaie au prochain tick (seuil 2→3)
+            if (rl429 >= 3 && !inPos) { if (!w.diag) w.lastSkip = '429-backoff-global'; continue; } // backoff : GT sature, on réessaie au prochain tick (seuil 2→3)
             // BUDGET FETCH/SCAN (2026-08-10, demande user) : borne le BURST Birdeye — au plus fetchBudget vraies
             // requêtes bougies par scan. Un coin au cache FRAIS ne coûte rien (pas d'appel) ; les autres, une
             // fois le budget épuisé, passent au prochain tick (la rotation garantit qu'ils seront servis).
             // Les positions ne sont JAMAIS budgétées (sortie toujours vérifiée).
             const cacheFresh15 = (() => { const cc = candleCache.get(tok + '15m'); return !!(cc && Date.now() - cc.ts < 300 * 1000); })();
-            if (!inPos && !cacheFresh15 && fetchBudget <= 0) continue;
+            if (!inPos && !cacheFresh15 && fetchBudget <= 0) { if (!w.diag) w.lastSkip = 'budget-fetch-épuisé'; continue; }
             let cs;
             // Birdeye TOKEN-LEVEL (tok = mint) : 192×15m=48h pour support/sortie. Suit la migration
             // nativement → plus de bricolage pool (poolAlt/origine supprimé). Le throttle est global.
@@ -775,10 +775,11 @@ async function scan() {
                 // CHAQUE tick → 429 en boucle (chicken-and-egg : nextCheckAt n'était posé qu'après succès).
                 // On les recule de 90s → ils cessent de marteler GT → GT récupère → fetchs réussis.
                 if (!inPos) w.nextCheckAt = now + 90e3;
-                if (/429/.test(w.lastFetchErr || '')) { rl429++; if (rl429 === 1) console.log(`  ⏳ GT rate-limit (429) ce tick — backoff, le cache prend le relais`); continue; }
+                if (/429/.test(w.lastFetchErr || '')) { rl429++; if (!w.diag) w.lastSkip = '429-fetch-direct'; if (rl429 === 1) console.log(`  ⏳ GT rate-limit (429) ce tick — backoff, le cache prend le relais`); continue; }
                 cKo++;
                 if (!state.positions[tok]) {
                     w.fetchFails = (w.fetchFails || 0) + 1;
+                    if (!w.diag) w.lastSkip = 'bougies-vides×' + w.fetchFails;
                     if (w.fetchFails >= 8) {
                         console.log(`🧹 Purge watch: ${w.symbol} (${w.fetchFails} échecs bougies consécutifs — ${w.lastFetchErr || 'réponse vide'})`);
                         state.purgedAt[tok] = now;
@@ -789,7 +790,7 @@ async function scan() {
             }
             w.fetchFails = 0;
             cOk++;
-            if (cs.length < 15) continue;
+            if (cs.length < 15) { if (!w.diag) w.lastSkip = 'bougies<15(' + cs.length + ')'; continue; }
             // Purge cadavres (2026-07-19) : MC courante < MC_MIN_ATH (250k, aligné entrée 2026-07-22) →
             // le token ne peut plus entrer et squatte un slot. Cooldown re-add 60min évite l'oscillation.
             const mcNow = cs[cs.length - 1][4] * w.supply;
@@ -1078,6 +1079,13 @@ async function scan() {
                 feeTvl24h: +feeTvl.toFixed(1),                           // rendement LP de la pool (plancher ≥5%)
             };
             if (ddOk) w.dd35Logged = false;
+            // DIAG NEAR-MISS (2026-08-15) : le token EST au creux (dip frais ≥ seuil) mais l'entrée est bloquée
+            // par une condition ULTÉRIEURE → on log la raison (throttle 5min). Distingue "dip raté/jamais vu"
+            // de "dip vu mais bloqué". block==null ici = entrée réelle (ne rien logger).
+            if (atDip && block && !state.positions[tok] && (!w.lastNearMissAt || now - w.lastNearMissAt > 5 * 60e3)) {
+                w.lastNearMissAt = now;
+                console.log(`🎯 DIAG near-miss: ${w.symbol} AU CREUX (dump -${(dumpedFromHigh * 100).toFixed(0)}% ≥ ${(dumpThr * 100).toFixed(0)}%) mais bloqué → ${block} | RSI2=${rsiEntry != null ? rsiEntry.toFixed(0) : '?'} recovered=${!!w.recovered} athBreaks=${w.athBreaks || 0} cooldown=${!!onCooldown} feeTvl=${feeTvl.toFixed(0)}%`);
+            }
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
             // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
@@ -1121,6 +1129,13 @@ async function scan() {
             }
         }
         console.log(`🔍 Scan ${hotOnly ? 'HOT' : 'complet'} | watch ${Object.keys(state.watch).length} | pos ${Object.keys(state.positions).length} | bougies OK ${cOk}/vide ${cKo}${rl429 ? `/429×${rl429}` : ''}${cOk === 0 && (cKo + rl429) > 0 ? ' ⚠️ SOURCE BOUGIES DOWN' : ''}`);
+        // DIAG (2026-08-15) : pourquoi des tokens restent JAMAIS évalués (None) — raison du dernier skip + âge en watch.
+        if (!hotOnly) {
+            const nones = Object.entries(state.watch)
+                .filter(([tok, w]) => !w.diag && !state.positions[tok])
+                .map(([tok, w]) => `${w.symbol}(${Math.round((now - (w.addedAt || now)) / 60000)}min·${w.lastSkip || 'jamais-atteint'})`);
+            if (nones.length) console.log(`🔬 DIAG None jamais évalués (${nones.length}) : ${nones.join(' · ')}`);
+        }
     } finally { scanning = false; save(); }
 }
 
