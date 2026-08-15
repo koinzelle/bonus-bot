@@ -790,7 +790,21 @@ async function scan() {
             }
             w.fetchFails = 0;
             cOk++;
-            if (cs.length < 15) { if (!w.diag) w.lastSkip = 'bougies<15(' + cs.length + ')'; continue; }
+            if (cs.length < 15) {
+                if (!w.diag) w.lastSkip = 'bougies<15(' + cs.length + ')';
+                // FIX FAMINE (2026-08-15) : sans ça, un token à <15 bougies est re-fetché CHAQUE scan (gâche le
+                // budget) et jamais purgé (ni diag, ni fetchFails) → squat éternel en None, affame les frais.
+                if (!inPos) {
+                    w.nextCheckAt = now + 5 * 60e3; // backoff : arrête de bouffer un slot fetch à chaque scan
+                    // Birdeye n'a pas d'historique pour un token DÉJÀ vieux (≥6h) → il n'aura jamais 15 bougies → purge.
+                    // Un token jeune (<6h) accumule encore ses bougies → on le garde (re-add possible sinon).
+                    if (ageH >= 6 && w.addedAt && (now - w.addedAt) > 30 * 60e3) {
+                        console.log(`🧹 Purge watch: ${w.symbol} (${cs.length} bougies <15, âge ${ageH.toFixed(0)}h — Birdeye sans historique)`);
+                        state.purgedAt[tok] = now; delete state.watch[tok];
+                    }
+                }
+                continue;
+            }
             // Purge cadavres (2026-07-19) : MC courante < MC_MIN_ATH (250k, aligné entrée 2026-07-22) →
             // le token ne peut plus entrer et squatte un slot. Cooldown re-add 60min évite l'oscillation.
             const mcNow = cs[cs.length - 1][4] * w.supply;
