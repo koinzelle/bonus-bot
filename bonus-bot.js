@@ -658,6 +658,13 @@ async function scan() {
     try {
         const now = Date.now();
         if (!state.purgedAt) state.purgedAt = {};
+        // PERSISTANCE PATTERN PAR MINT (2026-08-15) : le pattern EP est "collant" (ruggers sortis = acquis à vie)
+        // mais il était perdu à chaque purge→re-add ET quand le fetch 1H retombait sur 15m (pattern hors champ
+        // sur 48h → faux pattern-KO sur les vieux coins déjà validés, cas CATE/STONK). On mémorise la validation
+        // par mint (TTL 14j, aligné athRecent) → un coin validé reste qualifié malgré purge/re-add/hoquet fetch.
+        if (!state.patternOkMints) state.patternOkMints = {};
+        const PATTERN_TTL = 14 * 24 * 3600e3;
+        for (const k in state.patternOkMints) if (now - state.patternOkMints[k] > PATTERN_TTL) delete state.patternOkMints[k]; // prune fossiles
         // Tick alterné (2026-07-19) : pair = scan COMPLET (découverte + tous les tokens, cadence 60s
         // comme avant) ; impair = UNIQUEMENT tokens chauds (4/5 conditions) + positions → réactivité 30s
         // là où ça compte, sans doubler la charge GT.
@@ -710,7 +717,8 @@ async function scan() {
                     console.log(`🔄 Remplacement watch: ${state.watch[oldest].symbol} (plus vieux, dormant) ← ${d.symbol}`);
                     state.purgedAt[oldest] = now; delete state.watch[oldest]; replaceBudget--;
                 }
-                state.watch[tok] = { symbol: d.symbol, pool: d.poolAnalysis || gtPool || d.pool, poolAlt: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now, nextCheckAt: now + Math.floor(Math.random() * 30e3) };
+                state.watch[tok] = { symbol: d.symbol, pool: d.poolAnalysis || gtPool || d.pool, poolAlt: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now, nextCheckAt: now + Math.floor(Math.random() * 30e3),
+                    patternValidated: !!(state.patternOkMints[tok] && now - state.patternOkMints[tok] < PATTERN_TTL) || undefined }; // restaure la qualif pattern acquise (survit purge/re-add)
                 console.log(`👀 Suivi: ${d.symbol} (âge ${ageH.toFixed(1)}h, vol $${Math.round(d.vol24h / 1000)}k, pool ${gtPool ? 'GT' : 'dex'})`);
             } catch (_) {}
         }
@@ -947,7 +955,10 @@ async function scan() {
             // c'est ACQUIS ("by that time they already out"). Sans ça, la fenêtre de bougies glissante
             // dé-qualifiait un token quand le breakup/breakdown sortait de la fenêtre.
             const pInfo = patternInfo(ms, ms === cs ? st : superTrend(ms));
-            if (pInfo.ok && !w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} — ATH1 ${pInfo.ath1?.toExponential(2)} → flip ST rouge (dump -${pInfo.dumpDepthPct}%) → ATH2 ${pInfo.ath2?.toExponential(2)} (2e ATH > 1er, +${pInfo.ath1 ? (((pInfo.ath2/pInfo.ath1)-1)*100).toFixed(0) : '?'}%) — qualification acquise`); }
+            if (pInfo.ok) {
+                state.patternOkMints[tok] = now; // rafraîchit la qualif par mint (persiste purge/re-add, TTL 14j)
+                if (!w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} — ATH1 ${pInfo.ath1?.toExponential(2)} → flip ST rouge (dump -${pInfo.dumpDepthPct}%) → ATH2 ${pInfo.ath2?.toExponential(2)} (2e ATH > 1er, +${pInfo.ath1 ? (((pInfo.ath2/pInfo.ath1)-1)*100).toFixed(0) : '?'}%) — qualification acquise`); }
+            }
             const patOk = !!w.patternValidated;
             // VRAI ATH via lookback DAILY (2026-07-29, cas dog) : la fenêtre 1H/15m ne remonte pas assez
             // loin pour les vieux coins (dog 694h : la série 1H ne voyait que $2.33M, alors que le VRAI ATH
