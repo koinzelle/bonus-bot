@@ -1091,7 +1091,7 @@ async function scan() {
             else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`; // cr==null ne bloque plus (2026-08-09) → on tombe sur le vrai blocage suivant
             else if (!atDip) block = `pas-au-creux(<${(dumpThr * 100).toFixed(0)}%${established ? '·établi' : ''})`;
             else if (!rsiLow) block = 'pas-survendu(RSI>40=pompe)';
-            else if ((w.athBreaks || 0) >= 4) block = 'ATH-épuisé(4x)';
+            else if ((w.athBreaks || 0) >= 6) block = 'ATH-épuisé(6x)'; // cap 4→6 (2026-08-17, backtest WOFL/LAYOOO) : laisse 2 cycles de plus aux cyclers à grosses fees ; coupe les vrais épuisés (7e+ ATH). Anti-rug conservé.
             else if (!canReenter) block = 'coin-mourant';
             else if (!feesOk) block = `fees<${FEE_TVL_FLOOR}%(${feeTvl.toFixed(0)}%)`; // pool ne génère pas assez de fees → LP mort
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
@@ -1122,7 +1122,7 @@ async function scan() {
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
             // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && rsiLow && canReenter && feesOk && (w.athBreaks || 0) < 4 && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && rsiLow && canReenter && feesOk && (w.athBreaks || 0) < 6 && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
                 // Pool Meteora viable requise en LIVE (sélection EP "coin AND pool selection") — lazy, cachée 30min.
                 if (live.enabled && live.findMeteoraPool) {
                     if (w.meteoraOk == null || now - (w.meteoraCheckedAt || 0) > 30 * 60e3) {
