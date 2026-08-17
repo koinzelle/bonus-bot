@@ -646,7 +646,27 @@ let scanTick = 0;
 let _batchLv = { map: new Map(), ts: 0 };
 let _batchErrWarned = false;
 async function batchedPositionValues() {
-    if (Date.now() - _batchLv.ts < 8000) return { map: _batchLv.map, fresh: true }; // succès <8s = frais
+    // TTL ADAPTATIF 3 PALIERS (2026-08-18, demande user) selon la proximité d'un trigger de sortie, calculé sur
+    // l'état DÉJÀ en cache (peakGain, _lv = dernier gain/bin) → zéro appel RPC en plus. On prend le palier le
+    // plus serré parmi les positions. Réduit le volume RPC (donc les 429) SANS retarder les vraies sorties.
+    //   8s  = CHAUD  : gain ≥ +5.5% (proche armement +6%) · CUT proche (≤ -25%) · bord de range (≤5 bins)
+    //   10s = SE RAPPROCHE : gain ≥ +3% · perte ≥ -15% · bord de range (≤10 bins)
+    //   15s = LOIN
+    let ttl = 15000;
+    for (const p of Object.values(state.positions)) {
+        if (!p.live) continue;
+        const g = p._lv ? p._lv.rg : (p.peakGain || 0);
+        const pk = p.peakGain || 0;
+        const bin = p._lv ? p._lv.bin : null;
+        const distEdge = (bin != null && p.live.upperBinId != null && p.live.lowerBinId != null)
+            ? Math.min(p.live.upperBinId - bin, bin - p.live.lowerBinId) : 999;
+        let t;
+        if (pk >= 0.055 || g >= 0.055 || g <= -0.25 || distEdge <= 5) t = 8000;
+        else if (g >= 0.03 || g <= -0.15 || distEdge <= 10) t = 10000;
+        else t = 15000;
+        if (t < ttl) ttl = t;
+    }
+    if (Date.now() - _batchLv.ts < ttl) return { map: _batchLv.map, fresh: true }; // succès < ttl = frais
     if (live.enabled && live.allPositionValues) {
         try { const m = await live.allPositionValues(); if (m) { _batchLv = { map: m, ts: Date.now() }; _batchErrWarned = false; return { map: m, fresh: true }; } }
         catch (e) { if (!_batchErrWarned) { _batchErrWarned = true; console.log(`  ⚠️ lecture groupée échouée (${String(e.message).slice(0, 70)}) → bascule lecture individuelle`); } }
