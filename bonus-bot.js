@@ -1251,6 +1251,14 @@ http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         return res.end(LOG_BUFFER.slice(-tail).join('\n'));
     }
+    // GET /trades?all=1 — dump JSON de l'historique des trades (all=1 = tout ; sinon les 200 derniers).
+    // Chaque trade porte désormais athBreaks/feeTvl/entryMcK → analyse cap-ATH/fees/MC sans reconstruire.
+    if ((req.url || '').startsWith('/trades')) {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const list = q.get('all') === '1' ? state.trades : state.trades.slice(-parseInt(q.get('tail') || '200', 10));
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ n: state.trades.length, trades: list }));
+    }
     // GET /close?symbol=X  ou  /close?all=1 — CLOSE MANUEL (stop-loss humain, rôle EP). Ferme la vraie
     // position live si présente (closeVerified), retire du tracking, comptabilise en manualClose.
     if ((req.url || '').startsWith('/close')) {
