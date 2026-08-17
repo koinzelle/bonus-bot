@@ -328,7 +328,7 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
 }
 // TTL longs = moins d'appels : 15m→120s (support/exit) ; 1H→20min ; daily→60min (macro = lent).
 const candles5 = (mint, limit = 200) => candlesTF(mint, '5m', '5m', limit, 300, 120 * 1000);   // cache 60s→120s (charge Birdeye)
-const candles15 = (mint, limit = 192) => candlesTF(mint, '15m', '15m', limit, 900, 300 * 1000); // cache 120s→300s (charge Birdeye)
+const candles15 = (mint, limit = 192, ttl = 300 * 1000) => candlesTF(mint, '15m', '15m', limit, 900, ttl); // cache 300s (45s pour les tokens near-entry, cf w.nearEntry)
 const candles1h = (mint, limit = 720, force = false) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000, force);
 const candlesDay = (mint, limit = 1000, force = false) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000, force);
 
@@ -747,12 +747,16 @@ async function scan() {
             // requêtes bougies par scan. Un coin au cache FRAIS ne coûte rien (pas d'appel) ; les autres, une
             // fois le budget épuisé, passent au prochain tick (la rotation garantit qu'ils seront servis).
             // Les positions ne sont JAMAIS budgétées (sortie toujours vérifiée).
-            const cacheFresh15 = (() => { const cc = candleCache.get(tok + '15m'); return !!(cc && Date.now() - cc.ts < 300 * 1000); })();
-            if (!inPos && !cacheFresh15 && fetchBudget <= 0) { if (!w.diag) w.lastSkip = 'budget-fetch-épuisé'; continue; }
+            // CACHE ADAPTATIF NEAR-ENTRY (2026-08-17) : un token proche de l'entrée (w.nearEntry, dipProx≥0.85 au
+            // dernier tick) doit voir un prix FRAIS → cache 45s ; le reste → 300s. Le cache 300s défaisait les
+            // checks 60s (entrée sur prix périmé 5 min, cas LAYOOO). Near-entry jamais gaté par le budget.
+            const ttl15 = w.nearEntry ? 45 * 1000 : 300 * 1000;
+            const cacheFresh15 = (() => { const cc = candleCache.get(tok + '15m'); return !!(cc && Date.now() - cc.ts < ttl15); })();
+            if (!inPos && !w.nearEntry && !cacheFresh15 && fetchBudget <= 0) { if (!w.diag) w.lastSkip = 'budget-fetch-épuisé'; continue; }
             let cs;
             // Birdeye TOKEN-LEVEL (tok = mint) : 192×15m=48h pour support/sortie. Suit la migration
             // nativement → plus de bricolage pool (poolAlt/origine supprimé). Le throttle est global.
-            try { cs = await candles15(tok, 192); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); }
+            try { cs = await candles15(tok, 192, ttl15); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); }
             if (!inPos && !cacheFresh15) fetchBudget--;
             // Purge fetch cassé (2026-07-19) : après 8 échecs consécutifs, on libère le slot — MAIS un 429
             // (rate-limit) n'est PAS une pool morte (2026-07-22 : les purges 429 tuaient des tokens
@@ -1055,6 +1059,7 @@ async function scan() {
             if (!inPos) {
                 const dipProx = dumpThr > 0 ? dumpedFromHigh / dumpThr : 0;
                 w.nextCheckAt = now + (dipProx >= 0.85 ? 60e3 : dipProx >= 0.5 ? 180e3 : 600e3);
+                w.nearEntry = dipProx >= 0.85; // near-entry → prochain fetch en cache COURT (45s) = prix frais (sinon cache 300s défait les checks 60s, entrée sur prix périmé)
             }
             const atST = line != null && line > 0 ? curPrice <= line * 1.02 : true; // retrace VERS la ST (EP, ST intouchable) — prix à/sous la ligne ST
             // ANTI-COIN-MOURANT (2026-08-04, règle user) : après un close on ne RÉ-OUVRE que si le prix a
