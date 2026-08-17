@@ -306,12 +306,12 @@ const candleCache = new Map(); // (mint+res) -> { cs, ts }
 let birdeyeBackoffUntil = 0, birdeye429Warned = false, birdeyeFails = 0; // BACKOFF (outage 10/08) : sur 429/échecs, on ARRÊTE de taper
 // Birdeye 60s → l'IP Railway refroidit → Birdeye lève le throttle → 1er appel OK → le cache s'amorce → moins
 // d'appels. Sans ça, le bot re-tape 13×/scan et ENTRETIENT le throttle (jamais de récup).
-async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs) {
+async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, force = false) {
     const key = mint + gmgnRes;
     const c = candleCache.get(key);
-    if (c && Date.now() - c.ts < ttlMs) return c.cs; // cache : ÉVITE l'appel (le principal minimiseur)
+    if (!force && c && Date.now() - c.ts < ttlMs) return c.cs; // cache : ÉVITE l'appel (force=on rejoue, pour le fetch HTF du pattern)
     let cs = [];
-    if (Date.now() >= birdeyeBackoffUntil) { // pas en backoff → on tente Birdeye (PRIMAIRE)
+    if (force || Date.now() >= birdeyeBackoffUntil) { // pas en backoff (ou FORCÉ : fetch HTF pattern, victime sinon du backoff partagé → faux pattern-KO)
         try { cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec)); birdeye429Warned = false; birdeyeFails = 0; }
         catch (e) {
             const st = (e && e.response && e.response.status) || (e && e.code) || String(e && e.message).slice(0, 30);
@@ -329,8 +329,8 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs) 
 // TTL longs = moins d'appels : 15m→120s (support/exit) ; 1H→20min ; daily→60min (macro = lent).
 const candles5 = (mint, limit = 200) => candlesTF(mint, '5m', '5m', limit, 300, 120 * 1000);   // cache 60s→120s (charge Birdeye)
 const candles15 = (mint, limit = 192) => candlesTF(mint, '15m', '15m', limit, 900, 300 * 1000); // cache 120s→300s (charge Birdeye)
-const candles1h = (mint, limit = 720) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000);
-const candlesDay = (mint, limit = 1000) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000);
+const candles1h = (mint, limit = 720, force = false) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000, force);
+const candlesDay = (mint, limit = 1000, force = false) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000, force);
 
 // chop-rate (2026-08-03) : sur les bougies récentes, quelle fraction des dumps REBONDIT (+8% avant -30%)
 // vs continue à mourir (-30% = hors range). Chopper (NEEGY ~88%) → on cycle ; dumper (breadcat bas) → on
@@ -942,8 +942,14 @@ async function scan() {
             // daily×1000 (~3 ans). L'ÂGE N'EST PLUS UN CRITÈRE (EP : "no minimum age", il a ouvert FOMO
             // sur un chart daily en live) — le travail est fait par pattern + ATH récent ≤14j.
             let ms = cs;
-            if (ageH >= 720) { try { const ds = await candlesDay(tok, 1000); if (ds && ds.length >= 12) ms = ds; } catch (_) { /* fallback cs */ } }
-            else if (ageH >= 48) { try { const hs = await candles1h(tok, 720); if (hs && hs.length >= 12) ms = hs; } catch (_) { /* fallback cs */ } }
+            // RETRY FORCÉ HTF (2026-08-17) : le fetch 1H/daily du pattern est victime du backoff Birdeye partagé
+            // (un 429/400 ailleurs → tout tombe sur GMGN → 15m → pattern étalé sur semaines HORS CHAMP → FAUX
+            // pattern-KO sur vieux coins déjà valides, cas TOAD/STONK). Si pas encore validé et que le fetch normal
+            // retombe <12 bougies, on rejoue UNE fois en bypassant le backoff (toujours throttlé). 1 réussite → la
+            // persistance par mint verrouille 14j. Limité aux non-validés → auto-borné (charge négligeable).
+            const needHTF = !w.patternValidated;
+            if (ageH >= 720) { try { let ds = await candlesDay(tok, 1000); if (needHTF && (!ds || ds.length < 12)) ds = await candlesDay(tok, 1000, true); if (ds && ds.length >= 12) ms = ds; } catch (_) { /* fallback cs */ } }
+            else if (ageH >= 48) { try { let hs = await candles1h(tok, 720); if (needHTF && (!hs || hs.length < 12)) hs = await candles1h(tok, 720, true); if (hs && hs.length >= 12) ms = hs; } catch (_) { /* fallback cs */ } }
             // ATH = celui des BOUGIES (2026-07-23, décision user) : avec les paliers de TF (daily pour les
             // vieux coins ≈ 3 ans), l'ATH bougies EST l'ATH de vie. Plus de dépendance à GMGN (souvent None
             // sur les vieux coins). Le gate ATH-récent ≤14j gère les zombies : ATH ancien = bloqué.
