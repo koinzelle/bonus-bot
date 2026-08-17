@@ -1057,9 +1057,12 @@ async function scan() {
             // Un token qui approche le -35% (ou -12% établi) → check rapide (60s). Corrige la famine où les
             // cadavres monopolisaient le 60s. dipProx=1.0 = pile au seuil ; marche pour établi ET volatil.
             if (!inPos) {
+                // PALIERS DE CADENCE (2026-08-17, demande user) indexés sur la PROXIMITÉ D'ENTRÉE (dipProx =
+                // dump-sous-haut-récent / seuil) → s'ADAPTE aux gros coins (seuil 12%) comme aux volatils (35%) :
+                // proche ATH 5min · ~-10% 3min · ~-20% 2min · ~-25%+ 1min. Borne la latence (max 5min vs 10min avant).
                 const dipProx = dumpThr > 0 ? dumpedFromHigh / dumpThr : 0;
-                w.nextCheckAt = now + (dipProx >= 0.85 ? 60e3 : dipProx >= 0.5 ? 180e3 : 600e3);
-                w.nearEntry = dipProx >= 0.85; // near-entry → prochain fetch en cache COURT (45s) = prix frais (sinon cache 300s défait les checks 60s, entrée sur prix périmé)
+                w.nextCheckAt = now + (dipProx >= 0.71 ? 60e3 : dipProx >= 0.57 ? 120e3 : dipProx >= 0.29 ? 180e3 : 300e3);
+                w.nearEntry = dipProx >= 0.71; // dès ~-25% → cache frais 45s (les checks 1min voient enfin le vrai prix)
             }
             const atST = line != null && line > 0 ? curPrice <= line * 1.02 : true; // retrace VERS la ST (EP, ST intouchable) — prix à/sous la ligne ST
             // ANTI-COIN-MOURANT (2026-08-04, règle user) : après un close on ne RÉ-OUVRE que si le prix a
