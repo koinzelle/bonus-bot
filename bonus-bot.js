@@ -1010,6 +1010,13 @@ async function scan() {
             // les cycles. 1re observation = pas une cassure.
             if (w.maxTrueAth == null) w.maxTrueAth = trueAth;
             else if (trueAth > w.maxTrueAth * 1.02) { w.maxTrueAth = trueAth; w.athBreaks = (w.athBreaks || 0) + 1; }
+            // ATH-BREAKS DE VIE (2026-08-19, cas BULLSHIT -38% / Z à 4 ATH passés) : l'incrémental ci-dessus est
+            // INIT au haut courant à la 1re obs → un coin qui a fait ses ATH AVANT d'être suivi = athBreaks 0 →
+            // cap aveugle → il entre épuisé et rug. On recompte les cassures sur TOUTE la série ms (déjà fetchée)
+            // et on prend le max → ne sous-compte JAMAIS. Zéro RPC, coût CPU négligeable.
+            let lifeBreaks = 0, mxH = null;
+            for (const c of ms) { const h = c[2]; if (mxH == null) mxH = h; else if (h > mxH * 1.02) { mxH = h; lifeBreaks++; } }
+            w.athBreaks = Math.max(w.athBreaks || 0, lifeBreaks);
             // Migration transition (2026-07-29) : tout token DÉJÀ tradé avant ce fix (position ouverte OU
             // marqueur d'entrée antérieure lastEntryAth/lastEntryTrueAth) n'a pas de lastEntryPeak → on
             // l'initialise au max COURANT. Effet : il ne pourra ré-entrer que sur un vrai NOUVEL ATH global
