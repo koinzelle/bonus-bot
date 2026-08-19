@@ -1160,6 +1160,14 @@ async function scan() {
                 w.lastNearMissAt = now;
                 console.log(`🎯 DIAG near-miss: ${w.symbol} AU CREUX (dump -${(dumpedFromHigh * 100).toFixed(0)}% ≥ ${(dumpThr * 100).toFixed(0)}%) mais bloqué → ${block} | RSI2=${rsiEntry != null ? rsiEntry.toFixed(0) : '?'} recovered=${!!w.recovered} athBreaks=${w.athBreaks || 0} cooldown=${!!onCooldown} feeTvl=${feeTvl.toFixed(0)}%`);
             }
+            // SHADOW ATH-ÉPUISÉ (2026-08-19, demande user) : le cap bloque ces coins → 0 trade → impossible d'évaluer
+            // le cap depuis /trades (biais de sélection). On enregistre chaque coin bloqué ATH-épuisé AU CREUX +
+            // survendu (= vrai candidat refusé) avec son prix → on mesure le forward (rebond vs rug) sans trader.
+            // 1 record par token (au 1er blocage) → verdict : le cap sauve-t-il plus qu'il ne coûte, à quel seuil.
+            if (atDip && rsiLow && block && block.startsWith('ATH-épuisé') && !state.positions[tok] && !w.athShadowLogged) {
+                w.athShadowLogged = true;
+                recordShadow('athEpuise', { symbol: w.symbol, tok, price: curPrice, athBreaks: w.athBreaks || 0, curMcK: Math.round(curMc / 1000), feeTvl: +feeTvl.toFixed(1), dumpPct: +(dumpedFromHigh * 100).toFixed(0) });
+            }
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
             // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
