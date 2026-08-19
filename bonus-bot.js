@@ -881,7 +881,7 @@ async function scan() {
                 const gain = px / pos.entry - 1;
                 // CUT hors-range ADAPTATIF (2026-08-11, cas Jimothy coupé puis pump +30min) : gros coin établi
                 // (MC≥3M) rug rarement + rebondit (cf Remus) → -50% de marge ; petit volatil peut rug → -35%.
-                const RANGE_DOWN = (pos.entryMcK || 0) >= 1500 ? 0.50 : 0.35, TP_PCT = 0.06;
+                const RANGE_DOWN = 0.55, TP_PCT = 0.06;
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
@@ -1459,7 +1459,7 @@ async function fastPositionCheck() {
             pos._lv = { rg, bin: bv.activeBinId, ts: Date.now() };
             pos.peakGain = Math.max(pos.peakGain || 0, rg);
             const armed = pos.peakGain >= TP, exitPx = pos.lastPx || pos.entry;
-            const RANGE_DOWN = (pos.entryMcK || 0) >= 1500 ? 0.50 : 0.35; // CUT adaptatif (2026-08-19) : ≥1.5M MC = -50%, sinon -35%
+            const RANGE_DOWN = 0.55; // CUT hors-range -55% PARTOUT (2026-08-19, backtest tenir-vs-couper : -35% coupait trop tôt, delta +121% sur 12 CUT-bas ; -55% tient les rebonds, garde un plancher anti-rug)
             if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId) {
                 await closePaper(tok, pos, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, rapide)`);
             } else if (armed && rg <= pos.peakGain - TRAIL) {
