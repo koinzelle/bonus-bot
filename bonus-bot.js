@@ -1009,14 +1009,13 @@ async function scan() {
             // après → on ne LP plus). Compte les vrais nouveaux plus-hauts de vie (>2% au-dessus du max), pas
             // les cycles. 1re observation = pas une cassure.
             if (w.maxTrueAth == null) w.maxTrueAth = trueAth;
-            else if (trueAth > w.maxTrueAth * 1.02) { w.maxTrueAth = trueAth; w.athBreaks = (w.athBreaks || 0) + 1; }
-            // ATH-BREAKS DE VIE (2026-08-19, cas BULLSHIT -38% / Z à 4 ATH passés) : l'incrémental ci-dessus est
-            // INIT au haut courant à la 1re obs → un coin qui a fait ses ATH AVANT d'être suivi = athBreaks 0 →
-            // cap aveugle → il entre épuisé et rug. On recompte les cassures sur TOUTE la série ms (déjà fetchée)
-            // et on prend le max → ne sous-compte JAMAIS. Zéro RPC, coût CPU négligeable.
+            else if (trueAth > w.maxTrueAth * 1.02) { w.maxTrueAth = trueAth; } // maj de la réf ATH (2%) — le COMPTAGE des cassures est découplé ci-dessous
+            // ATH-BREAKS DE VIE (2026-08-19) : cassures MAJEURES à +10% = vrais cycles de pump façon EP, PAS les
+            // micro-hauts de bruit (+2% sur-comptait : CYBERLEEK 6→3, il n'a fait que 3 vrais ATH). Recompté sur
+            // toute la série ms (déjà fetchée). Sépare CYBERLEEK(3, bon) des vrais épuisés (SAME 9, BULLSHIT 5).
             let lifeBreaks = 0, mxH = null;
-            for (const c of ms) { const h = c[2]; if (mxH == null) mxH = h; else if (h > mxH * 1.02) { mxH = h; lifeBreaks++; } }
-            w.athBreaks = Math.max(w.athBreaks || 0, lifeBreaks);
+            for (const c of ms) { const h = c[2]; if (mxH == null) mxH = h; else if (h > mxH * 1.10) { mxH = h; lifeBreaks++; } }
+            w.athBreaks = lifeBreaks;
             // Migration transition (2026-07-29) : tout token DÉJÀ tradé avant ce fix (position ouverte OU
             // marqueur d'entrée antérieure lastEntryAth/lastEntryTrueAth) n'a pas de lastEntryPeak → on
             // l'initialise au max COURANT. Effet : il ne pourra ré-entrer que sur un vrai NOUVEL ATH global
