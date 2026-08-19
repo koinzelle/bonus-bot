@@ -1459,7 +1459,7 @@ async function fastPositionCheck() {
             pos._lv = { rg, bin: bv.activeBinId, ts: Date.now() };
             pos.peakGain = Math.max(pos.peakGain || 0, rg);
             const armed = pos.peakGain >= TP, exitPx = pos.lastPx || pos.entry;
-            const RANGE_DOWN = (pos.entryMcK || 0) >= 1500 ? 0.50 : 0.35; // CUT adaptatif : ≥3M MC = -50%, sinon -35%
+            const RANGE_DOWN = (pos.entryMcK || 0) >= 1500 ? 0.50 : 0.35; // CUT adaptatif (2026-08-19) : ≥1.5M MC = -50%, sinon -35%
             if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId) {
                 await closePaper(tok, pos, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, rapide)`);
             } else if (armed && rg <= pos.peakGain - TRAIL) {
