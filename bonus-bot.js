@@ -889,9 +889,9 @@ async function scan() {
                 if (pos.live && live.enabled && pos.live.openValueSol) {
                     const b = await batchedPositionValues();
                     const bv = b.fresh ? b.map.get(pos.live.positionKeypairPub) : null; // lot PÉRIMÉ = on l'ignore (plus de gel)
-                    if (bv) { pos._lv = { rg: bv.valueSol / pos.live.openValueSol - 1, bin: bv.activeBinId, ts: Date.now() }; lvSrc = 'lot'; }
+                    if (bv) { recordLv(pos, bv.valueSol / pos.live.openValueSol - 1, bv.activeBinId); lvSrc = 'lot'; }
                     else if ((!pos._lv || Date.now() - pos._lv.ts > 20000) && live.positionValueAndBin) { // lot périmé/absent → individuel FRAIS (throttlé 20s)
-                        try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { pos._lv = { rg: r.valueSol / pos.live.openValueSol - 1, bin: r.activeBinId, ts: Date.now() }; lvSrc = 'indiv'; } } catch (_) { /* garde l'ancien cache / fallback prix */ }
+                        try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { recordLv(pos, r.valueSol / pos.live.openValueSol - 1, r.activeBinId); lvSrc = 'indiv'; } } catch (_) { /* garde l'ancien cache / fallback prix */ }
                     } else if (pos._lv) { lvSrc = `cache${Math.round((Date.now() - pos._lv.ts) / 1000)}s`; }
                     // Garde anti-cache-figé : on ne trust le cache LP que <90s. Sinon on retombe sur le PRIX.
                     if (pos._lv && Date.now() - pos._lv.ts < 90000) { realGain = pos._lv.rg; liveBinId = pos._lv.bin; }
@@ -1226,6 +1226,14 @@ function closeFixedShadow(tok, fx, exitPrice, reason) {
     console.log(`👥 [A/B fixe] SORTIE ${fx.symbol} ${reason} → ${(pnlPct * 100).toFixed(1)}%`);
 }
 
+// TRAJECTOIRE LP (2026-08-19) : pose _lv ET historise (valeur%, bin, ts) → au close on l'attache au trade →
+// consultable via /trades?all=1 (jamais perdue). Un trou de temps entre 2 points = lecture gelée (429) ;
+// une décroissance lisse = mécanique LP. Tranche « 429 vs LP non-linéaire » sur les sorties trail tardives.
+function recordLv(pos, rg, bin) {
+    pos._lv = { rg, bin, ts: Date.now() };
+    (pos._lvHist = pos._lvHist || []).push({ t: Date.now(), lp: +(rg * 100).toFixed(1), bin });
+    if (pos._lvHist.length > 40) pos._lvHist.shift();
+}
 async function closePaper(tok, pos, exitPrice, reason) {
     if (pos._closing) return;   // anti double-close (scan + boucle rapide ne ferment JAMAIS 2× la même position)
     pos._closing = true;
@@ -1257,6 +1265,8 @@ async function closePaper(tok, pos, exitPrice, reason) {
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         drawdownPct: pos.drawdownPct ?? null, dumpDepthPct: pos.dumpDepthPct ?? null, entryMcK: pos.entryMcK ?? null, trueAthMc: pos.trueAthMc ?? null, pctOfTrueAth: pos.pctOfTrueAth ?? null, vol24hK: pos.vol24hK ?? null, downtrendEntry: pos.downtrendEntry ?? null,
+        athBreaks: pos.athBreaks ?? null, feeTvl: pos.feeTvl ?? null, peakGainPct: pos.peakGain != null ? +(pos.peakGain * 100).toFixed(1) : null, // (2026-08-19) comble le trou + peak pour lire la trajectoire
+        lvHist: pos._lvHist || null, // trajectoire valeur LP (lp%, bin, ts) → trous = 429, décroissance lisse = mécanique LP
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
@@ -1456,7 +1466,7 @@ async function fastPositionCheck() {
             const bv = bmap.get(pos.live.positionKeypairPub);
             if (!bv || bv.valueSol == null) continue;
             const rg = bv.valueSol / pos.live.openValueSol - 1;
-            pos._lv = { rg, bin: bv.activeBinId, ts: Date.now() };
+            recordLv(pos, rg, bv.activeBinId);
             pos.peakGain = Math.max(pos.peakGain || 0, rg);
             const armed = pos.peakGain >= TP, exitPx = pos.lastPx || pos.entry;
             const RANGE_DOWN = 0.55; // CUT hors-range -55% PARTOUT (2026-08-19, backtest tenir-vs-couper : -35% coupait trop tôt, delta +121% sur 12 CUT-bas ; -55% tient les rebonds, garde un plancher anti-rug)
