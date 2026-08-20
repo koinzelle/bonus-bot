@@ -416,7 +416,7 @@ function patternInfo(cs, st) {
     }
     const dumpDepthPct = (athAtRed && minAfterRed != null) ? +((1 - minAfterRed / athAtRed) * 100).toFixed(0) : null;
     // ok = 1er rouge (dump) ET recovery (verte après) ET ath2>ath1 (nouvel ATH). Marche aussi si ST démarre rouge.
-    return { ok, dumpDepthPct, ath1, ath2, flipRed: athAtRed != null };
+    return { ok, dumpDepthPct, ath1, ath2, flipRed: athAtRed != null, recovered };
 }
 
 // ── Indicateurs de SORTIE evil panda = bonus stage (copiés de bot 1, éprouvés) ────────────────────
@@ -985,6 +985,14 @@ async function scan() {
             // c'est ACQUIS ("by that time they already out"). Sans ça, la fenêtre de bougies glissante
             // dé-qualifiait un token quand le breakup/breakdown sortait de la fenêtre.
             const pInfo = patternInfo(ms, ms === cs ? st : superTrend(ms));
+            // DIAG POURQUOI PATTERN-KO (2026-08-20, demande user : trop de faux KO) : logge la condition qui manque
+            // (flip rouge / recovery / nouvel ATH) + la TF utilisée → voir où le calcul diverge de la réalité.
+            if (!pInfo.ok && !w.patternValidated && (!w._patKoLog || now - w._patKoLog > 10 * 60e3)) {
+                w._patKoLog = now;
+                const tf = ms === cs ? '15m' : (ageH >= 720 ? 'daily' : '1H');
+                const why = !pInfo.flipRed ? 'jamais de flip ST rouge (pas de 1er dump)' : !pInfo.recovered ? 'pas de recovery (ST pas re-verte après le rouge)' : 'pas de nouvel ATH > ATH1 après recovery';
+                console.log(`  🔬 pattern-KO ${w.symbol} [${tf}/${ms.length}b] : flipRouge=${pInfo.flipRed} recovery=${pInfo.recovered} ATH1=${pInfo.ath1 ? pInfo.ath1.toExponential(2) : '-'} ATH2=${pInfo.ath2 ? pInfo.ath2.toExponential(2) : 'AUCUN'} → ${why}`);
+            }
             if (pInfo.ok) {
                 state.patternOkMints[tok] = now; // rafraîchit la qualif par mint (persiste purge/re-add, TTL 14j)
                 if (!w.patternValidated) { w.patternValidated = true; console.log(`  ✓ pattern EP VALIDÉ: ${w.symbol} — ATH1 ${pInfo.ath1?.toExponential(2)} → flip ST rouge (dump -${pInfo.dumpDepthPct}%) → ATH2 ${pInfo.ath2?.toExponential(2)} (2e ATH > 1er, +${pInfo.ath1 ? (((pInfo.ath2/pInfo.ath1)-1)*100).toFixed(0) : '?'}%) — qualification acquise`); }
