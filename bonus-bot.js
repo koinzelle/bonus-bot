@@ -881,7 +881,7 @@ async function scan() {
                 const gain = px / pos.entry - 1;
                 // CUT hors-range ADAPTATIF (2026-08-11, cas Jimothy coupé puis pump +30min) : gros coin établi
                 // (MC≥3M) rug rarement + rebondit (cf Remus) → -50% de marge ; petit volatil peut rug → -35%.
-                const RANGE_DOWN = 0.55, TP_PCT = 0.06;
+                const RANGE_DOWN = 0.55, TP_PCT = pos.established ? 0.03 : 0.06;  // (2026-08-24) établis : arm trail à +3% (trail-only, cf RSI2 retiré + backtest arm3 = même total, moins de couteaux)
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
@@ -950,8 +950,20 @@ async function scan() {
                 if (!armed && candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
                     if (rsi2 != null && rsi2 > 90 && realGain > 0) {
-                        await closePaper(tok, pos, px, `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
-                        continue;
+                        // ÉTABLIS (2026-08-24) : TRAIL-ONLY (arm abaissé à +3%). Le RSI2 scalpait les runners AVANT
+                        // l'armement (contrefactuel : +14,8% laissés/sortie, CATE +6,7%→+40%). On NE ferme PLUS sur
+                        // établi ; on LOG en shadow ce que le RSI2 aurait coupé (1re occ = point de sortie RSI2-world)
+                        // → validation trail-only sur LP RÉEL (comparer rsi2Shadow vs livePct). Volatils INCHANGÉS.
+                        if (pos.established) {
+                            if (pos.rsi2Shadow == null) {
+                                pos.rsi2Shadow = +(realGain * 100).toFixed(1);
+                                recordShadow('rsi2_est_skipped', { symbol: pos.symbol, wouldExitAt: pos.rsi2Shadow, rsi2: +rsi2.toFixed(0) });
+                                console.log(`  · [SHADOW rsi2-établi] ${pos.symbol} : RSI2 ${rsi2.toFixed(0)}>90 aurait coupé à LP +${(realGain * 100).toFixed(1)}% — on TIENT (trail-only)`);
+                            }
+                        } else {
+                            await closePaper(tok, pos, px, `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
+                            continue;
+                        }
                     }
                 }
                 continue;
@@ -1281,6 +1293,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         drawdownPct: pos.drawdownPct ?? null, dumpDepthPct: pos.dumpDepthPct ?? null, entryMcK: pos.entryMcK ?? null, trueAthMc: pos.trueAthMc ?? null, pctOfTrueAth: pos.pctOfTrueAth ?? null, vol24hK: pos.vol24hK ?? null, downtrendEntry: pos.downtrendEntry ?? null,
         athBreaks: pos.athBreaks ?? null, feeTvl: pos.feeTvl ?? null, peakGainPct: pos.peakGain != null ? +(pos.peakGain * 100).toFixed(1) : null, // (2026-08-19) comble le trou + peak pour lire la trajectoire
+        rsi2Shadow: pos.rsi2Shadow ?? null, // (2026-08-24) établis trail-only : LP% où le RSI2 aurait coupé → comparer vs livePct pour valider
         lvHist: pos._lvHist || null, // trajectoire valeur LP (lp%, bin, ts) → trous = 429, décroissance lisse = mécanique LP
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
