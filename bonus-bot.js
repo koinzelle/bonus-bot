@@ -881,7 +881,7 @@ async function scan() {
                 const gain = px / pos.entry - 1;
                 // CUT hors-range ADAPTATIF (2026-08-11, cas Jimothy coupé puis pump +30min) : gros coin établi
                 // (MC≥3M) rug rarement + rebondit (cf Remus) → -50% de marge ; petit volatil peut rug → -35%.
-                const RANGE_DOWN = 0.55, TP_PCT = pos.established ? 0.03 : 0.06;  // (2026-08-24) établis : arm trail à +3% → RSI2 scalpe le plancher <+3%, trail ride au-dessus (les +3-6% ridés au lieu d'être scalpés)
+                const RANGE_DOWN = 0.55, TP_PCT = 0.06;  // arm trail à +6% (RSI2 scalpe au top <+6%, trail au-dessus). Arm 3% établi testé 24/08 → banke ~2% de moins sur la bande +3-6% (trail sous le peak vs RSI2 au top), revert.
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
@@ -950,9 +950,9 @@ async function scan() {
                 if (!armed && candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
                     if (rsi2 != null && rsi2 > 90 && realGain > 0) {
-                        // (2026-08-24) RSI2 = PLANCHER quand pas armé (établis : < +3% LP). Sort les positions molles
-                        // DANS LE VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue
-                        // (cc aurait fermé +1.2%, s'est retrouvé -11.5% live). Au-dessus de l'arm, le trail ride les runners.
+                        // (2026-08-24) RSI2 = PLANCHER quand pas armé (< +6% LP). Sort les positions molles DANS LE
+                        // VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue (cc
+                        // aurait fermé +1.2%, s'est retrouvé -11.5% live). Au-dessus de l'arm, le trail ride les runners.
                         await closePaper(tok, pos, px, `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
                         continue;
                     }
