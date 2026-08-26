@@ -691,8 +691,9 @@ async function batchedPositionValues() {
     // plus serré parmi les positions. Réduit le volume RPC (donc les 429) SANS retarder les vraies sorties.
     //   8s  = CHAUD  : gain ≥ +5.5% (proche armement +6%) · CUT proche (≤ -25%) · bord de range (≤5 bins)
     //   10s = SE RAPPROCHE : gain ≥ +3% · perte ≥ -15% · bord de range (≤10 bins)
-    //   15s = LOIN
-    let ttl = 15000;
+    //   45s = LOIN (2026-08-27 : 15→45s = ~3× moins de getProgramAccounts → crédits Helius ; une position calme
+    //         loin de tout trigger n'a pas besoin d'être lue toutes les 15s ; les paliers 8/10s reprennent dès qu'elle approche)
+    let ttl = 45000;
     for (const p of Object.values(state.positions)) {
         if (!p.live) continue;
         const g = p._lv ? p._lv.rg : (p.peakGain || 0);
@@ -703,7 +704,7 @@ async function batchedPositionValues() {
         let t;
         if (pk >= 0.055 || g >= 0.055 || g <= -0.25 || distEdge <= 5) t = 8000;
         else if (g >= 0.03 || g <= -0.15 || distEdge <= 10) t = 10000;
-        else t = 15000;
+        else t = 45000;   // (2026-08-27) calme 15→45s : ~3× moins de crédits Helius
         if (t < ttl) ttl = t;
     }
     if (Date.now() - _batchLv.ts < ttl) return { map: _batchLv.map, fresh: true }; // succès < ttl = frais
