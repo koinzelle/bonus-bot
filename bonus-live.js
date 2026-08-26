@@ -39,10 +39,29 @@ const BN = require('bn.js');
 let bs58 = require('bs58'); if (bs58.default) bs58 = bs58.default; // bs58 v6 : fns sous .default
 const axios = require('axios');
 
-// RPC_URL prioritaire ; fallback HELIUS_RPC_URL (nom de variable de bot 1, déjà présent sur le service).
-// Sans RPC dédié → mainnet-beta public qui rate-limite (429) → getProgramAccounts/txns échouent.
-const RPC_URL = process.env.RPC_URL || process.env.HELIUS_RPC_URL || 'https://api.mainnet-beta.solana.com';
-const connection = new Connection(RPC_URL, 'confirmed');
+// (2026-08-27) ROTATION MULTI-RPC : RPC_URLS = liste séparée par virgules (ex "https://helius…,https://drpc…").
+// Failover sur 429/503/erreur réseau → provider suivant → combine les quotas gratuits (Helius 1M + dRPC 50M…)
+// sans payer les $49. Fallback RPC_URL/HELIUS_RPC_URL/public. ⚠️ chaque provider doit supporter
+// getProgramAccounts (le SDK Meteora l'utilise pour les pools ET les positions).
+const RPC_URLS = (process.env.RPC_URLS || process.env.RPC_URL || process.env.HELIUS_RPC_URL || 'https://api.mainnet-beta.solana.com')
+    .split(',').map(s => s.trim()).filter(Boolean);
+let _rpcIdx = 0;
+async function rotatingFetch(_url, init) {
+    let lastErr = null, lastRes = null;
+    for (let i = 0; i < RPC_URLS.length; i++) {
+        const idx = (_rpcIdx + i) % RPC_URLS.length;
+        try {
+            const res = await fetch(RPC_URLS[idx], init);
+            if (res.status === 429 || res.status === 503) { lastRes = res; continue; }   // saturé → provider suivant
+            if (i > 0) { _rpcIdx = idx; console.log(`  🔀 RPC bascule → #${idx} (${RPC_URLS[idx].slice(0, 28)}…)`); } // colle au provider qui répond
+            return res;
+        } catch (e) { lastErr = e; continue; }   // erreur réseau → provider suivant
+    }
+    if (lastRes) return lastRes;   // tous saturés → renvoie le dernier 429 (web3.js applique son backoff)
+    throw lastErr || new Error('tous les RPC ont échoué');
+}
+const connection = new Connection(RPC_URLS[0], { commitment: 'confirmed', fetch: rotatingFetch });
+console.log(`🌐 RPC: ${RPC_URLS.length} endpoint(s) en rotation/failover`);
 // Chargement robuste de la clé (2026-07-22) : accepte base58 (Phantom, 64o), tableau JSON
 // [n,n,...] (solana-keygen), ou seed 32o. Erreur claire avec la taille (sans exposer la clé).
 function loadKeypair(raw) {
