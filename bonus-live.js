@@ -86,7 +86,10 @@ const OK_BIN_STEPS = [80, 100, 125, 160, 200, 250]; // canonique EP = 100 (préf
 
 // Trouve la meilleure pool DLMM token/SOL : bin step 100 d'abord, puis base fee la plus haute,
 // puis réserve SOL la plus profonde. Retourne l'adresse (string) ou null.
+const _poolCache = new Map(); // (2026-08-26) tokenAddress -> { addr, ts } : évite de refaire 2× getProgramAccounts (gros drain RPC Helius) pour un même mint
 async function findMeteoraPool(tokenAddress) {
+    const _pc = _poolCache.get(tokenAddress);
+    if (_pc && Date.now() - _pc.ts < 30 * 60 * 1000) return _pc.addr;
     const programId = new PublicKey(DLMM_PROGRAM_ID);
     const disc = bs58.encode(LBPAIR_DISCRIMINATOR);
     const [p1, p2] = await Promise.all([
@@ -114,7 +117,7 @@ async function findMeteoraPool(tokenAddress) {
             candidates.push({ addr: addr.toString(), binStep, baseFeePct, reserveSol });
         } catch (_) {}
     }
-    if (!candidates.length) return null;
+    if (!candidates.length) { _poolCache.set(tokenAddress, { addr: null, ts: Date.now() }); return null; }
     // Priorité SCALP (2026-08-04, preuve image CATE : EP scalpe en fee 1-2% = +SOL ; notre 5% = 0% car le
     // swap round-trip du scalp mange la grosse fee + moins de volume). On prend la fee la plus BASSE
     // (viable ≥0.5%), puis la plus PROFONDE (volume), puis bin step 100 canonique. (L'ancien "5% d'abord"
@@ -122,6 +125,7 @@ async function findMeteoraPool(tokenAddress) {
     candidates.sort((a, b) => a.baseFeePct - b.baseFeePct || b.reserveSol - a.reserveSol || (b.binStep === 100) - (a.binStep === 100));
     const best = candidates[0];
     console.log(`  🏆 Pool: ${best.addr.slice(0, 8)}... | bin step ${best.binStep} | fee ${best.baseFeePct}% | réserve ${best.reserveSol.toFixed(1)} SOL`);
+    _poolCache.set(tokenAddress, { addr: best.addr, ts: Date.now() });
     return best.addr;
 }
 
@@ -272,7 +276,7 @@ async function openBidAsk(poolAddress) {
 const _dlmmCache = new Map(); // poolAddress -> { pool, ts }
 async function getDlmm(poolAddress) {
     const c = _dlmmCache.get(poolAddress);
-    if (c && Date.now() - c.ts < 10 * 60 * 1000) return c.pool;
+    if (c && Date.now() - c.ts < 30 * 60 * 1000) return c.pool;   // (2026-08-26) 10→30min : config pool statique, réduit les DLMM.create (gros RPC) ×3
     const pool = await DLMM.create(connection, new PublicKey(poolAddress));
     _dlmmCache.set(poolAddress, { pool, ts: Date.now() });
     return pool;

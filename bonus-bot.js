@@ -23,15 +23,21 @@ const path = require('path');
 const LOG_BUFFER = [];
 const LOG_DISK_QUEUE = [];   // (2026-08-26) file d'attente pour flush disque batché (persistance 1 an, setup après DATA_DIR)
 const _origLog = console.log.bind(console);
-console.log = (...a) => {
+const _origErr = console.error.bind(console);
+const _origWarn = console.warn.bind(console);
+function _capture(a, tag) {
     try {
-        const line = `[${new Date().toISOString()}] ` + a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ');
+        const line = `[${new Date().toISOString()}]${tag} ` + a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ');
         LOG_BUFFER.push(line);
         if (LOG_BUFFER.length > 4000) LOG_BUFFER.shift();
         LOG_DISK_QUEUE.push(line);
     } catch (_) {}
-    _origLog(...a);
-};
+}
+console.log = (...a) => { _capture(a, ''); _origLog(...a); };
+// (2026-08-26) capture AUSSI error/warn : les 429 RPC de web3.js sortent par console.error → invisibles
+// dans /logs avant (on était aveugle sur la tempête Helius). Désormais visibles via l'endpoint + fichiers.
+console.error = (...a) => { _capture(a, ' ⛔'); _origErr(...a); };
+console.warn = (...a) => { _capture(a, ' ⚠'); _origWarn(...a); };
 
 const TELEGRAM_TOKEN = (process.env.TELEGRAM_TOKEN || '').trim();
 const CHAT_ID = (process.env.CHAT_ID || '').trim();
@@ -105,7 +111,7 @@ const AGE_MIN_H = 10;             // MINIMUM d'âge de coin (2026-07-28, abaiss�
 const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener exact d'EP (aligné 2026-07-22, avant 500k)
 const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
 const MAX_POSITIONS = 10;         // positions papier simultanées (8→10, 2026-08-10 ; EP : beaucoup de petites positions, pas all-in)
-const MAX_LIVE_POSITIONS = parseInt(process.env.MAX_LIVE_POSITIONS || '10', 10); // positions RÉELLES max (5→10, 2026-08-10 demande user ; RPC ok via lecture groupée)
+const MAX_LIVE_POSITIONS = Math.min(5, parseInt(process.env.MAX_LIVE_POSITIONS || '5', 10)); // (2026-08-26) plafond DUR 5 positions réelles (demande user ; borne aussi la charge RPC/scan = crédits Helius)
 // Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
 // tous les tokens, comme avant à 60s) ; l'autre tick = UNIQUEMENT les tokens "chauds" (4/5 conditions,
 // il ne manque que le retracement vers la ST) + positions ouvertes (TP/SL 2× plus réactifs). Le prix
