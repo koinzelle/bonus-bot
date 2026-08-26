@@ -21,11 +21,14 @@ const path = require('path');
 // ── Capture des logs pour GET /logs (2026-07-20) : sur Railway, console.log part dans le flux
 // Railway — ce buffer donne l'accès distant aux rejets/purges/entrées (auto-diagnostic sans logs UI) ──
 const LOG_BUFFER = [];
+const LOG_DISK_QUEUE = [];   // (2026-08-26) file d'attente pour flush disque batché (persistance 1 an, setup après DATA_DIR)
 const _origLog = console.log.bind(console);
 console.log = (...a) => {
     try {
-        LOG_BUFFER.push(`[${new Date().toISOString()}] ` + a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '));
+        const line = `[${new Date().toISOString()}] ` + a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ');
+        LOG_BUFFER.push(line);
         if (LOG_BUFFER.length > 4000) LOG_BUFFER.shift();
+        LOG_DISK_QUEUE.push(line);
     } catch (_) {}
     _origLog(...a);
 };
@@ -53,6 +56,37 @@ process.on('uncaughtException', (e) => console.log('⚠️ uncaughtException (su
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { if (DATA_DIR !== __dirname) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
 const STATE_FILE = path.join(DATA_DIR, 'bonus_paper.json');
+// ── PERSISTANCE LOGS 1 an (2026-08-26) : les console.log (dont 📊 RSI/LP/peak par scan) sont flushés en
+// batch dans des fichiers journaliers sur le volume → reconstruction rétrospective des opens/exits. ──
+const LOG_DIR = path.join(DATA_DIR, 'logs');
+try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
+const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || '365', 10);
+const LOG_MAX_BYTES = parseInt(process.env.LOG_MAX_BYTES || String(2 * 1024 * 1024 * 1024), 10); // garde-fou 2 Go
+function flushLogsToDisk() {
+    if (!LOG_DISK_QUEUE.length) return;
+    const chunk = LOG_DISK_QUEUE.splice(0, LOG_DISK_QUEUE.length);
+    const day = new Date().toISOString().slice(0, 10);
+    try { fs.appendFileSync(path.join(LOG_DIR, `${day}.txt`), chunk.join('\n') + '\n'); }
+    catch (e) { _origLog('⚠️ flushLogs:', e.message); }
+}
+function rotateLogs() {
+    try {
+        const re = /^\d{4}-\d{2}-\d{2}\.txt$/;
+        const cutoff = Date.now() - LOG_RETENTION_DAYS * 86400e3;
+        for (const f of fs.readdirSync(LOG_DIR).filter(x => re.test(x))) {   // 1) rétention par âge
+            const d = Date.parse(f.slice(0, 10)); if (!isNaN(d) && d < cutoff) { try { fs.unlinkSync(path.join(LOG_DIR, f)); } catch (_) {} }
+        }
+        let rest = fs.readdirSync(LOG_DIR).filter(x => re.test(x)).sort();   // 2) garde-fou taille (supprime les + vieux)
+        let total = rest.reduce((s, f) => { try { return s + fs.statSync(path.join(LOG_DIR, f)).size; } catch (_) { return s; } }, 0);
+        while (total > LOG_MAX_BYTES && rest.length > 1) {
+            const oldest = rest.shift();
+            try { total -= fs.statSync(path.join(LOG_DIR, oldest)).size; fs.unlinkSync(path.join(LOG_DIR, oldest)); } catch (_) {}
+        }
+    } catch (_) {}
+}
+setInterval(flushLogsToDisk, 20 * 1000);
+setInterval(rotateLogs, 6 * 3600e3);
+rotateLogs();
 
 // ── Paramètres stratégie ──────────────────────────────────────
 // TP TRAILING (2026-07-19, idée user + backtest : +247%/+239% total vs +84% en TP fixe +6%, WR 80% vs 85%,
@@ -1314,7 +1348,29 @@ async function closePaper(tok, pos, exitPrice, reason) {
 // (sans port ouvert, le service reste "Deploying" indéfiniment) + expose les stats papier ──
 const http = require('http');
 http.createServer((req, res) => {
-    // GET /logs?tail=N — accès distant aux logs (rejets qualité, purges, entrées, shadow)
+    // GET /logs/list — dates + tailles des logs persistés sur disque (2026-08-26)
+    if ((req.url || '').startsWith('/logs/list')) {
+        flushLogsToDisk();
+        let info = [];
+        try { info = fs.readdirSync(LOG_DIR).filter(f => /^\d{4}-\d{2}-\d{2}\.txt$/.test(f)).sort().map(f => { let sz = 0; try { sz = fs.statSync(path.join(LOG_DIR, f)).size; } catch (_) {} return { date: f.slice(0, 10), sizeKB: Math.round(sz / 1024) }; }); } catch (_) {}
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ retentionDays: LOG_RETENTION_DAYS, days: info }));
+    }
+    // GET /logs/file?date=YYYY-MM-DD  ou  ?from=YYYY-MM-DD&to=YYYY-MM-DD — logs persistés (2026-08-26)
+    if ((req.url || '').startsWith('/logs/file')) {
+        flushLogsToDisk();
+        const q = new URL(req.url, 'http://x').searchParams;
+        const from = q.get('from') || q.get('date'); const to = q.get('to') || q.get('date');
+        let out = [];
+        try {
+            for (const f of fs.readdirSync(LOG_DIR).filter(f => /^\d{4}-\d{2}-\d{2}\.txt$/.test(f)).sort()) {
+                const d = f.slice(0, 10); if ((!from || d >= from) && (!to || d <= to)) out.push(fs.readFileSync(path.join(LOG_DIR, f), 'utf8'));
+            }
+        } catch (_) {}
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end(out.join('') || 'aucun log persisté pour cette période');
+    }
+    // GET /logs?tail=N — buffer mémoire live (rejets qualité, purges, entrées, shadow)
     if ((req.url || '').startsWith('/logs')) {
         const tail = parseInt(new URL(req.url, 'http://x').searchParams.get('tail') || '300', 10);
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
