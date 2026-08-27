@@ -182,7 +182,7 @@ if (!state.stMult2Reset) { for (const w of Object.values(state.watch || {})) del
 if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})) { if (!state.positions?.[tok]) delete state.watch[tok]; } state.poolOriginResetV1 = true; }
 // (2026-08-27) `_closing` est persisté par save() : un verrou posé avant un crash/redeploy rendrait la
 // position définitivement infermable. On le purge au démarrage.
-for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; }
+for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 // ── SHADOW STATS PERSISTÉS (2026-07-29, demande user) : les mesures shadow étaient des console.log
@@ -641,12 +641,47 @@ function emaLast(cs, n) {
 // un slot indéfiniment (le bot ne s'en apercevait qu'au prochain RSI2>90). Ici on liste les positions
 // réelles du wallet et on nettoie celles qui ont disparu (fermées à la main) → trade manualClose + slot
 // libéré. Pattern de bot 1. Appelée 1×/scan complet (pas sur les ticks chauds, pour économiser le RPC.
+// RECONCILE SANS RPC (2026-08-28) — avant : à CHAQUE scan complet et pour CHAQUE position, `positionState()`
+// faisait un `DLMM.create()` NON caché (téléchargement complet de la pool) + un `getPositionsByUserAndLbPair`
+// (= un getProgramAccounts, la méthode la plus chère chez Helius). Avec 3 positions : ~2 880 téléchargements
+// de pool + ~2 880 getProgramAccounts PAR JOUR, juste pour répondre à une question oui/non.
+// Or `allPositionValues()` — déjà appelé toutes les 8-45 s pour le trail — ramène TOUTES les positions du
+// wallet. La réponse est donc déjà en mémoire. On la lit, gratuitement.
+// Trois garde-fous, parce que supprimer une position du tracking est irréversible (liquidité orpheline,
+// bug `world` de bot 1) :
+//   1. `allKeys` (inventaire complet côté bonus-live) et pas la map enrichie, qui peut perdre une pool ;
+//   2. on ne conclut JAMAIS sur une lecture périmée (`b.fresh`) — même sémantique que l'ancien 'unknown' ;
+//   3. absence sur 3 lectures fraîches consécutives, PUIS un seul appel `positionState()` qui confirme.
+// Coût en régime normal : 0 appel. Coût le jour d'une vraie coupe manuelle : 1 appel.
+const RECONCILE_MISSES = 3;
 async function reconcileLivePositions() {
     if (!live.enabled || !live.positionState) return;
     const tracked = Object.entries(state.positions).filter(([, p]) => p.live);
+    if (!tracked.length) return;
+    const b = await batchedPositionValues();          // 0 appel RPC si le lot est déjà frais
+    if (!b.fresh || !b.map || !b.map.allKeys) return; // lecture pas fiable → on ne conclut RIEN
     for (const [tok, p] of tracked) {
-        const st = await live.positionState(p.live); // 'open' | 'closed' | 'unknown'
-        if (st === 'closed') {
+        // `checked` = réponse fiable pour CETTE position (null sur le chemin de secours → on ne conclut pas)
+        const conclusive = b.map.checked ? b.map.checked.has(p.live.positionKeypairPub) : true;
+        const present = b.map.allKeys.has(p.live.positionKeypairPub);
+        if (!conclusive) continue;
+        if (present) {
+            p._gone = 0;
+            // Auto-réparation openValueSol : la valeur est DÉJÀ dans le lot → plus d'appel dédié.
+            if (p.live.openValueSol == null) {
+                const bv = b.map.get(p.live.positionKeypairPub);
+                if (bv && bv.valueSol != null) {
+                    p.live.openValueSol = bv.valueSol;
+                    console.log(`🩹 ${p.symbol}: openValueSol ré-inscrite depuis le lot (${bv.valueSol.toFixed(4)} SOL) — base PnL restaurée, 0 appel RPC`);
+                }
+            }
+            continue;
+        }
+        p._gone = (p._gone || 0) + 1;
+        if (p._gone < RECONCILE_MISSES) continue;     // débounce : une liste partielle ne doit pas suffire
+        const st = await live.positionState(p.live);  // CONFIRMATION directe on-chain (1 seul appel)
+        if (st !== 'closed') { if (st === 'open') p._gone = 0; continue; }
+        {
             // position live disparue on-chain = fermée manuellement → nettoyage + comptabilité
             console.log(`🧹 Position live ${p.symbol} fermée à la main (absente on-chain) — nettoyage tracking`);
             const trade = {
@@ -660,17 +695,6 @@ async function reconcileLivePositions() {
             delete state.positions[tok];
             if (state.watch[tok]) state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS;
             tg(`🧹 ${p.symbol}: position live fermée à la main détectée — tracking nettoyé, slot libéré`);
-        } else if (st === 'open' && p.live.openValueSol == null && live.positionValueSol) {
-            // Auto-réparation : la valeur d'ouverture a échoué à l'open (RPC pas encore indexé) →
-            // openValueSol=null = PnL non mesurable. Maintenant que la position est indexée, on
-            // ré-inscrit une base propre (best-effort). Rattrapé vite = quasi-exact.
-            try {
-                const v = await live.positionValueSol(p.live);
-                if (v != null) {
-                    p.live.openValueSol = v;
-                    console.log(`🩹 ${p.symbol}: openValueSol ré-inscrite (${v.toFixed(4)} SOL) — base PnL restaurée`);
-                }
-            } catch (e) { console.log(`reconcile openValueSol ${p.symbol}:`, e.message); }
         }
     }
     save();
@@ -708,7 +732,9 @@ async function batchedPositionValues() {
     }
     if (Date.now() - _batchLv.ts < ttl) return { map: _batchLv.map, fresh: true }; // succès < ttl = frais
     if (live.enabled && live.allPositionValues) {
-        try { const m = await live.allPositionValues(); if (m) { _batchLv = { map: m, ts: Date.now() }; _batchErrWarned = false; return { map: m, fresh: true }; } }
+        // (2026-08-28) on passe la liste suivie → lecture par CLÉ (getAccountInfo), zéro getProgramAccounts.
+        const list = Object.values(state.positions).filter(p => p.live).map(p => p.live);
+        try { const m = await live.allPositionValues(list); if (m) { _batchLv = { map: m, ts: Date.now() }; _batchErrWarned = false; return { map: m, fresh: true }; } }
         catch (e) { if (!_batchErrWarned) { _batchErrWarned = true; console.log(`  ⚠️ lecture groupée échouée (${String(e.message).slice(0, 70)}) → bascule lecture individuelle`); } }
     }
     return { map: _batchLv.map, fresh: false }; // échec → PÉRIMÉ : l'appelant NE doit PAS figer dessus (lecture individuelle)

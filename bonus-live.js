@@ -302,10 +302,11 @@ async function getDlmm(poolAddress) {
 }
 async function positionValueSol(pos, dlmmPool = null, activeBin = null) {
     dlmmPool = dlmmPool || await getDlmm(pos.poolAddress);
-    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(keypair.publicKey);
-    const p = userPositions.find(u => u.publicKey.toString() === pos.positionKeypairPub);
-    if (!p) return null;
-    const d = p.positionData;
+    // (2026-08-28) était getPositionsByUserAndLbPair = un getProgramAccounts owner-wide POUR UNE SEULE
+    // position. getPosition(clé) fait un getAccountInfo direct : même résultat, sans scan de programme.
+    let d;
+    try { d = (await dlmmPool.getPosition(new PublicKey(pos.positionKeypairPub))).positionData; }
+    catch (e) { if (/not found/i.test(String(e && e.message))) return null; throw e; }
     const xDec = dlmmPool.tokenX.decimal ?? dlmmPool.tokenX.mint?.decimals ?? 6;
     const yDec = dlmmPool.tokenY.decimal ?? dlmmPool.tokenY.mint?.decimals ?? 9;
     activeBin = activeBin || await dlmmPool.getActiveBin();
@@ -331,9 +332,61 @@ async function positionValueAndBin(pos) {
 // → coût RPC ~plat quel que soit le nombre de positions (permet de scaler le max). Le PRIX est pris via
 // getActiveBin par pool UNIQUE (instance cachée) = MÊME source/formule que positionValueSol → aucun calcul
 // de prix maison, aucun risque de valeur fausse. Renvoie Map<positionKeypairPub, {valueSol, activeBinId}>.
-async function allPositionValues() {
+// LECTURE PAR CLÉ (2026-08-28) — `getAllLbPairPositionsByUser` fait un getProgramAccounts owner-wide sur
+// tout le programme DLMM (classe d'appel la plus chère). Or on CONNAÎT la clé de chaque position suivie :
+// `dlmmPool.getPosition(pubkey)` fait un getAccountInfo direct + un getMultipleAccounts groupé pour les bin
+// arrays — zéro scan de programme. Avec ≤5 positions c'est strictement moins cher que le scan owner-wide.
+// Bonus : un compte de position fermé on-chain disparaît (le rent est récupéré) → getAccountInfo renvoie
+// null → « not found ». C'est une détection de coupe manuelle PAR POSITION, plus précise qu'un inventaire.
+//   out.allKeys = positions trouvées PRÉSENTES
+//   out.checked = positions pour lesquelles on a une réponse FIABLE (pool lisible) — une pool qui hoquette
+//                 n'y figure pas, donc le reconcile ne conclura rien sur ses positions.
+async function positionValuesByKeys(list) {
+    const out = new Map(); out.allKeys = new Set(); out.checked = new Set();
+    const byPool = new Map();
+    for (const p of list) { if (!byPool.has(p.poolAddress)) byPool.set(p.poolAddress, []); byPool.get(p.poolAddress).push(p); }
+    for (const [poolAddr, ps] of byPool) {
+        let dlmm, ab;
+        try { dlmm = await getDlmm(poolAddr); ab = await dlmm.getActiveBin(); }   // 1 lecture par POOL, pas par position
+        catch (_) { continue; }                                                   // pool illisible → on ne conclut RIEN
+        // Garde-fou version SDK : si `getPosition` n'existe pas dans la version installée sur Railway, on
+        // rend la main au scan owner-wide (ancien comportement) plutôt que de dégrader silencieusement.
+        if (typeof dlmm.getPosition !== 'function') { console.log('  ⚠️ SDK sans getPosition() — retour au scan owner-wide'); return null; }
+        const priceYperX = parseFloat(ab.pricePerToken);
+        const xDec = dlmm.tokenX.decimal ?? dlmm.tokenX.mint?.decimals ?? 6;
+        const yDec = dlmm.tokenY.decimal ?? dlmm.tokenY.mint?.decimals ?? 9;
+        for (const p of ps) {
+            let d;
+            try { d = (await dlmm.getPosition(new PublicKey(p.positionKeypairPub))).positionData; }
+            catch (e) {
+                if (/not found/i.test(String(e && e.message))) out.checked.add(p.positionKeypairPub); // compte absent = fermé
+                continue;                                                        // autre erreur → pas de conclusion
+            }
+            out.checked.add(p.positionKeypairPub); out.allKeys.add(p.positionKeypairPub);
+            const xHuman = Number(d.totalXAmount?.toString() ?? 0) / 10 ** xDec;
+            const yHuman = Number(d.totalYAmount?.toString() ?? 0) / 10 ** yDec;
+            const feeX = Number(d.feeX?.toString() ?? 0) / 10 ** xDec;
+            const feeY = Number(d.feeY?.toString() ?? 0) / 10 ** yDec;
+            out.set(p.positionKeypairPub, { valueSol: yHuman + feeY + (xHuman + feeX) * priceYperX, activeBinId: ab.binId });
+        }
+    }
+    return out;
+}
+async function allPositionValues(list) {
+    if (Array.isArray(list) && list.length) {
+        const m = await positionValuesByKeys(list);   // chemin normal : 0 getProgramAccounts
+        if (m) return m;                              // null = SDK incompatible → on retombe sur le scan
+    }
     const byPair = await DLMM.getAllLbPairPositionsByUser(connection, keypair.publicKey);
     const out = new Map();
+    // (2026-08-28) INVENTAIRE COMPLET, construit AVANT l'enrichissement par pool. L'enrichissement
+    // ci-dessous peut échouer pool par pool (`catch → continue`) : sans cet inventaire, une position dont
+    // la pool hoquette serait ABSENTE de la map alors qu'elle existe on-chain → un reconcile naïf la
+    // déclarerait fermée et supprimerait le tracking d'une VRAIE position (bug `world` de bot 1).
+    // `allKeys` vient directement de getAllLbPairPositionsByUser : il est complet ou il n'existe pas.
+    const allKeys = new Set();
+    for (const [, info] of byPair) for (const lp of info.lbPairPositionsData || []) allKeys.add(lp.publicKey.toString());
+    out.allKeys = allKeys; out.checked = null;   // null = inventaire global : « absent » n'est pas concluant par position
     for (const [poolAddr, info] of byPair) {
         let priceYperX, activeBinId, xDec, yDec;
         try {
@@ -430,4 +483,4 @@ async function closeVerified(pos) {
     }
 }
 
-module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionState, sweepToken, sweepOrphans };
+module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans };
