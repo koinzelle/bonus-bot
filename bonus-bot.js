@@ -49,7 +49,9 @@ const CHAT_ID = (process.env.CHAT_ID || '').trim();
 let live = { enabled: false };
 try { live = require('./bonus-live'); } catch (e) { console.log('⚠️ bonus-live indisponible:', e.message, '— paper seulement'); }
 if (live.enabled) {
-    console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_PCT || '?'}% capital | max ${process.env.MAX_LIVE_POSITIONS || '10'} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
+    // (2026-08-27) annonçait `MAX_LIVE_POSITIONS || '10'` alors que le code force Math.min(5, …) → le log
+    // disait 10, le bot en ouvrait 5. On affiche la valeur RÉELLE.
+    console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_PCT || '?'}% capital | max ${Math.min(5, parseInt(process.env.MAX_LIVE_POSITIONS || '5', 10))} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
     if (live.sweepOrphans) live.sweepOrphans().catch(e => console.log('⚠️ sweep démarrage:', String(e.message).slice(0, 60)));
 } else console.log('🧪 Mode PAPER (LIVE≠1 ou bonus-live KO) — aucun ordre réel');
 
@@ -98,18 +100,59 @@ rotateLogs();
 // TP TRAILING (2026-07-19, idée user + backtest : +247%/+239% total vs +84% en TP fixe +6%, WR 80% vs 85%,
 // pires pertes identiques) : une fois le high-water ≥ +5% depuis l'entrée, plus de plafond — on suit le
 // pump et on sort quand le prix retombe de 1.5% sous le plus-haut. Avant l'armement : SL flip ST inchangé.
-const TRAIL_ARM_PCT = 0.05;       // armé quand le high-water atteint +5%
-const TRAIL_GAP_PCT = 0.015;      // sortie à high-water -1.5% (1% marginalement mieux en backtest,
-                                  // 1.5% plus robuste au polling 30s réel sur memecoin)
-const NEAR_ST_PCT = 0.04;        // fenêtre pullback ≤ +4% au-dessus de la ligne ST — sweep 2026-07-19 :
-                                 // WR stable 79-80% de 3 à 4.5% ; 4% = meilleure moy (+3.86%/trade, +73% total,
-                                 // 19 trades vs 14 à 3%) sans nouvelle queue de perte ; 5% dégrade (-32.9% tail)
 const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
+// ── VERROU ANTI-COIN-MOURANT — TTL DÉSACTIVÉ PAR DÉFAUT (2026-08-27) ────────────────────────────────
+// J'avais proposé un TTL 48h pour débloquer les cycleurs verrouillés à vie (CYBERLEEK et ses 65 creux
+// refusés en 9h). Le backtest complet dit NON, et la remarque du user était la bonne :
+//   verrou à vie : 182 trades, 12 perdants ≤-15% (-690%)
+//   TTL 48h      : 193 trades, 13 perdants ≤-15% (-747%)   → +11 trades mais +1 gros perdant
+//   TTL 24h      : 204 trades, 14 perdants (-802%)         → pire
+//   verrou retiré: 221 trades, 17 perdants (-977%)         → bien pire
+// Les 14 trades rouverts par le TTL 48h : +54% AU TOTAL, dont +76,6% pour le seul BREAKING → sans lui,
+// 11 trades à **-22,6%**, avec un XST à -56%. Et sans le verrou, CYBERLEEK rouvre 6 fois pour -72% :
+// le gate a RAISON sur CYBERLEEK, la fréquence qu'il coûte est méritée.
+// Le TTL reste câblé mais NEUTRE (0 = verrou à vie). MOURANT_TTL_H=48 sur Railway pour le réactiver.
+const MOURANT_TTL_H = parseFloat(process.env.MOURANT_TTL_H || '0');
+const MOURANT_TTL_MS = MOURANT_TTL_H > 0 ? MOURANT_TTL_H * 3600 * 1000 : Infinity;
+// ── SEUIL D'ENTRÉE ADAPTATIF (2026-08-27) — INTERRUPTEUR ─────────────────────────────────────────────
+// Le seuil de creux est fixe : -35% (volatil) / -12% (établi MC≥5M), la MC servant de proxy grossier de
+// volatilité. Alternative testée : `max(5%, ATR_K × ATR14(15m)/prix)` = on mesure la volatilité RÉELLE.
+// Backtest (50 mints × 10j) : 192 trades vs 173, et surtout **4 gros perdants au lieu de 12, 3 CUT au lieu
+// de 12** — or 100% des 6 perdants RÉELS du 17→27/08 sont des CUT, et 1 perdant efface 8 gagnants.
+// Mesuré sur 24 744 barres, le seuil ATR donne : volatils p10 13% · médiane 26% · p90 60% (vs 35% fixe) ;
+// établis p10 5% · médiane 12% · p90 37% (vs 12% fixe). La MÉDIANE des établis retombe exactement sur le
+// -12% validé le 24/08 : la règle ATR *contient* les deux seuils calibrés à la main et ne corrige que les
+// extrêmes — elle exige PLUS de profondeur sur les tokens sauvages (= elle refuse les couteaux qui
+// produisaient les CUT) et MOINS sur les calmes (= les trades en plus).
+// ⚠️ Réserve : le TOTAL du backtest est un pic à k=4 (k=3,5 → 966% ; k=4,5 → 749%) donc NON robuste ; c'est
+// le nombre de gros perdants qui l'est (4-7 sur k=3,5-5 vs 12-13 en fixe). Et le backtest est en proxy-PRIX,
+// qui a déjà trompé (trail-only, arm 3%, 24/08). D'où l'interrupteur :
+//   ATR_ENTRY=shadow (défaut) → seuil FIXE inchangé, on LOGGE juste les désaccords → verdict sur du forward
+//   ATR_ENTRY=on              → le seuil ATR pilote réellement l'entrée
+const ATR_ENTRY = (process.env.ATR_ENTRY || 'shadow').toLowerCase();
+const ATR_K = parseFloat(process.env.ATR_K || '4');
+const ATR_FLOOR = parseFloat(process.env.ATR_FLOOR || '0.05');
+function atrPct15(cs) {   // ATR14 sur les bougies 15m, en % du prix courant
+    if (cs.length < 15) return null;
+    let tr = 0, cnt = 0;
+    for (let j = cs.length - 14; j < cs.length; j++) {
+        if (j < 1) continue;
+        tr += Math.max(cs[j][2] - cs[j][3], Math.abs(cs[j][2] - cs[j - 1][4]), Math.abs(cs[j][3] - cs[j - 1][4]));
+        cnt++;
+    }
+    const px = cs[cs.length - 1][4];
+    return (cnt && px > 0) ? (tr / cnt) / px : null;
+}
 const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
 const AGE_MAX_H = 24 * 365;       // garde-fou zombies 1 an — pas de MAX (EP joue les vieux coins).
 const AGE_MIN_H = 10;             // MINIMUM d'âge de coin (2026-07-28, abaissé 24h→10h) : 24h bloquait Looks (16h) qui a fait +66% en V — l'âge n'est PAS un bon discriminateur (le plus jeune a gagné, les vieux saignent). 10h ne vire que les launch snipes purs (<10h) ; le pattern + anti-pump-explosif font le vrai tri.
 const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener exact d'EP (aligné 2026-07-22, avant 500k)
-const ATH_FRESH_H = 4;            // l'ATH doit dater de < 4h ("just made new ATH")
+// ── SEUILS DE SORTIE — SOURCE UNIQUE (2026-08-27) : ils étaient dupliqués dans 3 endroits (scan, chemin
+// bougies-KO, boucle rapide) et avaient DIVERGÉ (le chemin bougies-KO coupait encore à -35% alors que le
+// backtest du 19/08 a validé -55% partout). Une seule définition = plus de dérive possible.
+const RANGE_DOWN = 0.55;   // CUT hors-range bas (backtest 19/08 : -35% coupait trop tôt, +121% en faveur de tenir)
+const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
+const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
 const MAX_POSITIONS = 10;         // positions papier simultanées (8→10, 2026-08-10 ; EP : beaucoup de petites positions, pas all-in)
 const MAX_LIVE_POSITIONS = Math.min(5, parseInt(process.env.MAX_LIVE_POSITIONS || '5', 10)); // (2026-08-26) plafond DUR 5 positions réelles (demande user ; borne aussi la charge RPC/scan = crédits Helius)
 // Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
@@ -122,11 +165,8 @@ const POSITION_SIZE_SOL = 1.0;    // taille papier (pour les stats en SOL)
 
 let state = { positions: {}, trades: [], watch: {} };
 try { if (fs.existsSync(STATE_FILE)) state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (_) {}
-// A/B trailing vs TP fixe (2026-07-19, demande user) : chaque entrée ouvre AUSSI une position OMBRE
-// "TP fixe +6% / SL flip ST" (l'ancienne règle) qui vit sa propre vie — elle peut fermer avant ou
-// après la vraie. Comparaison continue dans /status → vérification live du verdict backtest (×3).
-if (!state.fixedShadow) state.fixedShadow = {};
-if (!state.tradesFixed) state.tradesFixed = [];
+// (A/B "TP fixe vs trailing" RETIRÉ 2026-07-22, code mort supprimé le 2026-08-27 : closeFixedShadow
+// n'était plus appelé nulle part et l'ombre n'a jamais dépassé 3 trades de juillet.)
 // reset des compteurs de l'ancien funnel (refonte EP 2026-07-22) — sinon /status mélange 2 logiques
 if (state.blockCount && (state.blockCount['dist>4%'] || state.blockCount['athAge>8h'] || state.blockCount['ST-rouge'])) state.blockCount = {};
 // RESET one-shot des qualifications pattern COLLANTES (2026-07-25) : le hack "breakdown par prix" validait
@@ -140,6 +180,9 @@ if (!state.stMult2Reset) { for (const w of Object.values(state.watch || {})) del
 // d'ORIGINE (historique complet). Les entrées existantes ont une pool figée (post-migration) → pattern
 // faux. One-shot ; les positions ouvertes sont préservées (jamais purgées).
 if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})) { if (!state.positions?.[tok]) delete state.watch[tok]; } state.poolOriginResetV1 = true; }
+// (2026-08-27) `_closing` est persisté par save() : un verrou posé avant un crash/redeploy rendrait la
+// position définitivement infermable. On le purge au démarrage.
+for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 // ── SHADOW STATS PERSISTÉS (2026-07-29, demande user) : les mesures shadow étaient des console.log
@@ -484,19 +527,6 @@ function calculateEMA(values, period) {
     for (let i = period; i < values.length; i++) e = values[i] * k + e * (1 - k);
     return e;
 }
-function calculateMACD(closes) {
-    if (closes.length < 35) return null;
-    const mv = [];
-    for (let i = 26; i <= closes.length; i++) {
-        const s = closes.slice(0, i); const e12 = calculateEMA(s, 12), e26 = calculateEMA(s, 26);
-        if (e12 !== null && e26 !== null) mv.push(e12 - e26);
-    }
-    if (mv.length < 9) return null;
-    const cM = mv[mv.length - 1], pM = mv[mv.length - 2];
-    const cS = calculateEMA(mv, 9), pS = calculateEMA(mv.slice(0, -1), 9);
-    if (cS === null || pS === null) return null;
-    return { histogram: cM - cS, histogramTurnsGreen: (pM - pS) <= 0 && (cM - cS) > 0 };
-}
 function bollinger(closes, n = 20, k = 2) {
     if (closes.length < n) return null;
     const w = closes.slice(-n); const sma = w.reduce((s, v) => s + v, 0) / n;
@@ -578,9 +608,13 @@ async function gmgnQualityOk(tok, sym) {
         if (phishPct != null && phishPct > 20) fails.push(`phishing ${phishPct.toFixed(0)}% > 20%`);
         // Clusters "virus" (rugcheck insiderNetworks) EN SHADOW (2026-07-22, demande user) : on mesure,
         // on ne bloque pas. Seuils candidats : plus gros cluster ≥ 10% OU total insiders ≥ 40%.
-        if (maxClusterPct != null && (maxClusterPct >= 10 || totalInsiderPct >= 40))
+        // (2026-08-27) FIX accolades : le recordShadow était HORS du if → quand rugcheck ne renvoie pas
+        // d'insiderNetworks, maxClusterPct est null → null.toFixed() LÈVE → catch global → return true =
+        // filtre qualité (holders/top10/insiders/honeypot/fees≥30 SOL) ENTIÈREMENT contourné sur ces tokens.
+        if (maxClusterPct != null && (maxClusterPct >= 10 || totalInsiderPct >= 40)) {
             console.log(`⚠️ [SHADOW clusters] ${sym}: plus gros ${maxClusterPct.toFixed(1)}% | total insiders ${totalInsiderPct.toFixed(0)}% — mesure seule (ne bloque pas)`);
             recordShadow('clusters', { symbol: sym, maxClusterPct: +maxClusterPct.toFixed(1), totalInsiderPct: +totalInsiderPct.toFixed(0) });
+        }
         if (fails.length) {
             gmgnRejected.set(tok, Date.now());
             console.log(`🚫 Qualité GMGN: ${sym} rejeté (${fails.join(', ')})`);
@@ -592,40 +626,6 @@ async function gmgnQualityOk(tok, sym) {
     }
 }
 
-// ── Indicateurs trigger (2026-07-19, grille backtest 15m : rec8h+stoch = 83% WR/+3.64%/trade
-// vs base 57%/+0.94 ; le 5m testé = TOUTES variantes négatives → 15m canonique confirmé) ──
-function stochK(cs) {
-    // Stoch RSI(14,14,3) %K par bougie (null tant que pas assez d'historique)
-    const closes = cs.map(c => c[4]); const n = closes.length;
-    const rsis = new Array(n).fill(null);
-    if (n >= 15) {
-        let g = 0, l = 0;
-        for (let i = 1; i <= 14; i++) { const ch = closes[i] - closes[i - 1]; g += Math.max(ch, 0); l += Math.max(-ch, 0); }
-        let ag = g / 14, al = l / 14;
-        rsis[14] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
-        for (let i = 15; i < n; i++) {
-            const ch = closes[i] - closes[i - 1];
-            ag = (ag * 13 + Math.max(ch, 0)) / 14;
-            al = (al * 13 + Math.max(-ch, 0)) / 14;
-            rsis[i] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
-        }
-    }
-    const raw = new Array(n).fill(null);
-    for (let i = 0; i < n; i++) {
-        if (rsis[i] == null) continue;
-        const win = [];
-        for (let j = Math.max(0, i - 13); j <= i; j++) if (rsis[j] != null) win.push(rsis[j]);
-        if (win.length < 14) continue;
-        const mn = Math.min(...win), mx = Math.max(...win);
-        raw[i] = mx === mn ? 0 : (rsis[i] - mn) / (mx - mn) * 100;
-    }
-    const sk = new Array(n).fill(null);
-    for (let i = 2; i < n; i++) {
-        if (raw[i] == null || raw[i - 1] == null || raw[i - 2] == null) continue;
-        sk[i] = (raw[i] + raw[i - 1] + raw[i - 2]) / 3;
-    }
-    return sk;
-}
 function emaLast(cs, n) {
     // EMA(n) sur closes 15m — null si < n bougies. Seed = SMA des n premières, puis EMA classique.
     const closes = cs.map(c => c[4]);
@@ -635,7 +635,6 @@ function emaLast(cs, n) {
     for (let i = n; i < closes.length; i++) e = closes[i] * k + e * (1 - k);
     return e;
 }
-const ema100Last = cs => emaLast(cs, 100); // support des alertes EP (25h d'historique — souvent null)
 
 // ── Réconciliation on-chain des positions LIVE (2026-07-25, GO user) : le bot ne vérifiait jamais que
 // ses positions live existaient encore → une coupe MANUELLE (Meteora) laissait un fantôme qui squattait
@@ -719,11 +718,19 @@ async function scan() {
     try {
         const now = Date.now();
         if (!state.purgedAt) state.purgedAt = {};
+        // (2026-08-27) purgedAt n'était JAMAIS élagué → il grossissait indéfiniment dans le JSON réécrit en
+        // synchrone à chaque scan. Le cooldown de re-add est de 30 min : au-delà de 2h l'entrée est inutile.
+        for (const k in state.purgedAt) if (now - state.purgedAt[k] > 2 * 3600e3) delete state.purgedAt[k];
         // PERSISTANCE PATTERN PAR MINT (2026-08-15) : le pattern EP est "collant" (ruggers sortis = acquis à vie)
         // mais il était perdu à chaque purge→re-add ET quand le fetch 1H retombait sur 15m (pattern hors champ
         // sur 48h → faux pattern-KO sur les vieux coins déjà validés, cas CATE/STONK). On mémorise la validation
         // par mint (TTL 14j, aligné athRecent) → un coin validé reste qualifié malgré purge/re-add/hoquet fetch.
         if (!state.patternOkMints) state.patternOkMints = {};
+        // ANTI-MOURANT PERSISTÉ PAR MINT (2026-08-27) : lastEntryPrice/lastExitTs vivaient sur l'entrée de
+        // watch → perdus à la purge/re-add. Le verrou s'appliquait donc au hasard : les tokens jetables y
+        // échappaient, les machines à fees (jamais purgées) y restaient piégées. Persisté = cohérent.
+        if (!state.mourantMints) state.mourantMints = {};
+        for (const k in state.mourantMints) if (now - (state.mourantMints[k].exitTs || 0) > 14 * 24 * 3600e3) delete state.mourantMints[k];
         const PATTERN_TTL = 14 * 24 * 3600e3;
         for (const k in state.patternOkMints) if (now - state.patternOkMints[k] > PATTERN_TTL) delete state.patternOkMints[k]; // prune fossiles
         // Tick alterné (2026-07-19) : pair = scan COMPLET (découverte + tous les tokens, cadence 60s
@@ -778,7 +785,10 @@ async function scan() {
                     console.log(`🔄 Remplacement watch: ${state.watch[oldest].symbol} (plus vieux, dormant) ← ${d.symbol}`);
                     state.purgedAt[oldest] = now; delete state.watch[oldest]; replaceBudget--;
                 }
+                const mm = state.mourantMints[tok];   // restaure le verrou anti-mourant (survit purge/re-add)
                 state.watch[tok] = { symbol: d.symbol, pool: d.poolAnalysis || gtPool || d.pool, poolAlt: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now, nextCheckAt: now + Math.floor(Math.random() * 30e3),
+                    vol: d.vol24h,   // (2026-08-27) w.vol n'était JAMAIS écrit → vol24hK: null sur les 441 trades
+                    lastEntryPrice: mm ? mm.px : undefined, lastExitTs: mm ? mm.exitTs : undefined,
                     patternValidated: !!(state.patternOkMints[tok] && now - state.patternOkMints[tok] < PATTERN_TTL) || undefined }; // restaure la qualif pattern acquise (survit purge/re-add)
                 console.log(`👀 Suivi: ${d.symbol} (âge ${ageH.toFixed(1)}h, vol $${Math.round(d.vol24h / 1000)}k, pool ${gtPool ? 'GT' : 'dex'})`);
             } catch (_) {}
@@ -834,12 +844,13 @@ async function scan() {
                             if (r && r.valueSol != null) {
                                 const rg = r.valueSol / posO.live.openValueSol - 1;
                                 posO.peakGain = Math.max(posO.peakGain || 0, rg);
-                                const armedO = posO.peakGain >= 0.06;
-                                console.log(`📊 ${posO.symbol} | LP ${(rg * 100).toFixed(1)}% | peak ${(posO.peakGain * 100).toFixed(1)}% | ${armedO ? 'armé✓' : 'pas-armé'} | trail≤${((posO.peakGain - 0.01) * 100).toFixed(1)}% | src:live | bougies-KO`);
+                                const armedO = posO.peakGain >= TP_PCT;
+                                console.log(`📊 ${posO.symbol} | LP ${(rg * 100).toFixed(1)}% | peak ${(posO.peakGain * 100).toFixed(1)}% | ${armedO ? 'armé✓' : 'pas-armé'} | trail≤${((posO.peakGain - TRAIL) * 100).toFixed(1)}% | src:live | bougies-KO`);
                                 const exitPx = posO.lastPx || posO.entry;
                                 if (r.activeBinId != null && posO.live.upperBinId != null && r.activeBinId > posO.live.upperBinId) { await closePaper(tok, posO, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, bougies KO)`); continue; }
-                                if (armedO && rg <= posO.peakGain - 0.01) { await closePaper(tok, posO, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(posO.peakGain * 100).toFixed(1)}%, bougies KO)`); continue; }
-                                if (rg <= -0.35) { await closePaper(tok, posO, exitPx, `CUT valeur LP ${(rg * 100).toFixed(1)}% (≤ -35% hors-range, bougies KO)`); continue; }
+                                if (armedO && rg <= posO.peakGain - TRAIL) { await closePaper(tok, posO, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(posO.peakGain * 100).toFixed(1)}%, bougies KO)`); continue; }
+                                // (2026-08-27) était -0.35 en dur ici alors que tout le reste est à -55% depuis le 19/08
+                                if (rg <= -RANGE_DOWN) { await closePaper(tok, posO, exitPx, `CUT valeur LP ${(rg * 100).toFixed(1)}% (≤ -${(RANGE_DOWN * 100).toFixed(0)}% hors-range, bougies KO)`); continue; }
                             }
                         } catch (_) { /* valeur live KO aussi → rien à faire, on garde la position */ }
                     }
@@ -922,7 +933,8 @@ async function scan() {
                 const gain = px / pos.entry - 1;
                 // CUT hors-range ADAPTATIF (2026-08-11, cas Jimothy coupé puis pump +30min) : gros coin établi
                 // (MC≥3M) rug rarement + rebondit (cf Remus) → -50% de marge ; petit volatil peut rug → -35%.
-                const RANGE_DOWN = 0.55, TP_PCT = 0.06;  // arm trail à +6% (RSI2 scalpe au top <+6%, trail au-dessus). Arm 3% établi testé 24/08 → banke ~2% de moins sur la bande +3-6% (trail sous le peak vs RSI2 au top), revert.
+                // (seuils RANGE_DOWN/TP_PCT/TRAIL = constantes de module, source unique)
+                //   arm trail à +6% (RSI2 scalpe au top <+6%, trail au-dessus). Arm 3% établi testé 24/08 → banke ~2% de moins sur la bande +3-6% (trail sous le peak vs RSI2 au top), revert.
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
@@ -968,7 +980,6 @@ async function scan() {
                 //   pump, ex JLY +12%). - Petit bounce pas encore armé : RSI2>90 + profit (scalp). Sur realGain.
                 pos.peakGain = Math.max(pos.peakGain || 0, realGain);
                 const armed = pos.peakGain >= TP_PCT;   // +6% LP atteint
-                const TRAIL = 0.01;   // uniforme
 
                 // LOG position par scan (2026-08-09) : fin du silence de bot 2 + audit sortie. On affiche TOUT
                 // ce que le bot VOIT — LP, prix, RSI2 (= notre critère de sortie), RSI14 (comparable DexScreener,
@@ -1060,20 +1071,13 @@ async function scan() {
             // Compteur de CASSURES D'ATH (règle EP ligne 79 : 2e/3e OK, 4e = MAX → pump épuisé, rug probable
             // après → on ne LP plus). Compte les vrais nouveaux plus-hauts de vie (>2% au-dessus du max), pas
             // les cycles. 1re observation = pas une cassure.
-            if (w.maxTrueAth == null) w.maxTrueAth = trueAth;
-            else if (trueAth > w.maxTrueAth * 1.02) { w.maxTrueAth = trueAth; } // maj de la réf ATH (2%) — le COMPTAGE des cassures est découplé ci-dessous
+
             // ATH-BREAKS DE VIE (2026-08-19) : cassures MAJEURES à +10% = vrais cycles de pump façon EP, PAS les
             // micro-hauts de bruit (+2% sur-comptait : CYBERLEEK 6→3, il n'a fait que 3 vrais ATH). Recompté sur
             // toute la série ms (déjà fetchée). Sépare CYBERLEEK(3, bon) des vrais épuisés (SAME 9, BULLSHIT 5).
             let lifeBreaks = 0, mxH = null;
             for (const c of ms) { const h = c[2]; if (mxH == null) mxH = h; else if (h > mxH * 1.10) { mxH = h; lifeBreaks++; } }
             w.athBreaks = lifeBreaks;
-            // Migration transition (2026-07-29) : tout token DÉJÀ tradé avant ce fix (position ouverte OU
-            // marqueur d'entrée antérieure lastEntryAth/lastEntryTrueAth) n'a pas de lastEntryPeak → on
-            // l'initialise au max COURANT. Effet : il ne pourra ré-entrer que sur un vrai NOUVEL ATH global
-            // (> max courant), jamais sur un re-pump local. Corrige le cas Gnomes (ré-entrées répétées).
-            if (w.lastEntryPeak == null && (state.positions[tok] || w.lastEntryAth || w.lastEntryTrueAth)) w.lastEntryPeak = w.maxTrueAth;
-            const newAthIsReal = trueAth <= 0 || ath >= trueAth * 0.9; // le sommet récent EST (≈) le vrai ATH de vie
             // GARDE-FOU ANTI-PUMP EXPLOSIF (2026-07-28, demande user — cas breadcat) : un token qui a fait
             // x5+ de MC EN UNE bougie 15m depuis un prix ÉTABLI = snipe/manipulation qui crashe (breadcat :
             // x12.8 puis -75%). On mesure le JUMP = high / close de la bougie PRÉCÉDENTE (pas high/low, qui
@@ -1093,7 +1097,6 @@ async function scan() {
             const drawdown = ath > 0 ? 1 - curPrice / ath : 0;      // retracement depuis l'ATH courant
             const ddOk = drawdown >= 0.40;                          // tolérance dès -40% (2026-07-27, demande user — avant 35%)
             // (cadence adaptative DÉPLACÉE plus bas — FIX 3 2026-08-15 : indexée sur dumpedFromHigh, pas drawdown-ATH)
-            const ddShadow35 = drawdown >= 0.35 && drawdown < 0.40; // SHADOW : ce que le seuil 35% donnerait en plus
             // supports (±4% = NOTRE calibration ; EP dit juste "near support")
             const nearST = line > 0 && Math.abs(curPrice / line - 1) <= 0.04;
             const ema34 = emaLast(cs, 34);
@@ -1112,7 +1115,6 @@ async function scan() {
             // post-ATH (passé depuis longtemps) = coin qui traîne au fond / pump local (cas HBULL#3 live
             // -33%, 旺旺#2). Trade-off assumé : on perd les 1res entrées sur vieux bounceurs (HBULL#1 +19%
             // avait un ATH de ~6j) — le cycle propre = nouvel ATH (<24h) → dump → retrace → entrée.
-            const athRecent = athAgeH != null && athAgeH <= 24;
             const athStale48 = athAgeH != null && athAgeH > 48; // tag legacy conservé sur les trades (mesure)
             // PURGE des coincés (2026-07-27, GO user) : ATH > 72h ET pas en position = fenêtre d'entrée
             // (ATH≤24h) close depuis longtemps, le token squatte un slot. S'il re-pompe (nouvel ATH), il
@@ -1125,10 +1127,22 @@ async function scan() {
             // fenêtre → sinon l'entrée -40%/6h ne se déclenche JAMAIS sur les établis (KINS/ANSEM = 0 trade).
             const established = curMc >= 5_000_000;
             const winN = established ? 96 : 24;                      // haut récent : 24h (établi, 1h de chop lent) vs 6h (volatil)
-            const dumpThr = established ? 0.12 : 0.35;               // établi -12% (dips ANSEM ~11%) / volatil -35% (2026-08-10 : -40%→-35%, backtest FOMO WR 73%→81% +13 entrées gagnantes = cadence EP)
+            const dumpThrFixe = established ? 0.12 : 0.35;           // établi -12% (dips ANSEM ~11%) / volatil -35% (2026-08-10 : -40%→-35%, backtest FOMO WR 73%→81% +13 entrées gagnantes = cadence EP)
+            const aPct = atrPct15(cs);
+            const dumpThrAtr = aPct != null ? Math.max(ATR_FLOOR, ATR_K * aPct) : null;
+            const dumpThr = (ATR_ENTRY === 'on' && dumpThrAtr != null) ? dumpThrAtr : dumpThrFixe;
             const recentHigh = Math.max(...cs.slice(-winN).map(c => c[2]));
             const dumpedFromHigh = recentHigh > 0 ? 1 - curPrice / recentHigh : 0;
             const atDip = dumpedFromHigh >= dumpThr;
+            // SHADOW ATR (mode 'shadow') : on n'enregistre QUE les désaccords entre les deux règles, 1 par
+            // token/heure → après quelques jours on sait, sur du forward réel, si l'ATR aurait mieux fait.
+            if (ATR_ENTRY !== 'on' && dumpThrAtr != null && !inPos && (dumpedFromHigh >= dumpThrAtr) !== atDip
+                && (!w._atrShadowAt || now - w._atrShadowAt > 3600e3)) {
+                w._atrShadowAt = now;
+                recordShadow('atrEntry', { symbol: w.symbol, tok, price: curPrice, dumpPct: +(dumpedFromHigh * 100).toFixed(1),
+                    thrFixe: +(dumpThrFixe * 100).toFixed(1), thrAtr: +(dumpThrAtr * 100).toFixed(1),
+                    sens: atDip ? 'FIXE-entre-ATR-refuse' : 'ATR-entre-FIXE-refuse', established, curMcK: Math.round(curMc / 1000) });
+            }
             // FIX 3 (2026-08-15) : cadence de check indexée sur la PROXIMITÉ D'ENTRÉE (dump sous le haut récent
             // vs seuil), pas sur le drawdown-sous-ATH. Un cadavre à -80% ATH dont le haut-6h a fondu (dump≈0)
             // n'est PAS près d'un déclenchement → check lent (10min) → libère le budget-fetch pour les frais.
@@ -1142,16 +1156,26 @@ async function scan() {
                 w.nextCheckAt = now + (dipProx >= 0.71 ? 60e3 : dipProx >= 0.57 ? 120e3 : dipProx >= 0.29 ? 180e3 : 300e3);
                 w.nearEntry = dipProx >= 0.71; // dès ~-25% → cache frais 45s (les checks 1min voient enfin le vrai prix)
             }
-            const atST = line != null && line > 0 ? curPrice <= line * 1.02 : true; // retrace VERS la ST (EP, ST intouchable) — prix à/sous la ligne ST
             // ANTI-COIN-MOURANT (2026-08-04, règle user) : après un close on ne RÉ-OUVRE que si le prix a
             // re-dépassé notre dernière entrée (= il chope encore). S'il ne fait que des lower lows sous notre
             // entrée, il MEURT → on n'ouvre plus dessus (cas Slop cut -34% puis re-dump).
             if (!state.positions[tok] && w.lastEntryPrice && curPrice >= w.lastEntryPrice * 0.98) w.recovered = true;
-            const canReenter = !w.lastEntryPrice || w.recovered;
+            // Le TTL est neutre par défaut (cf MOURANT_TTL_H) : le backtest a tranché contre. Ce qui EST
+            // corrigé ici, c'est la COHÉRENCE du verrou : lastEntryPrice vivait sur l'entrée de watch, donc
+            // perdu à chaque purge/re-add → le gate s'appliquait au hasard (les tokens jetables y échappaient,
+            // les machines à fees, jamais purgées, y restaient). Désormais persisté par mint = appliqué à tous.
+            const mourantExpired = MOURANT_TTL_MS !== Infinity && w.lastExitTs && (now - w.lastExitTs) >= MOURANT_TTL_MS;
+            const canReenter = !w.lastEntryPrice || w.recovered || mourantExpired;
             // ANTI-CHASE-PUMP (2026-08-04, cas CATE entré en plein +8.7%) : on n'entre QUE si survendu
             // (RSI2 bas = DANS le dump), pas quand ça pompe déjà. EP achète la peur, pas l'euphorie.
             const rsiEntry = calculateRSI(cs.slice(0, -1).map(c => c[4]), 2);
-            const rsiLow = rsiEntry != null && rsiEntry < 40;   // survendu/pullback (pas en pump) — pas trop strict
+            // SEUIL 40 → 50 (2026-08-27, backtest 50 mints × 10j, bougies réelles) : +32 entrées marginales,
+            // WR 88%, +122% de PnL cumulé, ZÉRO CUT supplémentaire (12 gros perdants dans les deux cas), et
+            // positif sur les DEUX moitiés de période (moy +3,96% / +7,15%). Le verdict "n'ajoute aucun trade"
+            // du 17/08 reposait sur 7 trades ; ici la baseline en compte 173 (calibrée : 172 trades réels).
+            // La tranche RSI2 40-44 reste la PLUS FAIBLE des marginales — d'où 50 et pas plus haut.
+            const RSI_ENTRY_MAX = 50;
+            const rsiLow = rsiEntry != null && rsiEntry < RSI_ENTRY_MAX;   // survendu/pullback (pas en pump)
             // SHADOW anti-downtrend (2026-08-05) : lower highs = déclin terminal (dead-cat avant full dump).
             // Mesure ONLY : on tague l'entrée, on comparera l'issue downtrend vs range avant d'en faire un gate.
             const recentHigh12 = Math.max(...cs.slice(-12).map(c => c[2]));
@@ -1182,7 +1206,7 @@ async function scan() {
             else if (!patOk) block = 'pattern-KO';
             else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`; // cr==null ne bloque plus (2026-08-09) → on tombe sur le vrai blocage suivant
             else if (!atDip) block = `pas-au-creux(<${(dumpThr * 100).toFixed(0)}%${established ? '·établi' : ''})`;
-            else if (!rsiLow) block = 'pas-survendu(RSI>40=pompe)';
+            else if (!rsiLow) block = `pas-survendu(RSI>${RSI_ENTRY_MAX}=pompe)`;
             else if ((w.athBreaks || 0) >= 4 && curMc < 1_500_000) block = 'ATH-épuisé(4x·<1.5M)'; // cap ATH conditionnel MC (2026-08-17) : le 4e top qui rug = un PETIT coin (WOFL $92k → -35%). Un coin ≥1.5M qui multiplie les ATH TREND (LAYOOO $2.75M → +17.7%) → pas de cap. Validé sur la journée.
             else if (!canReenter) block = 'coin-mourant';
             else if (!feesOk) block = `fees<${FEE_TVL_FLOOR}%(${feeTvl.toFixed(0)}%)`; // pool ne génère pas assez de fees → LP mort
@@ -1203,11 +1227,12 @@ async function scan() {
                 nearST, nearEMA34, nearBBlo, atSupport, cooldown: !!onCooldown,
                 feeTvl24h: +feeTvl.toFixed(1),                           // rendement LP de la pool (plancher ≥5%)
             };
-            if (ddOk) w.dd35Logged = false;
             // DIAG NEAR-MISS (2026-08-15) : le token EST au creux (dip frais ≥ seuil) mais l'entrée est bloquée
             // par une condition ULTÉRIEURE → on log la raison (throttle 5min). Distingue "dip raté/jamais vu"
             // de "dip vu mais bloqué". block==null ici = entrée réelle (ne rien logger).
-            if (atDip && block && !state.positions[tok] && (!w.lastNearMissAt || now - w.lastNearMissAt > 5 * 60e3)) {
+            // (2026-08-27) `block` vaut 'ENTRÉE' quand tout passe — il n'est JAMAIS null, donc le diag
+            // "AU CREUX mais bloqué → ENTRÉE" se déclenchait sur les vraies entrées. On l'exclut.
+            if (atDip && block && block !== 'ENTRÉE' && !state.positions[tok] && (!w.lastNearMissAt || now - w.lastNearMissAt > 5 * 60e3)) {
                 w.lastNearMissAt = now;
                 console.log(`🎯 DIAG near-miss: ${w.symbol} AU CREUX (dump -${(dumpedFromHigh * 100).toFixed(0)}% ≥ ${(dumpThr * 100).toFixed(0)}%) mais bloqué → ${block} | RSI2=${rsiEntry != null ? rsiEntry.toFixed(0) : '?'} recovered=${!!w.recovered} athBreaks=${w.athBreaks || 0} cooldown=${!!onCooldown} feeTvl=${feeTvl.toFixed(0)}%`);
             }
@@ -1215,6 +1240,17 @@ async function scan() {
             // le cap depuis /trades (biais de sélection). On enregistre chaque coin bloqué ATH-épuisé AU CREUX +
             // survendu (= vrai candidat refusé) avec son prix → on mesure le forward (rebond vs rug) sans trader.
             // 1 record par token (au 1er blocage) → verdict : le cap sauve-t-il plus qu'il ne coûte, à quel seuil.
+            // SHADOW REBOND (2026-08-27) : dans le backtest, en retirant TOUT le gate RSI, la MEILLEURE tranche
+            // d'entrées marginales est RSI2 ≥ 80 (n=29, moy +11,9%, WR 90%) et la PIRE est 40-44 (moy -0,7%) —
+            // c'est-à-dire qu'acheter le rebond CONFIRMÉ bat acheter le couteau. La variante `<50 OU >80` bat la
+            // baseline 9 jours sur 10. MAIS le proxy-PRIX flatte mécaniquement les entrées qui montent tout de
+            // suite (piège trail-only du 24/08) → on MESURE en forward avant d'y toucher.
+            if (atDip && !state.positions[tok] && rsiEntry != null && rsiEntry > 80 && block === `pas-survendu(RSI>${RSI_ENTRY_MAX}=pompe)`
+                && (!w._bounceShadowAt || now - w._bounceShadowAt > 3600e3)) {
+                w._bounceShadowAt = now;
+                recordShadow('rebondRSI80', { symbol: w.symbol, tok, price: curPrice, rsi2: +rsiEntry.toFixed(0),
+                    dumpPct: +(dumpedFromHigh * 100).toFixed(1), feeTvl: +feeTvl.toFixed(1), curMcK: Math.round(curMc / 1000) });
+            }
             if (atDip && rsiLow && block && block.startsWith('ATH-épuisé') && !state.positions[tok] && !w.athShadowLogged) {
                 w.athShadowLogged = true;
                 recordShadow('athEpuise', { symbol: w.symbol, tok, price: curPrice, athBreaks: w.athBreaks || 0, curMcK: Math.round(curMc / 1000), feeTvl: +feeTvl.toFixed(1), dumpPct: +(dumpedFromHigh * 100).toFixed(0) });
@@ -1226,10 +1262,14 @@ async function scan() {
                 // Pool Meteora viable requise en LIVE (sélection EP "coin AND pool selection") — lazy, cachée 30min.
                 if (live.enabled && live.findMeteoraPool) {
                     if (w.meteoraOk == null || now - (w.meteoraCheckedAt || 0) > 30 * 60e3) {
-                        try { w.meteoraOk = !!(await live.findMeteoraPool(tok)); } catch (_) { w.meteoraOk = false; }
-                        w.meteoraCheckedAt = now;
+                        // (2026-08-27) une ERREUR RPC n'est PAS "pas de pool" : avant, un 429 Helius posait
+                        // meteoraOk=false et bloquait l'entrée — y compris PAPIER — pendant 30 min. Désormais
+                        // on ne mémorise que les vraies réponses ; sur erreur on laisse passer (l'ouverture
+                        // live échouera proprement en "papier seulement" si la pool manque vraiment).
+                        try { w.meteoraOk = !!(await live.findMeteoraPool(tok)); w.meteoraCheckedAt = now; }
+                        catch (e) { w.meteoraOk = null; w.meteoraCheckedAt = 0; console.log(`  ⚠️ findMeteoraPool ${w.symbol} KO (${String(e.message).slice(0, 50)}) — non mémorisé`); }
                     }
-                    if (!w.meteoraOk) { state.blockCount['no-pool-meteora'] = (state.blockCount['no-pool-meteora'] || 0) + 1; continue; }
+                    if (w.meteoraOk === false) { state.blockCount['no-pool-meteora'] = (state.blockCount['no-pool-meteora'] || 0) + 1; continue; }
                 }
                 const entry = curPrice;
                 w.lastEntryPrice = entry; w.recovered = false;   // anti-mourant : ré-ouvre seulement s'il re-dépasse ce prix
@@ -1273,17 +1313,6 @@ async function scan() {
     } finally { scanning = false; save(); }
 }
 
-// clôture de l'ombre A/B "TP fixe" — comptabilité séparée (state.tradesFixed), pas de Telegram (anti-spam)
-function closeFixedShadow(tok, fx, exitPrice, reason) {
-    const pnlPct = exitPrice / fx.entry - 1;
-    state.tradesFixed.push({
-        symbol: fx.symbol, pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
-        durMin: Math.round((Date.now() - fx.openedAt) / 60000), closedAt: new Date().toISOString(), reason,
-    });
-    delete state.fixedShadow[tok];
-    save();
-    console.log(`👥 [A/B fixe] SORTIE ${fx.symbol} ${reason} → ${(pnlPct * 100).toFixed(1)}%`);
-}
 
 // TRAJECTOIRE LP (2026-08-19) : pose _lv ET historise (valeur%, bin, ts) → au close on l'attache au trade →
 // consultable via /trades?all=1 (jamais perdue). Un trou de temps entre 2 points = lecture gelée (429) ;
@@ -1293,9 +1322,25 @@ function recordLv(pos, rg, bin) {
     (pos._lvHist = pos._lvHist || []).push({ t: Date.now(), lp: +(rg * 100).toFixed(1), bin });
     if (pos._lvHist.length > 40) pos._lvHist.shift();
 }
+// (2026-08-27) Garde-fou anti-await-infini : AUCUN appel RPC de bonus-live.js n'a de timeout (web3.js
+// n'en pose pas par défaut) → pendant une tempête 429, un close pouvait ne JAMAIS résoudre.
+function withTimeout(promise, ms, label) {
+    let t; return Promise.race([
+        promise.finally(() => clearTimeout(t)),
+        new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`timeout ${ms / 1000}s (${label})`)), ms); }),
+    ]);
+}
+const CLOSE_TIMEOUT_MS = 90 * 1000;   // au-delà, on relâche le verrou et on RE-TENTE au tick suivant
 async function closePaper(tok, pos, exitPrice, reason) {
-    if (pos._closing) return;   // anti double-close (scan + boucle rapide ne ferment JAMAIS 2× la même position)
-    pos._closing = true;
+    // ANTI-VERROU MORT (2026-08-27, cas Zoe 26/08) : `_closing` restait à true pour toujours quand
+    // `closeVerified` ne résolvait jamais (429 Helius) → tous les closes suivants sortaient ICI, en
+    // silence : trail armé à +7,2%, condition de sortie vraie 3h11, position finie à -25%, zéro alerte.
+    // `_closing` est en plus persisté par save() → il survivait aux redéploiements. Watchdog + finally.
+    if (pos._closing) {
+        if (Date.now() - (pos._closingAt || 0) < 3 * CLOSE_TIMEOUT_MS) return;
+        console.log(`⚠️ ${pos.symbol}: verrou _closing bloqué depuis ${Math.round((Date.now() - (pos._closingAt || 0)) / 1000)}s — relâché, close re-tenté`);
+    }
+    pos._closing = true; pos._closingAt = Date.now();
     // ── LIVE : fermer la vraie position D'ABORD. Si le close réel échoue → on GARDE le tracking
     // (pattern anti-world de bot 1 : jamais supprimer une position pas vidée on-chain).
     let pnlSolLive = null;
@@ -1305,7 +1350,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         // chaque tick (silencieusement) jusqu'à ce qu'il passe.
         const alertThrottled = (msg) => { const n = Date.now(); if (!pos.lastCloseAlert || n - pos.lastCloseAlert > 15 * 60 * 1000) { tg(msg); pos.lastCloseAlert = n; } };
         try {
-            const r = await live.closeVerified(pos.live);
+            const r = await withTimeout(live.closeVerified(pos.live), CLOSE_TIMEOUT_MS, `close ${pos.symbol}`);
             if (!r || !r.ok) { alertThrottled(`🚨 LIVE ${pos.symbol}: close INCOMPLET — position GARDÉE, re-tentée à chaque tick, vérifier on-chain`); pos._closing = false; return; }
             // PnL RÉEL = valeur on-chain close − open (X+Y+fees, insensible au bruit wallet). Fallback sur
             // le flat-to-flat seulement si la lecture on-chain a échoué (2026-07-25, fix mesure).
@@ -1315,7 +1360,13 @@ async function closePaper(tok, pos, exitPrice, reason) {
                 pnlSolLive = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
                 console.log(`  ⚠️ PnL live via flat-to-flat (lecture on-chain KO) — moins fiable`);
             }
-        } catch (e) { alertThrottled(`🚨 LIVE ${pos.symbol}: close erreur (${String(e.message).slice(0, 60)}) — position GARDÉE`); pos._closing = false; return; }
+        } catch (e) {
+            // timeout OU erreur : on relâche TOUJOURS le verrou (sinon la position n'a plus de sortie) et on
+            // garde le tracking (jamais supprimer une position pas vidée on-chain, pattern anti-world bot 1).
+            console.log(`  ⚠️ close ${pos.symbol} échoué: ${String(e.message).slice(0, 80)} — verrou relâché, re-tenté au prochain tick`);
+            alertThrottled(`🚨 LIVE ${pos.symbol}: close erreur (${String(e.message).slice(0, 60)}) — position GARDÉE`);
+            pos._closing = false; return;
+        }
     }
     const pnlPct = exitPrice / pos.entry - 1;
     const trade = {
@@ -1330,7 +1381,12 @@ async function closePaper(tok, pos, exitPrice, reason) {
     };
     state.trades.push(trade);
     delete state.positions[tok];
-    if (state.watch[tok]) state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS; // anti-boucle : pas de ré-entrée immédiate sur le même mouvement
+    if (state.watch[tok]) {
+        state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS; // anti-boucle : pas de ré-entrée immédiate sur le même mouvement
+        state.watch[tok].lastExitTs = Date.now();                          // (2026-08-27) départ du TTL 48h anti-mourant
+        state.mourantMints = state.mourantMints || {};
+        state.mourantMints[tok] = { px: state.watch[tok].lastEntryPrice ?? pos.entry, exitTs: Date.now() };
+    }
     save();
     const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
     const wr = state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100;
@@ -1497,7 +1553,12 @@ http.createServer((req, res) => {
         };
     })();
     res.end(JSON.stringify({
-        mode: 'PAPER', updatedAt: new Date().toISOString(),
+        // (2026-08-27) était 'PAPER' EN DUR alors que LIVE est armé depuis des semaines — impossible de
+        // savoir depuis /status si le bot passe de vrais ordres.
+        mode: live.enabled ? 'LIVE' : 'PAPER',
+        maxLivePositions: MAX_LIVE_POSITIONS, maxPaperPositions: MAX_POSITIONS,
+        entryTuning: { rsiMax: 50, mourantTtl: MOURANT_TTL_H > 0 ? MOURANT_TTL_H + 'h' : 'à vie', atrEntry: ATR_ENTRY, atrK: ATR_K },
+        updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
         trades: state.trades.length,
         winRate: state.trades.length ? Math.round(state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100) + '%' : null,
@@ -1511,19 +1572,15 @@ http.createServer((req, res) => {
         sizeAnalysis,     // WR/pnl gros vs petits coins + par profondeur d'entrée (faut-il entrer plus profond sur les gros ?)
         athAgeBins, // issue par tranche d'âge d'ATH à l'entrée (tous les trades) — voir mémoire athage-vs-outcome
         shadowManualCloses: state.shadowManualCloses || [], // regret des coupes manuelles (exit EP possible après ?)
-        abFixedVsTrailing: {
-            trailing: { n: state.trades.length, pnlSol: +tot.toFixed(4) },
-            fixed: { n: state.tradesFixed.length, pnlSol: +state.tradesFixed.reduce((s, t) => s + t.pnlSol, 0).toFixed(4),
-                     wr: state.tradesFixed.length ? Math.round(state.tradesFixed.filter(t => t.pnlSol > 0).length / state.tradesFixed.length * 100) + '%' : null },
-            shadowOpen: Object.keys(state.fixedShadow).length,
-        },
         lastTrades: state.trades.slice(-10),
         watch: Object.entries(state.watch).map(([tok, w]) => ({ symbol: w.symbol, mint: tok, pool: w.pool, lastSkip: w.lastSkip, fetchFails: w.fetchFails || 0, ...(w.diag || { pending: true }) })),
     }, null, 2));
 }).listen(process.env.PORT || 3000, () => console.log(`🌐 /status sur port ${process.env.PORT || 3000}`));
 
-console.log('🧪 Bonus Stage PAPER bot démarré — aucun ordre réel ne sera passé.');
-tg('🚀 Bot démarré (paper). Refonte EP : entrée = pattern breakup→breakdown→newATH + retrace au support ; sortie = RSI(2)>90 + vert (on TIENT jusqu\'au rebond, pas de SL/coupe-temps) ; max 8 positions.');
+// (2026-08-27) ces deux lignes affirmaient "aucun ordre réel" JUSTE APRÈS le log "🟢 LIVE ACTIVÉ", et le
+// Telegram décrivait l'ancienne stratégie (flip ST) avec "max 8 positions". Remis en accord avec le code.
+console.log(`${live.enabled ? '🟢 Bonus Stage LIVE démarré — ordres RÉELS armés' : '🧪 Bonus Stage PAPER démarré — aucun ordre réel'} | entrée RSI2<50 · anti-mourant ${MOURANT_TTL_H > 0 ? 'TTL ' + MOURANT_TTL_H + 'h' : 'à vie'} · seuil creux ${ATR_ENTRY === 'on' ? `ATR k=${ATR_K}` : 'fixe (ATR en shadow)'} | max ${MAX_POSITIONS} papier / ${MAX_LIVE_POSITIONS} réelles`);
+tg(`🚀 Bot démarré (${live.enabled ? 'LIVE' : 'paper'}). Entrée : chop-cycle au creux + RSI2<50 ; sortie : trail 1% au-dessus de +6% LP, RSI2>90 en dessous, CUT hors-range ${(RANGE_DOWN * 100).toFixed(0)}% ; max ${MAX_LIVE_POSITIONS} positions réelles.`);
 // scan() enveloppé : un rejet dans un tick est loggé, jamais propagé en unhandledRejection.
 const safeScan = () => scan().catch(e => console.log('⚠️ scan tick (survécu):', String(e?.stack || e?.message || e).slice(0, 200)));
 setInterval(safeScan, SCAN_INTERVAL_MS);
@@ -1541,7 +1598,7 @@ async function fastPositionCheck() {
         const b = await batchedPositionValues();
         if (!b.fresh) { fastChecking = false; return; } // lot périmé → on NE traile PAS sur du gelé (le scan fera l'individuel)
         const bmap = b.map;
-        const TP = 0.06, TRAIL = 0.01;
+        // seuils = constantes de module (plus de copie locale qui dérive)
         for (const [tok, pos] of Object.entries(state.positions)) {
             if (!pos.live || !pos.live.openValueSol || pos._closing) continue;
             const bv = bmap.get(pos.live.positionKeypairPub);
@@ -1549,14 +1606,14 @@ async function fastPositionCheck() {
             const rg = bv.valueSol / pos.live.openValueSol - 1;
             recordLv(pos, rg, bv.activeBinId);
             pos.peakGain = Math.max(pos.peakGain || 0, rg);
-            const armed = pos.peakGain >= TP, exitPx = pos.lastPx || pos.entry;
-            const RANGE_DOWN = 0.55; // CUT hors-range -55% PARTOUT (2026-08-19, backtest tenir-vs-couper : -35% coupait trop tôt, delta +121% sur 12 CUT-bas ; -55% tient les rebonds, garde un plancher anti-rug)
+            const armed = pos.peakGain >= TP_PCT, exitPx = pos.lastPx || pos.entry;
+            // CUT hors-range -55% PARTOUT (2026-08-19, backtest tenir-vs-couper : -35% coupait trop tôt, delta +121% sur 12 CUT-bas ; -55% tient les rebonds, garde un plancher anti-rug)
             if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId) {
                 await closePaper(tok, pos, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, rapide)`);
             } else if (armed && rg <= pos.peakGain - TRAIL) {
                 await closePaper(tok, pos, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(pos.peakGain * 100).toFixed(1)}%, rapide)`);
             } else if (rg <= -RANGE_DOWN) {
-                await closePaper(tok, pos, exitPx, `CUT valeur LP ${(rg * 100).toFixed(1)}% (≤ -35%, rapide)`);
+                await closePaper(tok, pos, exitPx, `CUT valeur LP ${(rg * 100).toFixed(1)}% (≤ -${(RANGE_DOWN * 100).toFixed(0)}%, rapide)`);
             }
         }
     } catch (e) { console.log('⚠️ fast pos check:', String(e.message).slice(0, 80)); }
