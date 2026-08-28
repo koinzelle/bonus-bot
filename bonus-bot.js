@@ -748,7 +748,14 @@ async function batchedPositionValues() {
         let t;
         if (pk >= TP_PCT || g >= 0.055 || outTop || nearTop(5)) t = 8000;   // trail armé · sur le point d'armer · hors-range HAUT · bord haut proche
         else if (g >= 0.03 || nearTop(10)) t = 10000;
-        else t = 45000;   // tout le reste, perte profonde comprise : rien de rapide ne peut s'y produire
+        // (2026-08-28) ASYMÉTRIE : lire lentement à la BAISSE ne coûte rien (le CUT -55% est lent), mais
+        // lire lentement à la HAUSSE coûte le PEAK. `peakGain` n'enregistre que ce qu'on VOIT : si le prix
+        // part de -1% à +10% et retombe entre deux lectures, le sommet est invisible → le trail s'arme plus
+        // bas, ou pas du tout, et le CUT hors-range HAUT n'a jamais l'occasion de banker. Or les sorties
+        // TRAIL font l'essentiel du PnL réel. Une position proche du pair peut partir vite → 15s.
+        // En dessous de -10%, atteindre l'armement (+6%) demande un mouvement de 16 points : pas en 15s.
+        else if (g >= -0.10) t = 15000;
+        else t = 45000;   // perte franche / sorti par le bas : rien de rapide ne peut s'y produire
         if (t < ttl) ttl = t;
     }
     if (Date.now() - _batchLv.ts < ttl) return { map: _batchLv.map, fresh: true }; // succès < ttl = frais
