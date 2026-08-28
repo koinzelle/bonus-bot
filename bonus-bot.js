@@ -724,10 +724,27 @@ async function batchedPositionValues() {
         const bin = p._lv ? p._lv.bin : null;
         const distEdge = (bin != null && p.live.upperBinId != null && p.live.lowerBinId != null)
             ? Math.min(p.live.upperBinId - bin, bin - p.live.lowerBinId) : 999;
+        // (2026-08-28) TROIS déclencheurs épinglaient une position perdante sur le palier 8s alors qu'aucun
+        // trigger rapide ne pouvait se produire. Cas cc : peak 5,99% · LP -29,8% · bin -326 (sous la range).
+        //  ① `pk >= 0.055` — le peak est un HIGH-WATER : il ne redescend jamais. Une position qui a touché
+        //     5,99% une fois restait en lecture 8s À VIE, même à -30%. Or pour ARMER il faut que le gain
+        //     COURANT atteigne +6% : c'est `g` qu'il faut surveiller vite, pas `pk`. On ne garde `pk` que
+        //     s'il est réellement armé (≥ TP_PCT) — là le trail est actif et la vitesse compte vraiment.
+        //  ② `g <= -0.25` / `g <= -0.15` — la profondeur de perte est une variable LENTE : on ne passe pas
+        //     de -25% à -55% en dix secondes, ça prend des heures. Le CUT tombe à la même minute qu'on lise
+        //     toutes les 8s ou toutes les 45s.
+        //  ③ `distEdge <= 5` était vrai aussi quand la position est DÉJÀ SORTIE de la range (distEdge
+        //     négatif). Sortie par le BAS = 100% token, plus de fees, seul le CUT lent s'applique → rien à
+        //     surveiller vite. Sortie par le HAUT = il faut banker avant que le prix redescende et rende le
+        //     gain → celui-là reste en 8s, explicitement.
+        // Le TTL retenu étant le MINIMUM sur toutes les positions, cc imposait 8s à fone et GTA6 aussi
+        // (à -1%). Coût : ~8 640 lectures/jour au lieu de ~1 920.
+        const outTop = bin != null && p.live.upperBinId != null && bin > p.live.upperBinId;
+        const nearEdgeIn = (n) => distEdge >= 0 && distEdge <= n;   // proche du bord, mais encore DANS la range
         let t;
-        if (pk >= 0.055 || g >= 0.055 || g <= -0.25 || distEdge <= 5) t = 8000;
-        else if (g >= 0.03 || g <= -0.15 || distEdge <= 10) t = 10000;
-        else t = 45000;   // (2026-08-27) calme 15→45s : ~3× moins de crédits Helius
+        if (pk >= TP_PCT || g >= 0.055 || outTop || nearEdgeIn(5)) t = 8000;   // trail armé · sur le point d'armer · hors-range HAUT · bord proche
+        else if (g >= 0.03 || nearEdgeIn(10)) t = 10000;
+        else t = 45000;   // tout le reste, perte profonde comprise : rien de rapide ne peut s'y produire
         if (t < ttl) ttl = t;
     }
     if (Date.now() - _batchLv.ts < ttl) return { map: _batchLv.map, fresh: true }; // succès < ttl = frais
