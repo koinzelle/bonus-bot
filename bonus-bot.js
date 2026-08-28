@@ -153,6 +153,21 @@ const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener e
 const RANGE_DOWN = 0.55;   // CUT hors-range bas (backtest 19/08 : -35% coupait trop tôt, +121% en faveur de tenir)
 const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
 const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
+// PLANCHER RSI2 ÉLARGI À -3% (2026-08-28, idée user, mesuré sur les trajectoires LP réelles) ────────────
+// Le RSI2>90 non-armé est le filet qui sort les positions MOLLES avant qu'elles retombent. Il exigeait
+// `realGain > 0` : une fenêtre trop étroite, qui se referme dès que la position passe sous le pair.
+// Cas cc (27-28/08) : peak bloqué à 5,99% (le trail s'arme à 6,00% — raté d'un centième), puis RSI2 monte
+// à 93 alors que le LP est à -2,8% → sortie bloquée par le `> 0` → plus AUCUNE issue jusqu'au CUT.
+// Elle a fini à -0,048 SOL, l'équivalent de 12 trades gagnants moyens.
+// Mesuré sur 25 trades clôturés + 3 ouvertes avec trajectoire LP réelle (logs persistés, fenêtre 36h) :
+//   coût  : 1 seule sortie changée — PANTS +0,3% → -2,6%,  soit -0,003 SOL
+//   gain  : cc  -47,8% → -2,8%,                            soit +0,045 SOL
+// L'échantillon est d'un cas de chaque côté, mais l'asymétrie est STRUCTURELLE et pas statistique : le
+// coût est plafonné à 3 points par déclenchement, le gain va jusqu'aux 52 points du CUT. Point mort à
+// 1 déclenchement sur 17. Élargir davantage ne change rien (mesuré : -3% et -20% rattrapent les mêmes
+// positions) — donc -3%, le choix qui plafonne la perte.
+// N'affecte QUE le chemin non-armé : au-dessus de +6% de peak, c'est le trail qui commande, inchangé.
+const RSI2_FLOOR_LP = -0.03;
 const MAX_POSITIONS = 10;         // positions papier simultanées (8→10, 2026-08-10 ; EP : beaucoup de petites positions, pas all-in)
 const MAX_LIVE_POSITIONS = Math.min(5, parseInt(process.env.MAX_LIVE_POSITIONS || '5', 10)); // (2026-08-26) plafond DUR 5 positions réelles (demande user ; borne aussi la charge RPC/scan = crédits Helius)
 // Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
@@ -1055,11 +1070,11 @@ async function scan() {
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
                 if (!armed && candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
-                    if (rsi2 != null && rsi2 > 90 && realGain > 0) {
+                    if (rsi2 != null && rsi2 > 90 && realGain > RSI2_FLOOR_LP) {
                         // (2026-08-24) RSI2 = PLANCHER quand pas armé (< +6% LP). Sort les positions molles DANS LE
                         // VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue (cc
                         // aurait fermé +1.2%, s'est retrouvé -11.5% live). Au-dessus de l'arm, le trail ride les runners.
-                        await closePaper(tok, pos, px, `RSI2 ${rsi2.toFixed(0)}>90 (LP +${(realGain * 100).toFixed(1)}%)`);
+                        await closePaper(tok, pos, px, `RSI2 ${rsi2.toFixed(0)}>90 (LP ${realGain >= 0 ? '+' : ''}${(realGain * 100).toFixed(1)}%)`);
                         continue;
                     }
                 }
@@ -1611,6 +1626,7 @@ http.createServer((req, res) => {
         // savoir depuis /status si le bot passe de vrais ordres.
         mode: live.enabled ? 'LIVE' : 'PAPER',
         maxLivePositions: MAX_LIVE_POSITIONS, maxPaperPositions: MAX_POSITIONS,
+        exitTuning: { armPct: TP_PCT * 100, trailPct: TRAIL * 100, cutPct: RANGE_DOWN * 100, rsi2FloorLpPct: RSI2_FLOOR_LP * 100 },
         entryTuning: { rsiMax: 50, mourantTtl: MOURANT_TTL_H > 0 ? MOURANT_TTL_H + 'h' : 'à vie', atrEntry: ATR_ENTRY, atrK: ATR_K },
         updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
