@@ -722,8 +722,12 @@ async function batchedPositionValues() {
         const g = p._lv ? p._lv.rg : (p.peakGain || 0);
         const pk = p.peakGain || 0;
         const bin = p._lv ? p._lv.bin : null;
-        const distEdge = (bin != null && p.live.upperBinId != null && p.live.lowerBinId != null)
-            ? Math.min(p.live.upperBinId - bin, bin - p.live.lowerBinId) : 999;
+        // (2026-08-28) Seul le bord du HAUT compte pour la cadence. En s'approchant du bord du BAS il n'y a
+        // AUCUNE action rapide à déclencher : le franchissement du bas ne ferme rien (il n'existe pas de
+        // « CUT hors-range bas » immédiat — le seul CUT bas est celui à -55%, lent), et les deux issues sont
+        // le rebond ou ce CUT. En haut au contraire, il faut banker avant que le prix redescende et rende le
+        // gain. On ne mesure donc plus que la distance au bord SUPÉRIEUR.
+        const distTop = (bin != null && p.live.upperBinId != null) ? (p.live.upperBinId - bin) : 999;
         // (2026-08-28) TROIS déclencheurs épinglaient une position perdante sur le palier 8s alors qu'aucun
         // trigger rapide ne pouvait se produire. Cas cc : peak 5,99% · LP -29,8% · bin -326 (sous la range).
         //  ① `pk >= 0.055` — le peak est un HIGH-WATER : il ne redescend jamais. Une position qui a touché
@@ -733,17 +737,17 @@ async function batchedPositionValues() {
         //  ② `g <= -0.25` / `g <= -0.15` — la profondeur de perte est une variable LENTE : on ne passe pas
         //     de -25% à -55% en dix secondes, ça prend des heures. Le CUT tombe à la même minute qu'on lise
         //     toutes les 8s ou toutes les 45s.
-        //  ③ `distEdge <= 5` était vrai aussi quand la position est DÉJÀ SORTIE de la range (distEdge
-        //     négatif). Sortie par le BAS = 100% token, plus de fees, seul le CUT lent s'applique → rien à
-        //     surveiller vite. Sortie par le HAUT = il faut banker avant que le prix redescende et rende le
-        //     gain → celui-là reste en 8s, explicitement.
+        //  ③ `distEdge <= 5` prenait le bord le PLUS PROCHE, haut ou bas, et était vrai aussi une fois la
+        //     position DÉJÀ sortie (distance négative). Or le bord du bas ne commande rien : le franchir ne
+        //     ferme aucune position, et une fois dessous c'est 100% token, plus de fees, seul le CUT lent
+        //     s'applique. On ne regarde donc plus que le bord du HAUT, où il faut banker vite.
         // Le TTL retenu étant le MINIMUM sur toutes les positions, cc imposait 8s à fone et GTA6 aussi
         // (à -1%). Coût : ~8 640 lectures/jour au lieu de ~1 920.
-        const outTop = bin != null && p.live.upperBinId != null && bin > p.live.upperBinId;
-        const nearEdgeIn = (n) => distEdge >= 0 && distEdge <= n;   // proche du bord, mais encore DANS la range
+        const outTop = distTop < 0;                                  // sorti par le HAUT → banker vite
+        const nearTop = (n) => distTop >= 0 && distTop <= n;         // approche du bord HAUT, encore dans la range
         let t;
-        if (pk >= TP_PCT || g >= 0.055 || outTop || nearEdgeIn(5)) t = 8000;   // trail armé · sur le point d'armer · hors-range HAUT · bord proche
-        else if (g >= 0.03 || nearEdgeIn(10)) t = 10000;
+        if (pk >= TP_PCT || g >= 0.055 || outTop || nearTop(5)) t = 8000;   // trail armé · sur le point d'armer · hors-range HAUT · bord haut proche
+        else if (g >= 0.03 || nearTop(10)) t = 10000;
         else t = 45000;   // tout le reste, perte profonde comprise : rien de rapide ne peut s'y produire
         if (t < ttl) ttl = t;
     }
