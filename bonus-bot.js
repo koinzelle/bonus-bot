@@ -52,7 +52,13 @@ if (live.enabled) {
     // (2026-08-27) annonçait `MAX_LIVE_POSITIONS || '10'` alors que le code force Math.min(5, …) → le log
     // disait 10, le bot en ouvrait 5. On affiche la valeur RÉELLE.
     console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_PCT || '?'}% capital | max ${Math.min(8, parseInt(process.env.MAX_LIVE_POSITIONS || '8', 10))} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
-    if (live.sweepOrphans) live.sweepOrphans().catch(e => console.log('⚠️ sweep démarrage:', String(e.message).slice(0, 60)));
+    if (live.sweepOrphans) {
+        live.sweepOrphans().catch(e => console.log('⚠️ sweep démarrage:', String(e.message).slice(0, 60)));
+        // (2026-08-30) SWEEP PÉRIODIQUE — il ne tournait qu'au démarrage : un re-swap raté au close laissait
+        // les tokens au wallet jusqu'au prochain redéploiement. STONK y a dormi 19 jours (0,369 SOL), GTA6
+        // une nuit (0,044 SOL). Coût : 2 lectures RPC toutes les 30 min, négligeable.
+        setInterval(() => live.sweepOrphans().catch(e => console.log('⚠️ sweep périodique:', String(e.message).slice(0, 60))), 30 * 60 * 1000);
+    }
 } else console.log('🧪 Mode PAPER (LIVE≠1 ou bonus-live KO) — aucun ordre réel');
 
 // ── Filet anti-crash GLOBAL (2026-07-22) : un bot LIVE ne doit JAMAIS mourir sur une erreur transitoire

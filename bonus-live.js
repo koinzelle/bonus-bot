@@ -165,7 +165,23 @@ async function tokenBalanceRaw(mint) {
 
 // ── Swap Jupiter (générique in→out, montant en unités brutes) ──
 // Endpoint lite-api v1 (2026-07-22) : quote-api.jup.ag/v6 est déprécié → ENOTFOUND. Aligné sur bot 1.
-async function jupSwap(inputMint, outputMint, rawAmount) {
+// (2026-08-30) Poussière : après un close, l'ATA garde souvent quelques unités brutes de reliquat.
+// Jupiter refuse ces montants (400 immédiat). En dessous de ce seuil on ne tente même pas — c'est ce
+// bruit qui masquait les VRAIS échecs de swap dans les logs.
+const DUST_RAW = 100000n;
+// (2026-08-30) retry : le 400 de Jupiter est souvent transitoire ou dû à un montant lu trop tôt.
+async function jupSwap(inputMint, outputMint, rawAmount, tries = 3) {
+    for (let i = 1; i <= tries; i++) {
+        try { return await jupSwapOnce(inputMint, outputMint, rawAmount); }
+        catch (e) {
+            const st = e.response?.status, body = JSON.stringify(e.response?.data || {}).slice(0, 120);
+            console.log(`  ⚠️ jupSwap ${i}/${tries} (${rawAmount} unités) : ${st || e.message} ${body}`);
+            if (i === tries) throw e;
+            await new Promise(r => setTimeout(r, 2000 * i));
+        }
+    }
+}
+async function jupSwapOnce(inputMint, outputMint, rawAmount) {
     const quote = await axios.get('https://lite-api.jup.ag/swap/v1/quote', {
         params: { inputMint, outputMint, amount: rawAmount.toString(), slippageBps: 1000 }, timeout: 12000, // 10% (EP: "so your transaction doesn't hang") — tokens volatils, avant 3%
     });
@@ -187,7 +203,7 @@ const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqC
 
 async function sweepToken(mint) {
     const raw = await tokenBalanceRaw(mint);
-    if (raw <= 0n) return false;
+    if (raw <= DUST_RAW) return false;   // (2026-08-30) la poussière fait échouer Jupiter en boucle et masque les vrais échecs
     console.log(`  🧹 Sweep ${mint.slice(0, 8)}: ${raw} unités → SOL...`);
     try { await jupSwap(mint, SOL_MINT, raw); console.log('  ✅ sweep OK'); return true; }
     catch (e) { console.log(`  ⚠️ sweep échoué: ${String(e.message).slice(0, 60)}`); return false; }
@@ -206,7 +222,7 @@ async function sweepOrphans() {
         for (const acc of [...a.value, ...a2.value]) {
             const info = acc.account.data.parsed.info;
             if (info.mint === SOL_MINT) continue;
-            if (BigInt(info.tokenAmount.amount) > 0n) mints.add(info.mint);
+            if (BigInt(info.tokenAmount.amount) > DUST_RAW) mints.add(info.mint);   // (2026-08-30) ignorer la poussière
         }
         if (!mints.size) { console.log('🧹 sweep: aucun token orphelin'); return; }
         console.log(`🧹 sweep: ${mints.size} token(s) orphelin(s) à récupérer`);
@@ -469,9 +485,21 @@ async function closeVerified(pos) {
             // re-swap du token récupéré → SOL (sinon PnL faussé + poussière qui traîne)
             if (pos.tokenMint) {
                 try {
-                    const raw = await tokenBalanceRaw(pos.tokenMint);
-                    if (raw > 0n) { await jupSwap(pos.tokenMint, SOL_MINT, raw); console.log('  🔁 Token résiduel re-swappé en SOL'); }
-                } catch (e) { console.log(`  ⚠️ re-swap token→SOL échoué (${String(e.message).slice(0, 60)}) — résidu au wallet, PnL à corriger à la main`); }
+                    // (2026-08-30, cas GTA6 20/51 + STONK) Le solde était lu UNE fois, immédiatement après
+                    // la TX de fermeture — avant que le RPC ait indexé les tokens rendus. Il renvoyait donc
+                    // l'ancien solde (la poussière du close précédent, ~17 unités), le garde `> 0n` passait,
+                    // et le bot swappait 17 unités : Jupiter répondait 400 en 140 ms. Les milliers de vrais
+                    // tokens arrivaient une seconde plus tard et restaient au wallet — 0,41 SOL immobilisés.
+                    // On attend maintenant que le solde DÉPASSE la poussière, jusqu'à 8 tentatives (~20 s).
+                    let raw = 0n;
+                    for (let attempt = 0; attempt < 8; attempt++) {
+                        raw = await tokenBalanceRaw(pos.tokenMint);
+                        if (raw > DUST_RAW) break;
+                        await new Promise(r => setTimeout(r, 2500));
+                    }
+                    if (raw > DUST_RAW) { await jupSwap(pos.tokenMint, SOL_MINT, raw); console.log(`  🔁 Token résiduel re-swappé en SOL (${raw} unités)`); }
+                    else console.log(`  · pas de token à re-swapper (${raw} unités = poussière)`);
+                } catch (e) { console.log(`  ⚠️ re-swap token→SOL échoué (${String(e.message).slice(0, 60)}) — résidu au wallet, rattrapé au prochain sweep`); }
             }
             const proceedsSol = (await solBalance() - balBefore) / LAMPORTS_PER_SOL;
             return { ok: true, proceedsSol, closeValueSol };
