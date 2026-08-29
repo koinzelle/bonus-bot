@@ -172,6 +172,22 @@ const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
 // à 1 cas de chaque côté (cc sauvée / BULLSHIT coupée trop tôt) : pas de quoi maintenir un élargissement
 // du plancher contre l'observation directe du user. Repasser à -0.03 exige de nouvelles données.
 const RSI2_FLOOR_LP = 0;
+// ── DIVERGENCE PRIX ↔ LP (2026-08-29, cas BULLSHIT) ────────────────────────────────────────────────
+// Le prix vient des bougies Birdeye : GRATUIT et rafraîchi à chaque scan. La valeur LP vient d'Helius et
+// coûte des crédits, d'où les paliers de cadence (8s / 10s / 45s selon la proximité d'un trigger).
+// Trou constaté : une position en perte dort sur le palier 45s ; si le prix explose, personne ne relit
+// la valeur LP pendant ce temps et le sommet passe inaperçu.
+//   BULLSHIT, 29/08 : prix -7,6% → +30,7% → +14% en DEUX bougies d'une minute.
+//   16:01:04  le scan voit prix +15,6%, mais le dernier LP connu date de 16:00 et vaut -4%
+//   16:01:37  première relecture LP : +10,8% → armement → sortie à +9,5%
+//   Le sommet du prix (+30,7%, soit ~+18,7% de LP) est tombé dans la fenêtre d'aveuglement.
+//   Obtenu +0,0095 SOL ; le trail aurait sorti vers +17-18% de LP, soit ~+0,018 SOL.
+// Correctif : quand le PRIX prend de l'avance sur le dernier LP connu, c'est qu'un mouvement vient de
+// partir — on force une lecture LP immédiate et on passe la position en cadence rapide quelques minutes.
+// Coût quasi nul : ne se déclenche que sur un vrai pump, quelques fois par jour, exactement quand ça
+// rapporte. Ne peut pas se déclencher à la baisse (l'écart y est négatif : LP ≈ 0,86 × prix + 4,1).
+const PRICE_LP_DIVERGENCE = 0.08;        // le prix a ≥ 8 points d'avance sur le LP mémorisé
+const PRICE_HOT_MS = 3 * 60 * 1000;      // durée de la cadence rapide déclenchée
 const MAX_POSITIONS = 10;         // positions papier simultanées (8→10, 2026-08-10 ; EP : beaucoup de petites positions, pas all-in)
 // (2026-08-29, demande user) plafond DUR 5 → 8 positions réelles. Le plafond borne deux choses :
 //   · l'exposition : POSITION_SIZE_PCT (7%) × 8 = 56% du capital engagé simultanément — un crash
@@ -207,7 +223,7 @@ if (!state.stMult2Reset) { for (const w of Object.values(state.watch || {})) del
 if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})) { if (!state.positions?.[tok]) delete state.watch[tok]; } state.poolOriginResetV1 = true; }
 // (2026-08-27) `_closing` est persisté par save() : un verrou posé avant un crash/redeploy rendrait la
 // position définitivement infermable. On le purge au démarrage.
-for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; }
+for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; delete p._priceHotUntil; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 // ── SHADOW STATS PERSISTÉS (2026-07-29, demande user) : les mesures shadow étaient des console.log
@@ -771,7 +787,9 @@ async function batchedPositionValues() {
         const outTop = distTop < 0;                                  // sorti par le HAUT → banker vite
         const nearTop = (n) => distTop >= 0 && distTop <= n;         // approche du bord HAUT, encore dans la range
         let t;
-        if (pk >= TP_PCT || g >= 0.055 || outTop || nearTop(5)) t = 8000;   // trail armé · sur le point d'armer · hors-range HAUT · bord haut proche
+        // divergence prix↔LP détectée par le scan : un mouvement est en cours, on colle à la valeur
+        if (p._priceHotUntil && Date.now() < p._priceHotUntil) t = 8000;
+        else if (pk >= TP_PCT || g >= 0.055 || outTop || nearTop(5)) t = 8000;   // trail armé · sur le point d'armer · hors-range HAUT · bord haut proche
         else if (g >= 0.03 || nearTop(10)) t = 10000;
         // (2026-08-28) PALIER 15s « proche du pair » RETIRÉ après mesure. L'idée : `peakGain` n'enregistre
         // que ce qu'on VOIT, donc un pump rapide entre deux lectures rend le sommet invisible et le trail
@@ -1017,6 +1035,12 @@ async function scan() {
                 // #1 TP sur la VRAIE valeur LP (2026-08-04) : le prix ≠ gain LP sur un Bid-Ask (liquidité aux
                 // EXTRÊMES → un +9% au milieu capte ~0, cas CATE). En LIVE on lit positionValueSol (net
                 // fees+swaps) ; en paper on garde le prix (approx). On ne ferme que sur un gain LP RÉEL.
+                // DIVERGENCE PRIX↔LP : le prix (gratuit) a-t-il pris de l'avance sur la dernière valeur LP lue ?
+                if (pos.live && pos._lv && (gain - pos._lv.rg) >= PRICE_LP_DIVERGENCE) {
+                    pos._priceHotUntil = Date.now() + PRICE_HOT_MS;
+                    _batchLv.ts = 0;   // invalide le lot → la lecture juste en dessous sera FRAÎCHE
+                    console.log(`  ⚡ ${pos.symbol}: prix ${(gain * 100).toFixed(1)}% vs LP connu ${(pos._lv.rg * 100).toFixed(1)}% (écart ${((gain - pos._lv.rg) * 100).toFixed(1)} pts) → lecture LP forcée + cadence rapide ${PRICE_HOT_MS / 60000}min`);
+                }
                 let realGain = gain, liveBinId = null, lvSrc = 'prix';
                 if (pos.live && live.enabled && pos.live.openValueSol) {
                     const b = await batchedPositionValues();
