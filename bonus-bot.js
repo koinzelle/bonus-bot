@@ -167,7 +167,11 @@ const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
 // 1 déclenchement sur 17. Élargir davantage ne change rien (mesuré : -3% et -20% rattrapent les mêmes
 // positions) — donc -3%, le choix qui plafonne la perte.
 // N'affecte QUE le chemin non-armé : au-dessus de +6% de peak, c'est le trail qui commande, inchangé.
-const RSI2_FLOOR_LP = -0.03;
+// REVERT 29/08 (décision user) : remis à 0 après le 1er déclenchement réel — BULLSHIT sortie à LP -2,9%
+// (PnL réel -0,004 SOL) alors qu'elle est remontée à ~-0,3% de LP dans la demi-heure. Le pari en restait
+// à 1 cas de chaque côté (cc sauvée / BULLSHIT coupée trop tôt) : pas de quoi maintenir un élargissement
+// du plancher contre l'observation directe du user. Repasser à -0.03 exige de nouvelles données.
+const RSI2_FLOOR_LP = 0;
 const MAX_POSITIONS = 10;         // positions papier simultanées (8→10, 2026-08-10 ; EP : beaucoup de petites positions, pas all-in)
 const MAX_LIVE_POSITIONS = Math.min(5, parseInt(process.env.MAX_LIVE_POSITIONS || '5', 10)); // (2026-08-26) plafond DUR 5 positions réelles (demande user ; borne aussi la charge RPC/scan = crédits Helius)
 // Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
