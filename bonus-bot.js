@@ -51,7 +51,7 @@ try { live = require('./bonus-live'); } catch (e) { console.log('⚠️ bonus-li
 if (live.enabled) {
     // (2026-08-27) annonçait `MAX_LIVE_POSITIONS || '10'` alors que le code force Math.min(5, …) → le log
     // disait 10, le bot en ouvrait 5. On affiche la valeur RÉELLE.
-    console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_PCT || '?'}% capital | max ${Math.min(5, parseInt(process.env.MAX_LIVE_POSITIONS || '5', 10))} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
+    console.log(`🟢 LIVE ACTIVÉ — exécution réelle armée | taille ${process.env.POSITION_SIZE_PCT || '?'}% capital | max ${Math.min(8, parseInt(process.env.MAX_LIVE_POSITIONS || '8', 10))} position(s) réelle(s) | DATA_DIR=${process.env.DATA_DIR || 'éphémère ⚠️'}`);
     if (live.sweepOrphans) live.sweepOrphans().catch(e => console.log('⚠️ sweep démarrage:', String(e.message).slice(0, 60)));
 } else console.log('🧪 Mode PAPER (LIVE≠1 ou bonus-live KO) — aucun ordre réel');
 
@@ -173,7 +173,13 @@ const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
 // du plancher contre l'observation directe du user. Repasser à -0.03 exige de nouvelles données.
 const RSI2_FLOOR_LP = 0;
 const MAX_POSITIONS = 10;         // positions papier simultanées (8→10, 2026-08-10 ; EP : beaucoup de petites positions, pas all-in)
-const MAX_LIVE_POSITIONS = Math.min(5, parseInt(process.env.MAX_LIVE_POSITIONS || '5', 10)); // (2026-08-26) plafond DUR 5 positions réelles (demande user ; borne aussi la charge RPC/scan = crédits Helius)
+// (2026-08-29, demande user) plafond DUR 5 → 8 positions réelles. Le plafond borne deux choses :
+//   · l'exposition : POSITION_SIZE_PCT (7%) × 8 = 56% du capital engagé simultanément — un crash
+//     memecoin corrélé peut faire plusieurs CUT -55% ensemble ;
+//   · la charge RPC : la lecture par clé coûte ~3 appels par position et par cycle, donc le poste
+//     « lecture de positions » des crédits Helius croît linéairement avec ce nombre.
+// Réglable sans redéploiement via la variable MAX_LIVE_POSITIONS (bornée à 8).
+const MAX_LIVE_POSITIONS = Math.min(8, parseInt(process.env.MAX_LIVE_POSITIONS || '8', 10));
 // Scan 30s avec ticks alternés (2026-07-19, demande user) : 1 tick sur 2 = scan COMPLET (découverte +
 // tous les tokens, comme avant à 60s) ; l'autre tick = UNIQUEMENT les tokens "chauds" (4/5 conditions,
 // il ne manque que le retracement vers la ST) + positions ouvertes (TP/SL 2× plus réactifs). Le prix
