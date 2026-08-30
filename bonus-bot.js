@@ -169,7 +169,17 @@ const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener e
 // deux meilleurs (+0,0058) — la seule idée de la semaine dans ce cas.
 // Réserves : n=11, et le plancher coûte 20 points de plus le jour où un token part vraiment à zéro
 // (jamais arrivé sur ces 11). Revenir en arrière = remettre BOUNCE_ARM à 0.75 (le plancher devient le CUT).
-const RANGE_DOWN = 0.55;   // seuil d'ARMEMENT de l'attente du rebond (ex-CUT sec, backtest 19/08)
+// SEUIL D'ARMEMENT 0,55 → 0,30 (2026-08-30). Balayage sur 56 positions avec trajectoire LP+RSI2 réelle,
+// pas de 5 puis de 3 points. -30% n'est pas le maximum d'une courbe (elle oscille entre -9% et -27%,
+// donc bruitée) mais une FRONTIÈRE : c'est le seuil le plus profond qui attrape encore les 3 CUT de la
+// fenêtre, ET le plus haut qui n'ampute AUCUN gagnant.
+//   -27%  →  1 gagnant amputé,  3 CUT attrapés
+//   -30%  →  0 gagnant amputé,  3 CUT attrapés   ← les deux conditions tenues, +0,0585 SOL
+//   -33%  →  0 gagnant amputé,  1 CUT attrapé    ← falaise, deux tiers du bénéfice perdus
+// Corroboré par une mesure indépendante de la session : sur les positions qui touchent -25/-30% de LP,
+// AUCUNE ne finit dans le vert (contre 50% à -20%). On n'ampute donc rien en armant là.
+// Réserve : seules 3 positions concernées, la falaise tient à une seule d'entre elles. Revert = 0.55.
+const RANGE_DOWN = 0.30;   // seuil d'ARMEMENT de l'attente du rebond
 const CUT_HARD = 0.75;     // plancher DUR : on ferme quoi qu'il arrive (anti-rug)
 const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
 const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
