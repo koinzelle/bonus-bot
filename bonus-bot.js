@@ -296,7 +296,23 @@ let gtScan = 0;
 // BASSE : sur fone, le bot déposait dans une pool à 4,3 de volume/TVL alors qu'une autre était à 13,6.
 // Les 16,3% qui qualifiaient fone n'étaient donc pas le rendement réellement touché.
 let feeTvlMap = new Map(); // mint -> { ratio, pool } (meilleur fees/TVL 24h, rafraîchi à chaque découverte)
-const FEE_TVL_FLOOR = 5;   // % : on n'ENTRE que sur des pools qui génèrent des fees (≥5%) — cas Jimothy 0.15% = LP mort
+// PLANCHER FEES/TVL 5 → 3 (2026-08-30). Ce plancher définit l'univers tradable ENTIER : le bot n'entre
+// que sur les mints présents dans la liste datapi des pools au-dessus de ce seuil.
+//   27/08 :  46 pools / 27 mints à ≥5%
+//   30/08 :  18 pools / 15 mints à ≥5%   →  univers divisé par 2 en trois jours
+//   30/08 :  41 pools / 29 mints à ≥3%   →  retour au niveau du 27/08
+// C'est devenu le premier blocage (13,1 near-miss/h) et la cause de la chute à 6 trades/jour — pas une
+// régression du bot : découverte plus saine qu'hier, aucun gate durci, 1 position sur 8, watch 27/35.
+// Ce que la note du 15/08 avançait pour garder 5% — « baisser diluerait l'edge, les fees font 67% du
+// PnL » — prédit un gradient de rendement. Mesuré sur 173 trades réels, ce gradient N'EXISTE PAS :
+//   5-8%  n=54 moy +0,0020 méd +0,0031   ·   8-12% n=30 moy +0,0071 méd +0,0043
+//   12-20% n=36 moy +0,0026 méd +0,0033  ·   20-40% n=23 moy -0,0009 méd +0,0033
+//   ≥40%  n=30 moy +0,0024 méd +0,0046   ·   corrélation feeTvl↔PnL : r = -0,012
+// Un token à 40% ne rapporte pas plus qu'un à 6%. Réserve honnête : aucun trade sous 5% n'existe (le
+// plancher les bloquait tous), donc l'absence de gradient AU-DESSUS de 5% ne prouve pas que 3-5% vaut
+// autant — c'est ce que cette bascule va mesurer. `feeTvl` étant enregistré sur chaque trade, la bande
+// 3-5% sera isolable : après 20-30 trades on tranchera. Revert instantané : FEE_TVL_FLOOR=5 sur Railway.
+const FEE_TVL_FLOOR = parseFloat(process.env.FEE_TVL_FLOOR || '3');   // % fees/TVL 24h exigé pour ENTRER
 async function gtTrending() {
     // Priorité TRENDING (2026-07-19, demande user) : comme bot 1, la découverte lit les pools trending
     // GeckoTerminal (24h + 1h) à CHAQUE scan — new_pools seulement 1 scan sur 3, en fin de liste
@@ -1721,7 +1737,7 @@ http.createServer((req, res) => {
         mode: live.enabled ? 'LIVE' : 'PAPER',
         maxLivePositions: MAX_LIVE_POSITIONS, maxPaperPositions: MAX_POSITIONS,
         exitTuning: { armPct: TP_PCT * 100, trailPct: TRAIL * 100, bounceArmPct: RANGE_DOWN * 100, cutHardPct: CUT_HARD * 100, rsi2FloorLpPct: RSI2_FLOOR_LP * 100 },
-        entryTuning: { rsiMax: 50, mourantTtl: MOURANT_TTL_H > 0 ? MOURANT_TTL_H + 'h' : 'à vie', atrEntry: ATR_ENTRY, atrK: ATR_K },
+        entryTuning: { feeTvlFloor: FEE_TVL_FLOOR, rsiMax: 50, mourantTtl: MOURANT_TTL_H > 0 ? MOURANT_TTL_H + 'h' : 'à vie', atrEntry: ATR_ENTRY, atrK: ATR_K },
         updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
         trades: state.trades.length,
