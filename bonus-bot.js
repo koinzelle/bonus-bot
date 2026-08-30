@@ -266,7 +266,12 @@ async function tg(msg) {
 
 // ── Data ──────────────────────────────────────────────────────
 let gtScan = 0;
-let feeTvlMap = new Map(); // mint -> meilleur fees/TVL 24h (rafraîchi à chaque découverte) — plancher d'entrée
+// (2026-08-30) La map garde désormais { ratio, pool } et plus seulement le ratio. La datapi Meteora nous
+// dit DÉJÀ quelle pool du token a le meilleur rendement fees/TVL — c'est ce chiffre qui qualifie le token
+// à l'entrée. Or `findMeteoraPool` l'ignorait et redécouvrait les pools on-chain en prenant la fee la plus
+// BASSE : sur fone, le bot déposait dans une pool à 4,3 de volume/TVL alors qu'une autre était à 13,6.
+// Les 16,3% qui qualifiaient fone n'étaient donc pas le rendement réellement touché.
+let feeTvlMap = new Map(); // mint -> { ratio, pool } (meilleur fees/TVL 24h, rafraîchi à chaque découverte)
 const FEE_TVL_FLOOR = 5;   // % : on n'ENTRE que sur des pools qui génèrent des fees (≥5%) — cas Jimothy 0.15% = LP mort
 async function gtTrending() {
     // Priorité TRENDING (2026-07-19, demande user) : comme bot 1, la découverte lit les pools trending
@@ -352,7 +357,8 @@ async function gtTrending() {
             const xm = p.token_x && p.token_x.address, ym = p.token_y && p.token_y.address;
             const tok = (xm === SOLM || xm === USDC) ? ym : (ym === SOLM || ym === USDC) ? xm : xm; // côté non-SOL/USDC
             if (!tok || tok === SOLM || tok === USDC) continue;
-            nm.set(tok, Math.max(nm.get(tok) || 0, ratio)); // map mint → meilleur fees/TVL (plancher + tri d'entrée)
+            const prev = nm.get(tok);
+            if (!prev || ratio > prev.ratio) nm.set(tok, { ratio, pool: p.address || null }); // meilleur fees/TVL + SA pool
             if (!seen.has(tok)) { seen.add(tok); out.push({ tok, gtPool: null }); added++; } // ces coins = les vraies machines à fees
         }
         if (nm.size) feeTvlMap = nm; // remplace seulement si succès (persiste sur un hoquet datapi → pas de faux blocage)
@@ -1304,7 +1310,7 @@ async function scan() {
             }
             // PLANCHER FEES/TVL (2026-08-10, cas Jimothy 0.15%) : n'entrer QUE sur des pools qui génèrent des
             // fees (≥5% fees/TVL 24h via la map découverte). Fail-open si map vide (hoquet datapi → pas de blocage).
-            const feeTvl = feeTvlMap.get(tok) || 0;
+            const feeTvl = (feeTvlMap.get(tok) || {}).ratio || 0;
             const feesOk = feeTvlMap.size === 0 || feeTvl >= FEE_TVL_FLOOR;
             w.hot = !!(armed && mcOk && chopOk);                     // "chaud" = choppy + armé
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
@@ -1375,7 +1381,7 @@ async function scan() {
                         // meteoraOk=false et bloquait l'entrée — y compris PAPIER — pendant 30 min. Désormais
                         // on ne mémorise que les vraies réponses ; sur erreur on laisse passer (l'ouverture
                         // live échouera proprement en "papier seulement" si la pool manque vraiment).
-                        try { w.meteoraOk = !!(await live.findMeteoraPool(tok)); w.meteoraCheckedAt = now; }
+                        try { w.meteoraOk = !!(await live.findMeteoraPool(tok, (feeTvlMap.get(tok) || {}).pool)); w.meteoraCheckedAt = now; }
                         catch (e) { w.meteoraOk = null; w.meteoraCheckedAt = 0; console.log(`  ⚠️ findMeteoraPool ${w.symbol} KO (${String(e.message).slice(0, 50)}) — non mémorisé`); }
                     }
                     if (w.meteoraOk === false) { state.blockCount['no-pool-meteora'] = (state.blockCount['no-pool-meteora'] || 0) + 1; continue; }
@@ -1402,7 +1408,7 @@ async function scan() {
                     console.log(`  ⏸️ LIVE: ${liveOpenCount}/${MAX_LIVE_POSITIONS} position(s) réelle(s) déjà ouverte(s) — ${w.symbol} en papier seulement`);
                 } else if (live.enabled) {
                     try {
-                        const poolAddr = await live.findMeteoraPool(tok);
+                        const poolAddr = await live.findMeteoraPool(tok, (feeTvlMap.get(tok) || {}).pool);   // (2026-08-30) préfère la pool que la datapi a désignée comme la plus rémunératrice
                         if (poolAddr) {
                             const lp = await live.openBidAsk(poolAddr);
                             if (lp) { state.positions[tok].live = lp; save(); tg(`${msg}\n🟢 RÉEL ouvert: ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); } // notif Telegram = uniquement l'entrée RÉELLE (avec tous les détails)

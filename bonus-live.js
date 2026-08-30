@@ -106,7 +106,7 @@ const OK_BIN_STEPS = [80, 100, 125, 160, 200, 250]; // canonique EP = 100 (préf
 // Trouve la meilleure pool DLMM token/SOL : bin step 100 d'abord, puis base fee la plus haute,
 // puis réserve SOL la plus profonde. Retourne l'adresse (string) ou null.
 const _poolCache = new Map(); // (2026-08-26) tokenAddress -> { addr, ts } : évite de refaire 2× getProgramAccounts (gros drain RPC Helius) pour un même mint
-async function findMeteoraPool(tokenAddress) {
+async function findMeteoraPool(tokenAddress, preferredPool) {
     const _pc = _poolCache.get(tokenAddress);
     if (_pc && Date.now() - _pc.ts < 30 * 60 * 1000) return _pc.addr;
     const programId = new PublicKey(DLMM_PROGRAM_ID);
@@ -142,8 +142,19 @@ async function findMeteoraPool(tokenAddress) {
     // (viable ≥0.5%), puis la plus PROFONDE (volume), puis bin step 100 canonique. (L'ancien "5% d'abord"
     // = bot 1 classique / harvest range large — PAS le scalp bonus stage.)
     candidates.sort((a, b) => a.baseFeePct - b.baseFeePct || b.reserveSol - a.reserveSol || (b.binStep === 100) - (a.binStep === 100));
-    const best = candidates[0];
-    console.log(`  🏆 Pool: ${best.addr.slice(0, 8)}... | bin step ${best.binStep} | fee ${best.baseFeePct}% | réserve ${best.reserveSol.toFixed(1)} SOL`);
+    // (2026-08-30) POOL DÉSIGNÉE PAR LA DATAPI. Le tri ci-dessus prend la fee la plus BASSE — un choix du
+    // 04/08 qui ignore complètement le VOLUME traversant, donc le rendement réel. La datapi a déjà classé
+    // les pools du token par fees/TVL 24h et c'est ce chiffre qui qualifie le token à l'entrée : on utilise
+    // donc la même pool pour y déposer. Cas fone : pool choisie 4,3 de volume/TVL contre 13,6 disponible.
+    // Sécurité : on ne la retient QUE si elle a passé tous les contrôles de viabilité ci-dessus (SOL en Y,
+    // bin step admis, fee ≥ 0,5%, réserve ≥ 20 SOL). Sinon on retombe sur le tri historique.
+    const wanted = preferredPool ? candidates.find(c => c.addr === preferredPool) : null;
+    const best = wanted || candidates[0];
+    if (preferredPool && !wanted) console.log(`  · pool datapi ${String(preferredPool).slice(0, 8)} non viable (filtrée) — repli sur le tri fee`);
+    // SHADOW (2026-08-30) : on logge TOUTES les pools viables pour pouvoir comparer, dans quelques semaines,
+    // « la pool choisie » à « la meilleure disponible ». Les candidates sont déjà toutes évaluées : coût nul.
+    console.log(`  🔬 [SHADOW pools] ${tokenAddress.slice(0, 8)} → ${candidates.map(c => `${c.addr.slice(0, 6)}(bs${c.binStep},fee${c.baseFeePct}%,${c.reserveSol.toFixed(0)}SOL)${c.addr === best.addr ? '*' : ''}`).join(' ')}`);
+    console.log(`  🏆 Pool: ${best.addr.slice(0, 8)}... | bin step ${best.binStep} | fee ${best.baseFeePct}% | réserve ${best.reserveSol.toFixed(1)} SOL${wanted ? ' | désignée par fees/TVL datapi' : ''}`);
     _poolCache.set(tokenAddress, { addr: best.addr, ts: Date.now() });
     return best.addr;
 }
