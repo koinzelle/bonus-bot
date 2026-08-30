@@ -1430,6 +1430,14 @@ async function scan() {
                     // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
                     dumpDepthPct: pInfo.dumpDepthPct ?? null, entryMcK: Math.round(curMc / 1000), trueAthMc: Math.round(trueAth * w.supply), pctOfTrueAth: trueAth > 0 ? +((ath / trueAth) * 100).toFixed(0) : null, vol24hK: w.vol ? Math.round(w.vol / 1000) : null,
                     athBreaks: w.athBreaks || 0, feeTvl: +feeTvl.toFixed(1),  // (2026-08-17) analyse cap-ATH/fees par trade sans reconstruire
+                    // (2026-08-30) La SuperTrend était calculée à l'entrée puis JETÉE — il fallait la
+                    // reconstruire depuis les bougies pour l'analyser. Mesuré sur 83 trades de gros coins :
+                    // ST verte +0,0027/trade contre +0,0009 en rouge, et la distance à la ligne passe de
+                    // +11% (au-dessus du support) à -11% (rien en dessous). On l'enregistre désormais.
+                    stTrend: prevSt ? (prevSt.trend === 1 ? 'vert' : 'rouge') : null,
+                    stDistPct: (line > 0) ? +(((curPrice / line) - 1) * 100).toFixed(1) : null,
+                    stTrendHtf: (() => { const h = superTrend(ms); return h.length >= 2 ? (h[h.length - 2].trend === 1 ? 'vert' : 'rouge') : null; })(),
+                    htfLabel: ms === cs ? '15m' : (ageH >= 720 ? 'daily' : '1H'),
                     downtrendEntry: downtrend, established };  // established (MC≥5M) → exit régime doux (15m, TP bas)
                 save();
                 if (downtrend) { console.log(`  · [SHADOW downtrend] ${w.symbol} : entrée en LOWER-HIGHS (haut récent -${((1 - recentHigh12 / priorHigh12) * 100).toFixed(0)}% vs avant) — mesure, on juge l'issue (dead-cat ?)`); recordShadow('downtrend', { symbol: w.symbol, dropHighPct: +((1 - recentHigh12 / priorHigh12) * 100).toFixed(0) }); }
@@ -1527,6 +1535,10 @@ async function closePaper(tok, pos, exitPrice, reason) {
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         drawdownPct: pos.drawdownPct ?? null, dumpDepthPct: pos.dumpDepthPct ?? null, entryMcK: pos.entryMcK ?? null, trueAthMc: pos.trueAthMc ?? null, pctOfTrueAth: pos.pctOfTrueAth ?? null, vol24hK: pos.vol24hK ?? null, downtrendEntry: pos.downtrendEntry ?? null,
         athBreaks: pos.athBreaks ?? null, feeTvl: pos.feeTvl ?? null, peakGainPct: pos.peakGain != null ? +(pos.peakGain * 100).toFixed(1) : null, // (2026-08-19) comble le trou + peak pour lire la trajectoire
+        // (2026-08-30) champs calculés à l'entrée puis perdus : SuperTrend 15m + HTF, distance à la ligne,
+        // et `established` (le régime de sortie 5m/15m) qui n'était nulle part dans le trade.
+        stTrend: pos.stTrend ?? null, stDistPct: pos.stDistPct ?? null, stTrendHtf: pos.stTrendHtf ?? null, htfLabel: pos.htfLabel ?? null,
+        established: pos.established ?? null,
         lvHist: pos._lvHist || null, // trajectoire valeur LP (lp%, bin, ts) → trous = 429, décroissance lisse = mécanique LP
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
