@@ -156,7 +156,21 @@ const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener e
 // ── SEUILS DE SORTIE — SOURCE UNIQUE (2026-08-27) : ils étaient dupliqués dans 3 endroits (scan, chemin
 // bougies-KO, boucle rapide) et avaient DIVERGÉ (le chemin bougies-KO coupait encore à -35% alors que le
 // backtest du 19/08 a validé -55% partout). Une seule définition = plus de dérive possible.
-const RANGE_DOWN = 0.55;   // CUT hors-range bas (backtest 19/08 : -35% coupait trop tôt, +121% en faveur de tenir)
+// ── SORTIE PROFONDE : ATTENDRE LE REBOND (2026-08-30) ───────────────────────────────────────────────
+// Le CUT à -55% vendait systématiquement le creux du flush. Mesuré sur les 11 derniers CUT réels :
+//   · 11/11 ont touché RSI2 > 90 APRÈS notre sortie, entre 28 et 233 minutes plus tard ;
+//   · le prix est remonté après le CUT dans 11 cas sur 11 ;
+//   · MAIS la sortie RSI2 exigeait `LP > 0`, ce qui demande un prix ×2,22 (LP = 0,45 × ratio − 1) :
+//     une position tenue après -55% n'avait donc AUCUNE sortie et squattait un slot indéfiniment.
+// Nouvelle règle : à -55% on n'ferme plus, on ARME l'attente du rebond, et on sort au premier RSI2 > 90
+// quel que soit le signe du LP. Un plancher dur à -75% reprend le rôle anti-rug.
+// Rejeu sur les 11 CUT : -0,4132 → -0,3407 SOL, soit +0,0725. Pire sur 3 seulement (-0,0017 / -0,0019 /
+// -0,0136), meilleur sur 6 (jusqu'à +0,0413). Survit au retrait de son meilleur trade (+0,0312) et de ses
+// deux meilleurs (+0,0058) — la seule idée de la semaine dans ce cas.
+// Réserves : n=11, et le plancher coûte 20 points de plus le jour où un token part vraiment à zéro
+// (jamais arrivé sur ces 11). Revenir en arrière = remettre BOUNCE_ARM à 0.75 (le plancher devient le CUT).
+const RANGE_DOWN = 0.55;   // seuil d'ARMEMENT de l'attente du rebond (ex-CUT sec, backtest 19/08)
+const CUT_HARD = 0.75;     // plancher DUR : on ferme quoi qu'il arrive (anti-rug)
 const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
 const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
 // PLANCHER RSI2 ÉLARGI À -3% (2026-08-28, idée user, mesuré sur les trajectoires LP réelles) ────────────
@@ -959,7 +973,8 @@ async function scan() {
                                 if (r.activeBinId != null && posO.live.upperBinId != null && r.activeBinId > posO.live.upperBinId) { await closePaper(tok, posO, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, bougies KO)`); continue; }
                                 if (armedO && rg <= posO.peakGain - TRAIL) { await closePaper(tok, posO, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(posO.peakGain * 100).toFixed(1)}%, bougies KO)`); continue; }
                                 // (2026-08-27) était -0.35 en dur ici alors que tout le reste est à -55% depuis le 19/08
-                                if (rg <= -RANGE_DOWN) { await closePaper(tok, posO, exitPx, `CUT valeur LP ${(rg * 100).toFixed(1)}% (≤ -${(RANGE_DOWN * 100).toFixed(0)}% hors-range, bougies KO)`); continue; }
+                                if (rg <= -RANGE_DOWN && !posO._awaitBounce) { posO._awaitBounce = true; console.log(`  ⏳ ${posO.symbol}: -${(RANGE_DOWN * 100).toFixed(0)}% franchi (bougies KO) → attente du rebond`); }
+                                if (rg <= -CUT_HARD) { await closePaper(tok, posO, exitPx, `CUT PLANCHER ${(rg * 100).toFixed(1)}% LP (≤ -${(CUT_HARD * 100).toFixed(0)}%, bougies KO)`); continue; }
                             }
                         } catch (_) { /* valeur live KO aussi → rien à faire, on garde la position */ }
                     }
@@ -1075,8 +1090,17 @@ async function scan() {
                 }
 
                 // CUT HORS-RANGE : prix sorti par le bas du ±34 → close (plus de fees hors range).
-                if (dropFromEntry >= RANGE_DOWN) {
-                    await closePaper(tok, pos, px, `CUT hors-range (-${(dropFromEntry * 100).toFixed(0)}%, sorti du ±34)`);
+                // ATTENTE DU REBOND (2026-08-30) : à -55% on n'ferme plus, on arme ; la sortie se fera au
+                // premier RSI2>90 quel que soit le signe (plus bas dans cette même fonction).
+                const deepDown = dropFromEntry >= RANGE_DOWN || realGain <= -RANGE_DOWN;
+                if (deepDown && !pos._awaitBounce) {
+                    pos._awaitBounce = true; save();
+                    console.log(`  ⏳ ${pos.symbol}: seuil -${(RANGE_DOWN * 100).toFixed(0)}% franchi (LP ${(realGain * 100).toFixed(1)}%) → attente du rebond, sortie au 1er RSI2>90 · plancher dur -${(CUT_HARD * 100).toFixed(0)}%`);
+                    tg(`⏳ ${pos.symbol}: -${(RANGE_DOWN * 100).toFixed(0)}% franchi — le bot attend le rebond (RSI2>90) au lieu de couper. Plancher -${(CUT_HARD * 100).toFixed(0)}%.`);
+                }
+                // PLANCHER DUR : au-delà, on ferme sans condition (anti-rug)
+                if (dropFromEntry >= CUT_HARD || realGain <= -CUT_HARD) {
+                    await closePaper(tok, pos, px, `CUT PLANCHER ${(realGain * 100).toFixed(1)}% LP (≤ -${(CUT_HARD * 100).toFixed(0)}%)`);
                     continue;
                 }
 
@@ -1114,13 +1138,15 @@ async function scan() {
 
                 // RSI2>90 = scalp au top quand pas encore armé → reste sur bougie CLÔTURÉE (le RSI en a besoin).
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
-                if (!armed && candleAfterEntry) {
+                if ((!armed || pos._awaitBounce) && candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
-                    if (rsi2 != null && rsi2 > 90 && realGain > RSI2_FLOOR_LP) {
+                    // en attente de rebond, le RSI2>90 sort QUEL QUE SOIT le signe : c'est la seule issue
+                    // d'une position profondément négative (LP>0 exigerait un prix ×2,22).
+                    if (rsi2 != null && rsi2 > 90 && (pos._awaitBounce || realGain > RSI2_FLOOR_LP)) {
                         // (2026-08-24) RSI2 = PLANCHER quand pas armé (< +6% LP). Sort les positions molles DANS LE
                         // VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue (cc
                         // aurait fermé +1.2%, s'est retrouvé -11.5% live). Au-dessus de l'arm, le trail ride les runners.
-                        await closePaper(tok, pos, px, `RSI2 ${rsi2.toFixed(0)}>90 (LP ${realGain >= 0 ? '+' : ''}${(realGain * 100).toFixed(1)}%)`);
+                        await closePaper(tok, pos, px, `${pos._awaitBounce ? 'REBOND ' : ''}RSI2 ${rsi2.toFixed(0)}>90 (LP ${realGain >= 0 ? '+' : ''}${(realGain * 100).toFixed(1)}%)`);
                         continue;
                     }
                 }
@@ -1672,7 +1698,7 @@ http.createServer((req, res) => {
         // savoir depuis /status si le bot passe de vrais ordres.
         mode: live.enabled ? 'LIVE' : 'PAPER',
         maxLivePositions: MAX_LIVE_POSITIONS, maxPaperPositions: MAX_POSITIONS,
-        exitTuning: { armPct: TP_PCT * 100, trailPct: TRAIL * 100, cutPct: RANGE_DOWN * 100, rsi2FloorLpPct: RSI2_FLOOR_LP * 100 },
+        exitTuning: { armPct: TP_PCT * 100, trailPct: TRAIL * 100, bounceArmPct: RANGE_DOWN * 100, cutHardPct: CUT_HARD * 100, rsi2FloorLpPct: RSI2_FLOOR_LP * 100 },
         entryTuning: { rsiMax: 50, mourantTtl: MOURANT_TTL_H > 0 ? MOURANT_TTL_H + 'h' : 'à vie', atrEntry: ATR_ENTRY, atrK: ATR_K },
         updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
@@ -1728,8 +1754,11 @@ async function fastPositionCheck() {
                 await closePaper(tok, pos, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, rapide)`);
             } else if (armed && rg <= pos.peakGain - TRAIL) {
                 await closePaper(tok, pos, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(pos.peakGain * 100).toFixed(1)}%, rapide)`);
-            } else if (rg <= -RANGE_DOWN) {
-                await closePaper(tok, pos, exitPx, `CUT valeur LP ${(rg * 100).toFixed(1)}% (≤ -${(RANGE_DOWN * 100).toFixed(0)}%, rapide)`);
+            } else if (rg <= -CUT_HARD) {
+                await closePaper(tok, pos, exitPx, `CUT PLANCHER ${(rg * 100).toFixed(1)}% LP (≤ -${(CUT_HARD * 100).toFixed(0)}%, rapide)`);
+            } else if (rg <= -RANGE_DOWN && !pos._awaitBounce) {
+                pos._awaitBounce = true; save();   // la boucle rapide n'a pas le RSI2 : elle arme, le scan sortira
+                console.log(`  ⏳ ${pos.symbol}: seuil -${(RANGE_DOWN * 100).toFixed(0)}% franchi (LP ${(rg * 100).toFixed(1)}%, rapide) → attente du rebond`);
             }
         }
     } catch (e) { console.log('⚠️ fast pos check:', String(e.message).slice(0, 80)); }
