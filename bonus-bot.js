@@ -1430,6 +1430,26 @@ async function scan() {
                 recordShadow('rebondRSI80', { symbol: w.symbol, tok, price: curPrice, rsi2: +rsiEntry.toFixed(0),
                     dumpPct: +(dumpedFromHigh * 100).toFixed(1), feeTvl: +feeTvl.toFixed(1), curMcK: Math.round(curMc / 1000) });
             }
+            // SHADOW SEUIL D'ENTRÉE 25% (2026-08-31) — le trou que ni le backtest ni les trades ne comblent.
+            // Les petits coins (MC<5M) exigent un dip de -35% sous le haut 6h, les établis seulement -12%.
+            // Conséquence mesurée sur la watch : 50% des gros sont en état ENTRÉE contre 11% des petits,
+            // alors que la watch contient 18 petits pour 10 gros. Le backtest dit qu'un seuil à -25%
+            // ajouterait 113 trades à +6,64% de moyenne (robuste : encore +1,16% en retirant les 10
+            // meilleurs). MAIS la vérification sur les 413 trades RÉELS ne retrouve pas cet effet :
+            // corrélation dip↔PnL = -0,073, médianes plates. Et surtout elle ne peut RIEN dire de la bande
+            // 25-35% : aucun trade n'y existe, le seuil les a tous bloqués.
+            // On enregistre donc chaque petit coin qui franchit -25% en passant TOUS les autres gates —
+            // c'est exactement la population que le changement ajouterait. Dans une semaine on saura ce
+            // qu'ils sont devenus, sur du forward réel au lieu d'un proxy-prix. 1 record/token/heure.
+            if (!established && !atDip && dumpedFromHigh >= 0.25 && armed && mcOk && ageH >= AGE_MIN_H && patOk
+                && chopOk && rsiLow && canReenter && feesOk && ((w.athBreaks || 0) < 4 || curMc >= 1_500_000)
+                && !explosif && !onCooldown && !state.positions[tok]
+                && (!w._dip25At || now - w._dip25At > 3600e3)) {
+                w._dip25At = now;
+                console.log(`  🔬 [SHADOW dip25] ${w.symbol}: -${(dumpedFromHigh * 100).toFixed(0)}% sous le haut 6h (seuil actuel 35%) — passerait TOUS les autres gates | MC $${Math.round(curMc / 1000)}k · RSI2 ${rsiEntry != null ? rsiEntry.toFixed(0) : '?'} · feeTvl ${feeTvl.toFixed(0)}%`);
+                recordShadow('dip25', { symbol: w.symbol, tok, price: curPrice, dumpPct: +(dumpedFromHigh * 100).toFixed(1),
+                    curMcK: Math.round(curMc / 1000), feeTvl: +feeTvl.toFixed(1), rsi2: rsiEntry != null ? +rsiEntry.toFixed(0) : null });
+            }
             if (atDip && rsiLow && block && block.startsWith('ATH-épuisé') && !state.positions[tok] && !w.athShadowLogged) {
                 w.athShadowLogged = true;
                 recordShadow('athEpuise', { symbol: w.symbol, tok, price: curPrice, athBreaks: w.athBreaks || 0, curMcK: Math.round(curMc / 1000), feeTvl: +feeTvl.toFixed(1), dumpPct: +(dumpedFromHigh * 100).toFixed(0) });
