@@ -179,7 +179,19 @@ const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener e
 // Corroboré par une mesure indépendante de la session : sur les positions qui touchent -25/-30% de LP,
 // AUCUNE ne finit dans le vert (contre 50% à -20%). On n'ampute donc rien en armant là.
 // Réserve : seules 3 positions concernées, la falaise tient à une seule d'entre elles. Revert = 0.55.
-const RANGE_DOWN = 0.30;   // seuil d'ARMEMENT de l'attente du rebond
+// ⚠️ REVERT 31/08 : 0.30 → 0.55. Armé à -30%, la règle a réalisé des pertes sur des positions qui
+// n'allaient PAS mourir. Deux cas en 24h, vérifiés sur les bougies post-sortie :
+//   TOAD   sorti à LP -18,3% (-0,0183 SOL) · si tenu : max -11%, actuel -22% · min -32% → l'ancien
+//          CUT -55% n'aurait JAMAIS tapé
+//   Morty  sorti à LP -32,1% (-0,0318 SOL) · si tenu : max -15%, actuel -28% · min -40% → idem
+// 0,050 SOL de pertes réalisées sur deux positions qui seraient restées de simples moins-values latentes.
+// Erreur de méthode à retenir : le balayage qui donnait -30% portait sur 3 positions, et toutes les
+// trajectoires disponibles S'ARRÊTAIENT À LEUR CLÔTURE RÉELLE — je ne voyais donc que les positions
+// allées jusqu'au CUT. Celles qui plongent à -30% puis se stabilisent sans mourir étaient INVISIBLES
+// dans l'échantillon : la règle a été validée sur la population qu'elle n'affecte pas.
+// Le mécanisme du rebond reste valable, lui : mesuré sur les 11 vrais CUT (-0,4132 → -0,3407), là où la
+// position allait être fermée de toute façon. Seul le seuil d'armement était faux.
+const RANGE_DOWN = 0.55;   // seuil d'ARMEMENT de l'attente du rebond
 const CUT_HARD = 0.75;     // plancher DUR : on ferme quoi qu'il arrive (anti-rug)
 const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
 const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
