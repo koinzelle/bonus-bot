@@ -1502,7 +1502,11 @@ async function scan() {
                     try {
                         const poolAddr = await live.findMeteoraPool(tok, (feeTvlMap.get(tok) || {}).pool);   // (2026-08-30) préfère la pool que la datapi a désignée comme la plus rémunératrice
                         if (poolAddr) {
-                            const lp = await live.openBidAsk(poolAddr);
+                            // (2026-08-31) capital = cash libre + valeur déjà déployée en LP. Sans ça la mise
+                            // se calculait sur le seul cash libre et fondait à chaque ouverture (2,7× d'écart
+                            // entre la 1re et la 8e position, pour des setups équivalents).
+                            const deployedSol = Object.values(state.positions).reduce((x, q) => x + ((q.live && q.live.openValueSol) || 0), 0);
+                            const lp = await live.openBidAsk(poolAddr, deployedSol);
                             if (lp) { state.positions[tok].live = lp; save(); tg(`${msg}\n🟢 RÉEL ouvert: ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); } // notif Telegram = uniquement l'entrée RÉELLE (avec tous les détails)
                         } else { console.log('  ⚠️ LIVE: aucune pool DLMM viable — trade papier seulement'); } // pas de notif Telegram pour le papier
                     } catch (e) { console.log(`  ⚠️ LIVE open échoué: ${String(e.message).slice(0, 80)} — papier seulement`); tg(`⚠️ LIVE ${w.symbol}: open échoué (${String(e.message).slice(0, 50)})`); }

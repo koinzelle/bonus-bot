@@ -243,13 +243,23 @@ async function sweepOrphans() {
 
 // ── Ouverture : Bid-Ask DOUBLE-SIDED ±34 bins (spec canonique EP) ──
 // Retourne { positionKeypairPub, poolAddress, depositedSol, lowerBinId, upperBinId, tokenMint } ou null.
-async function openBidAsk(poolAddress) {
+async function openBidAsk(poolAddress, deployedSol) {
     const balBefore = await solBalance();
     const balSol = balBefore / LAMPORTS_PER_SOL;
     // MISE LP = X% du capital ; rent (récupéré au close) + gas réservés À CÔTÉ, ne rognent PAS la mise.
-    const pctSize = balSol * (POSITION_SIZE_PCT / 100);
+    // (2026-08-31) La mise se calculait sur le SOL LIBRE. Or chaque ouverture consomme la mise PLUS
+    // 0,06 SOL de rent : à la 4e position le solde libre a fondu et 15% d'un solde amputé donne 0,06 au
+    // lieu de 0,15. La taille dépendait donc du NOMBRE de positions ouvertes à cet instant — une variable
+    // sans rapport avec la qualité du setup. Mesuré sur 27 ouvertures : 2,7× d'écart entre la plus petite
+    // (0,0549) et la plus grosse (0,1500), pour des setups équivalents.
+    // Le commentaire d'origine disait « EP dime 1-2% du CAPITAL par position » : le capital, c'est le cash
+    // libre PLUS ce qui est déjà déployé en LP. C'est ce qu'on calcule maintenant.
+    // NB : l'allocation devient homogène, mais le wallet se déploie plus complètement — le troisième terme
+    // (balSol - rent - gas) reste le garde-fou qui empêche de descendre sous les réserves.
+    const capitalSol = balSol + (deployedSol || 0);
+    const pctSize = capitalSol * (POSITION_SIZE_PCT / 100);
     const amountSol = Math.min(pctSize, POSITION_SIZE_MAX_SOL, balSol - RENT_RESERVE_SOL - TX_RESERVE_SOL);
-    console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (${POSITION_SIZE_PCT}% de ${balSol.toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
+    console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (${POSITION_SIZE_PCT}% du capital ${capitalSol.toFixed(3)} = libre ${balSol.toFixed(3)} + déployé ${(deployedSol || 0).toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
     if (amountSol < 0.01) { console.log(`❌ mise trop faible (${amountSol.toFixed(4)} SOL < 0.01) ou solde insuffisant`); return null; }
 
     const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
