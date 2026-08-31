@@ -256,10 +256,14 @@ async function openBidAsk(poolAddress, deployedSol) {
     // libre PLUS ce qui est déjà déployé en LP. C'est ce qu'on calcule maintenant.
     // NB : l'allocation devient homogène, mais le wallet se déploie plus complètement — le troisième terme
     // (balSol - rent - gas) reste le garde-fou qui empêche de descendre sous les réserves.
+    // (2026-08-31, demande user) TAILLE FIXE. POSITION_SIZE_SOL n'est plus un plafond mais la mise VISÉE :
+    // chaque position fait ce montant, point. Le pourcentage ne sert plus que de repli si la variable n'est
+    // pas définie. Seul le troisième terme borne encore : on ne descend jamais sous les réserves rent+gas.
     const capitalSol = balSol + (deployedSol || 0);
-    const pctSize = capitalSol * (POSITION_SIZE_PCT / 100);
-    const amountSol = Math.min(pctSize, POSITION_SIZE_MAX_SOL, balSol - RENT_RESERVE_SOL - TX_RESERVE_SOL);
-    console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (${POSITION_SIZE_PCT}% du capital ${capitalSol.toFixed(3)} = libre ${balSol.toFixed(3)} + déployé ${(deployedSol || 0).toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
+    const cible = POSITION_SIZE_MAX_SOL < 999 ? POSITION_SIZE_MAX_SOL : capitalSol * (POSITION_SIZE_PCT / 100);
+    const amountSol = Math.min(cible, balSol - RENT_RESERVE_SOL - TX_RESERVE_SOL);
+    const bride = amountSol < cible - 1e-9;
+    console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (cible ${cible.toFixed(3)}${bride ? ' — BRIDÉE, cash libre ' + balSol.toFixed(3) : ''} | capital ${capitalSol.toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
     if (amountSol < 0.01) { console.log(`❌ mise trop faible (${amountSol.toFixed(4)} SOL < 0.01) ou solde insuffisant`); return null; }
 
     const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
