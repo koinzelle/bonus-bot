@@ -813,6 +813,15 @@ let scanTick = 0;
 // ~20s → la 1re position du scan déclenche le fetch, les autres lisent le lot en cache (coût RPC ~plat).
 let _batchLv = { map: new Map(), ts: 0 };
 let _batchErrWarned = false;
+// (2026-09-02) Dernière lecture RÉELLE par clé de position, pour espacer les positions HORS-RANGE BAS.
+// Une position sous le plancher de sa range est 100% token : elle n'encaisse plus de fees, aucune sortie
+// rapide ne peut s'y déclencher (le seul CUT bas est celui à -55%, une dérive lente), et le retour dans la
+// range est détecté au pire OUT_BOTTOM_MS plus tard — largement de quoi armer un trail. Mesuré : 3 positions
+// hors-range lues toutes les 45s coûtaient ~4 100 lectures/jour, soit ~30% du volume Helius (CATE sondée
+// toutes les 45s pendant 50h sans qu'aucune décision ne soit possible).
+let _lastRead = new Map();
+let _skipLogTs = 0;
+const OUT_BOTTOM_MS = 3 * 60 * 1000;
 async function batchedPositionValues() {
     // TTL ADAPTATIF 3 PALIERS (2026-08-18, demande user) selon la proximité d'un trigger de sortie, calculé sur
     // l'état DÉJÀ en cache (peakGain, _lv = dernier gain/bin) → zéro appel RPC en plus. On prend le palier le
@@ -868,8 +877,34 @@ async function batchedPositionValues() {
     if (Date.now() - _batchLv.ts < ttl) return { map: _batchLv.map, fresh: true }; // succès < ttl = frais
     if (live.enabled && live.allPositionValues) {
         // (2026-08-28) on passe la liste suivie → lecture par CLÉ (getAccountInfo), zéro getProgramAccounts.
-        const list = Object.values(state.positions).filter(p => p.live).map(p => p.live);
-        try { const m = await live.allPositionValues(list); if (m) { _batchLv = { map: m, ts: Date.now() }; _batchErrWarned = false; return { map: m, fresh: true }; } }
+        // (2026-09-02) Le TTL ci-dessus est GLOBAL (minimum sur toutes les positions) et la lecture est
+        // groupée : ralentir un compteur ne suffisait pas, dès qu'une position calme imposait 45s tout le
+        // lot était relu, hors-range compris. Pour économiser il faut RETIRER ces positions du lot.
+        const all = Object.values(state.positions).filter(p => p.live);
+        const skipped = [];
+        let list = [];
+        for (const p of all) {
+            const bin = p._lv ? p._lv.bin : null;
+            const outBottom = bin != null && p.live.lowerBinId != null && bin < p.live.lowerBinId;
+            const since = Date.now() - (_lastRead.get(p.live.positionKeypairPub) || 0);
+            if (outBottom && since < OUT_BOTTOM_MS) skipped.push(p); else list.push(p.live);
+        }
+        // Garde-fou : si TOUTES les positions sont hors-range on lit quand même le lot complet. Sinon on
+        // rendrait une map sans `checked`, et reconcileLivePositions ne saurait plus rien conclure.
+        if (!list.length) { list = all.map(p => p.live); skipped.length = 0; }
+        // log throttlé : sans ça la ligne tomberait à chaque lecture du lot (~1 900 lignes/jour de bruit)
+        if (skipped.length && Date.now() - _skipLogTs > 10 * 60 * 1000) {
+            _skipLogTs = Date.now();
+            console.log(`  💤 lecture LP: ${skipped.length} position(s) hors-range bas espacée(s) à ${OUT_BOTTOM_MS / 1000}s (${skipped.map(p => p.symbol).join(', ')})`);
+        }
+        try { const m = await live.allPositionValues(list); if (m) {
+            const now = Date.now();
+            for (const l of list) if (!m.checked || m.checked.has(l.positionKeypairPub)) _lastRead.set(l.positionKeypairPub, now);
+            // On réinjecte la dernière valeur connue des positions écartées pour que la boucle de sortie
+            // garde un LP à lire. Elles restent HORS de `checked`/`allKeys` : reconcile les verra
+            // « non concluantes » et ne les supprimera pas sur une absence qu'on n'a pas vérifiée.
+            for (const p of skipped) { const k = p.live.positionKeypairPub; const prev = _batchLv.map && _batchLv.map.get ? _batchLv.map.get(k) : null; if (prev) m.set(k, prev); }
+            _batchLv = { map: m, ts: now }; _batchErrWarned = false; return { map: m, fresh: true }; } }
         catch (e) { if (!_batchErrWarned) { _batchErrWarned = true; console.log(`  ⚠️ lecture groupée échouée (${String(e.message).slice(0, 70)}) → bascule lecture individuelle`); } }
     }
     return { map: _batchLv.map, fresh: false }; // échec → PÉRIMÉ : l'appelant NE doit PAS figer dessus (lecture individuelle)
@@ -1486,6 +1521,11 @@ async function scan() {
                     stDistPct: (line > 0) ? +(((curPrice / line) - 1) * 100).toFixed(1) : null,
                     stTrendHtf: (() => { const h = superTrend(ms); return h.length >= 2 ? (h[h.length - 2].trend === 1 ? 'vert' : 'rouge') : null; })(),
                     htfLabel: ms === cs ? '15m' : (ageH >= 720 ? 'daily' : '1H'),
+                    // (2026-09-02) RSI2 d'ENTRÉE : c'est la variable du seuil RSI_ENTRY_MAX, et elle était
+                    // jetée juste après avoir servi de filtre. Sans elle, juger le passage <40 → <50 a
+                    // imposé de le reconstruire depuis la 1re ligne 📊 suivant l'entrée — impossible avant
+                    // le 26/08 (pas de logs persistés). On l'enregistre pour pouvoir trancher sur pièces.
+                    rsi2Entry: rsiEntry != null ? +rsiEntry.toFixed(0) : null,
                     downtrendEntry: downtrend, established };  // established (MC≥5M) → exit régime doux (15m, TP bas)
                 save();
                 if (downtrend) { console.log(`  · [SHADOW downtrend] ${w.symbol} : entrée en LOWER-HIGHS (haut récent -${((1 - recentHigh12 / priorHigh12) * 100).toFixed(0)}% vs avant) — mesure, on juge l'issue (dead-cat ?)`); recordShadow('downtrend', { symbol: w.symbol, dropHighPct: +((1 - recentHigh12 / priorHigh12) * 100).toFixed(0) }); }
@@ -1580,8 +1620,17 @@ async function closePaper(tok, pos, exitPrice, reason) {
         }
     }
     const pnlPct = exitPrice / pos.entry - 1;
+    // (2026-09-02) Le LP réel était calculé PLUS BAS pour le seul affichage puis jeté. Conséquence : le
+    // seul endroit où il survivait était la chaîne `reason` (« LP -47.3% »), qu'il fallait parser à la
+    // regex — et `pnlPct` (variation du PRIX) a été pris pour le LP dans plusieurs analyses, faussant tout
+    // (seuls 8% des trades ont les deux égaux). On stocke désormais le LP et la mise explicitement.
+    const liveOpenVal = pos.live?.openValueSol;
+    const livePct = (pnlSolLive != null && liveOpenVal) ? (pnlSolLive / liveOpenVal) * 100 : null;
     const trade = {
         pnlSolLive, // PnL RÉEL fees incluses (null en paper pur) — à comparer au pnlSol prix
+        lpPct: livePct != null ? +livePct.toFixed(2) : null,        // rendement LP RÉEL en % de la mise
+        openValueSol: liveOpenVal != null ? +liveOpenVal.toFixed(4) : null, // mise déployée (LP% = pnlSolLive/mise)
+        rsi2Entry: pos.rsi2Entry ?? null,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
@@ -1607,8 +1656,6 @@ async function closePaper(tok, pos, exitPrice, reason) {
     const wr = state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100;
     // PnL LP réel en % de la mise (= ce que Meteora affiche) — souvent TRÈS différent du % prix quand le
     // token a fait un V (Bid-Ask achète le dip, revend la remontée → +66% LP sur +4.9% prix, cas Looks).
-    const liveOpenVal = pos.live?.openValueSol;
-    const livePct = (pnlSolLive != null && liveOpenVal) ? (pnlSolLive / liveOpenVal) * 100 : null;
     const liveLine = pnlSolLive != null ? `\n💵 PnL LP RÉEL: ${livePct != null ? `${livePct > 0 ? '+' : ''}${livePct.toFixed(0)}% (` : ''}${pnlSolLive > 0 ? '+' : ''}${pnlSolLive} SOL${livePct != null ? ')' : ''} — fees incluses` : '';
     // Console = complet (papier + réel) pour le debug.
     console.log(`${pnlPct > 0 ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason} | PnL prix ${(pnlPct * 100).toFixed(1)}% (${trade.pnlSol > 0 ? '+' : ''}${trade.pnlSol} SOL papier, ${trade.durMin} min)${liveLine.replace(/\n/g, ' ')} | 📒 ${state.trades.length} trades WR ${wr.toFixed(0)}%`);
