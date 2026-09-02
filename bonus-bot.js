@@ -1392,7 +1392,26 @@ async function scan() {
             // perdu à chaque purge/re-add → le gate s'appliquait au hasard (les tokens jetables y échappaient,
             // les machines à fees, jamais purgées, y restaient). Désormais persisté par mint = appliqué à tous.
             const mourantExpired = MOURANT_TTL_MS !== Infinity && w.lastExitTs && (now - w.lastExitTs) >= MOURANT_TTL_MS;
-            const canReenter = !w.lastEntryPrice || w.recovered || mourantExpired;
+            // (2026-09-02) DÉVERROUILLAGE PAR LES FEES. Le verrou ci-dessus mesure le prix par rapport à NOTRE
+            // dernière entrée, pas la santé du token — deux choses différentes. Cas STONK le 02/09 : classé
+            // « mourant » alors qu'il fait 12 044 trades et $3,27M de volume par jour, avec $717k de liquidité,
+            // et qu'il nous a rapporté +0,0070 SOL sur 24 trades (18 gagnants, 1 perdant). Son seul tort est
+            // qu'on l'a acheté à un sommet local le 01/09 et qu'on en est sorti à -29,7% de LP : le seuil de
+            // déverrouillage s'est retrouvé 40% au-dessus du prix courant. Le critère est donc auto-renforçant
+            // — plus notre entrée était mauvaise, plus on se bannit longtemps du token qu'on connaît le mieux.
+            // Mesuré sur les 68 mints tradés : 62 sont verrouillés, dont 49 font ≥200 trades/24h et ≥$10k de
+            // liquidité. Ces 49 nous ont rapporté +0,4683 SOL sur 371 trades, soit l'essentiel du PnL du bot.
+            // `feeTvlMap` (univers datapi, fees/TVL ≥ FEE_TVL_FLOOR) mesure ce que le verrou VOULAIT mesurer :
+            // « chope-t-il encore ». Contrôle nominal : les 11 vrais cadavres (GMEBULL -0,1574, BOP -0,0570,
+            // rehanfal -0,0504, Slop, hwg, aiclan, XST, MARIO64, LOUIE, KIO, WOFL) restent tous bloqués — ils
+            // ne sont dans aucun univers datapi. Les 19 rouverts pèsent +0,3646 SOL sur 198 trades (16 positifs).
+            // Le bot était déjà incohérent : `feeTvlMap.has()` protège ces mêmes tokens de l'éviction du watch
+            // (« fee-machines : on farme ») pendant que le verrou les bannit. Simulé sur OTC et STONK depuis
+            // leur verrouillage : 6 trades, 6 gagnants, +0,0526 SOL fermés, -0,0384 de latent → +0,0142 net,
+            // contre 0 trade réel. Aucun autre gate n'est touché : dump -35%, RSI2<50, pattern, chop, cap ATH.
+            const vivantParFees = feeTvlMap.has(tok);
+            const canReenter = !w.lastEntryPrice || w.recovered || mourantExpired || vivantParFees;
+            const mourantBypass = !!(w.lastEntryPrice && !w.recovered && !mourantExpired && vivantParFees);
             // ANTI-CHASE-PUMP (2026-08-04, cas CATE entré en plein +8.7%) : on n'entre QUE si survendu
             // (RSI2 bas = DANS le dump), pas quand ça pompe déjà. EP achète la peur, pas l'euphorie.
             const rsiEntry = calculateRSI(cs.slice(0, -1).map(c => c[4]), 2);
@@ -1554,6 +1573,7 @@ async function scan() {
                     // imposé de le reconstruire depuis la 1re ligne 📊 suivant l'entrée — impossible avant
                     // le 26/08 (pas de logs persistés). On l'enregistre pour pouvoir trancher sur pièces.
                     rsi2Entry: rsiEntry != null ? +rsiEntry.toFixed(0) : null,
+                    mourantBypass,   // (2026-09-02) entrée possible UNIQUEMENT grâce au déverrouillage par les fees → mesure l'effet de la modif
                     downtrendEntry: downtrend, established };  // established (MC≥5M) → exit régime doux (15m, TP bas)
                 save();
                 if (downtrend) { console.log(`  · [SHADOW downtrend] ${w.symbol} : entrée en LOWER-HIGHS (haut récent -${((1 - recentHigh12 / priorHigh12) * 100).toFixed(0)}% vs avant) — mesure, on juge l'issue (dead-cat ?)`); recordShadow('downtrend', { symbol: w.symbol, dropHighPct: +((1 - recentHigh12 / priorHigh12) * 100).toFixed(0) }); }
@@ -1659,6 +1679,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         lpPct: livePct != null ? +livePct.toFixed(2) : null,        // rendement LP RÉEL en % de la mise
         openValueSol: liveOpenVal != null ? +liveOpenVal.toFixed(4) : null, // mise déployée (LP% = pnlSolLive/mise)
         rsi2Entry: pos.rsi2Entry ?? null,
+        mourantBypass: pos.mourantBypass ?? null,   // isole le PnL des entrées dues au déverrouillage par les fees
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
