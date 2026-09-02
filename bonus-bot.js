@@ -844,6 +844,7 @@ async function batchedPositionValues() {
     //   45s = LOIN (2026-08-27 : 15→45s = ~3× moins de getProgramAccounts → crédits Helius ; une position calme
     //         loin de tout trigger n'a pas besoin d'être lue toutes les 15s ; les paliers 8/10s reprennent dès qu'elle approche)
     let ttl = 45000;
+    const _ttlPos = new Map();   // palier propre à chaque position (2026-09-02) — voir plus bas
     for (const p of Object.values(state.positions)) {
         if (!p.live) continue;
         const g = p._lv ? p._lv.rg : (p.peakGain || 0);
@@ -885,6 +886,15 @@ async function batchedPositionValues() {
         // ferait passer la conso de 1 787 à 2 051-2 452 crédits/h, pour un budget Helius de 1 781/h.
         // À rouvrir si le budget RPC cesse d'être la contrainte. La ligne était : else if (g >= -0.10) t = 15000;
         else t = 45000;   // perte franche / sorti par le bas : rien de rapide ne peut s'y produire
+        // (2026-09-02) HORS-RANGE BAS : palier propre, encore plus lâche. 100% token, plus aucune fee
+        // encaissée, et la seule issue est le CUT lent à -55%. Cas CATE : sondée toutes les 45s pendant 50h.
+        const outBottom = bin != null && p.live.lowerBinId != null && bin < p.live.lowerBinId;
+        if (outBottom && t === 45000) t = OUT_BOTTOM_MS;
+        // (2026-09-02) On CONSERVE le palier de chaque position au lieu de le jeter. Le `ttl` global reste
+        // le minimum — il décide seulement s'il faut lire QUELQUE CHOSE ce cycle ; le palier individuel
+        // décide QUI est lu. Avant, une seule position chaude à 8s faisait relire les six autres à 8s
+        // aussi, alors que leur propre palier disait 45s : 7 lectures Helius par cycle au lieu d'une.
+        _ttlPos.set(p.live.positionKeypairPub, t);
         if (t < ttl) ttl = t;
     }
     if (Date.now() - _batchLv.ts < ttl) return { map: _batchLv.map, fresh: true }; // succès < ttl = frais
@@ -893,22 +903,29 @@ async function batchedPositionValues() {
         // (2026-09-02) Le TTL ci-dessus est GLOBAL (minimum sur toutes les positions) et la lecture est
         // groupée : ralentir un compteur ne suffisait pas, dès qu'une position calme imposait 45s tout le
         // lot était relu, hors-range compris. Pour économiser il faut RETIRER ces positions du lot.
+        // (2026-09-02) CADENCE PAR POSITION. Chaque position n'est relue que si SON palier est écoulé.
+        // Sûreté : une position au palier calme vérifie `pk < 6%` par construction, donc elle NE PEUT PAS
+        // déclencher de trail — celui-ci exige `armed`, c'est-à-dire `pk >= TP_PCT`. Ses deux seules sorties
+        // sont le RSI2>90, calculé sur des bougies CLOSES et pas sur la valeur LP, et le CUT à -55%, dont la
+        // profondeur est une variable lente (on ne passe pas de -25% à -55% en 45s). Elle était donc relue
+        // toutes les 8s par ACCIDENT, parce qu'une autre position était chaude — pas par sécurité. Et dès
+        // qu'elle s'approche d'un seuil, son propre palier retombe à 8 ou 10s au cycle suivant.
         const all = Object.values(state.positions).filter(p => p.live);
         const skipped = [];
         let list = [];
         for (const p of all) {
-            const bin = p._lv ? p._lv.bin : null;
-            const outBottom = bin != null && p.live.lowerBinId != null && bin < p.live.lowerBinId;
-            const since = Date.now() - (_lastRead.get(p.live.positionKeypairPub) || 0);
-            if (outBottom && since < OUT_BOTTOM_MS) skipped.push(p); else list.push(p.live);
+            const k = p.live.positionKeypairPub;
+            const since = Date.now() - (_lastRead.get(k) || 0);
+            if (since < (_ttlPos.get(k) || 45000)) skipped.push(p); else list.push(p.live);
         }
-        // Garde-fou : si TOUTES les positions sont hors-range on lit quand même le lot complet. Sinon on
-        // rendrait une map sans `checked`, et reconcileLivePositions ne saurait plus rien conclure.
+        // Garde-fou : si AUCUNE position n'est due, on lit quand même le lot complet. Sinon on rendrait
+        // une map sans `checked`, et reconcileLivePositions ne saurait plus rien conclure. Ce cas est rare
+        // (le `ttl` global au-dessus a déjà filtré les cycles où rien n'est dû).
         if (!list.length) { list = all.map(p => p.live); skipped.length = 0; }
         // log throttlé : sans ça la ligne tomberait à chaque lecture du lot (~1 900 lignes/jour de bruit)
         if (skipped.length && Date.now() - _skipLogTs > 10 * 60 * 1000) {
             _skipLogTs = Date.now();
-            console.log(`  💤 lecture LP: ${skipped.length} position(s) hors-range bas espacée(s) à ${OUT_BOTTOM_MS / 1000}s (${skipped.map(p => p.symbol).join(', ')})`);
+            console.log(`  💤 lecture LP: ${list.length}/${all.length} position(s) lue(s) — ${skipped.map(p => `${p.symbol} ${(_ttlPos.get(p.live.positionKeypairPub) || 45000) / 1000}s`).join(', ')} pas encore dues`);
         }
         try { const m = await live.allPositionValues(list); if (m) {
             const now = Date.now();
