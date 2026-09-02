@@ -835,6 +835,16 @@ let _batchErrWarned = false;
 let _lastRead = new Map();
 let _skipLogTs = 0;
 const OUT_BOTTOM_MS = 3 * 60 * 1000;
+// (2026-09-02, 2e passe) ÉTALEMENT. Donner à chaque position son propre palier a divisé le nombre MOYEN
+// d'appels par trois, mais a laissé le PIC intact : les positions calmes ayant été lues ensemble au
+// démarrage, elles arrivent toutes à échéance au même instant → un lot de 7 appels dans la même seconde.
+// Or Helius ne limite pas la moyenne, il limite le débit instantané. Mesuré : les 429 tombent par paquets
+// de 4 dans la même seconde, espacés de ~110s — exactement la signature d'une rafale synchronisée. On
+// plafonne donc le lot à READ_BURST_MAX et on espace les lots suivants de BURST_SPACING_MS tant qu'il
+// reste du retard : 7 positions sont servies en ~9s au lieu de 1s, très en dessous de leur palier de 45s.
+const READ_BURST_MAX = 3;
+const BURST_SPACING_MS = 3000;
+let _backlog = false;
 async function batchedPositionValues() {
     // TTL ADAPTATIF 3 PALIERS (2026-08-18, demande user) selon la proximité d'un trigger de sortie, calculé sur
     // l'état DÉJÀ en cache (peakGain, _lv = dernier gain/bin) → zéro appel RPC en plus. On prend le palier le
@@ -897,7 +907,9 @@ async function batchedPositionValues() {
         _ttlPos.set(p.live.positionKeypairPub, t);
         if (t < ttl) ttl = t;
     }
-    if (Date.now() - _batchLv.ts < ttl) return { map: _batchLv.map, fresh: true }; // succès < ttl = frais
+    // Tant qu'il reste du retard à écouler, le prochain lot part après BURST_SPACING_MS au lieu d'attendre
+    // le ttl complet : c'est ce qui ÉTALE les 7 lectures sur ~9s au lieu de les grouper dans une seconde.
+    if (Date.now() - _batchLv.ts < (_backlog ? BURST_SPACING_MS : ttl)) return { map: _batchLv.map, fresh: true };
     if (live.enabled && live.allPositionValues) {
         // (2026-08-28) on passe la liste suivie → lecture par CLÉ (getAccountInfo), zéro getProgramAccounts.
         // (2026-09-02) Le TTL ci-dessus est GLOBAL (minimum sur toutes les positions) et la lecture est
@@ -912,12 +924,22 @@ async function batchedPositionValues() {
         // qu'elle s'approche d'un seuil, son propre palier retombe à 8 ou 10s au cycle suivant.
         const all = Object.values(state.positions).filter(p => p.live);
         const skipped = [];
-        let list = [];
+        const dues = [];
         for (const p of all) {
             const k = p.live.positionKeypairPub;
+            const tp = _ttlPos.get(k) || 45000;
             const since = Date.now() - (_lastRead.get(k) || 0);
-            if (since < (_ttlPos.get(k) || 45000)) skipped.push(p); else list.push(p.live);
+            if (since < tp) skipped.push(p); else dues.push({ p, tp, retard: since - tp });
         }
+        // Les paliers rapides (≤10s) ne sont JAMAIS différés : ce sont les seules positions où la vitesse
+        // décide d'une sortie (trail armé, bord haut). Le plafond ne s'applique qu'aux lentes, servies par
+        // ordre de retard décroissant pour qu'aucune ne soit affamée.
+        const urgentes = dues.filter(d => d.tp <= 10000);
+        const lentes = dues.filter(d => d.tp > 10000).sort((a, b) => b.retard - a.retard);
+        const place = Math.max(0, READ_BURST_MAX - urgentes.length);
+        for (const d of lentes.slice(place)) skipped.push(d.p);
+        _backlog = lentes.length > place;   // reste-t-il des positions à servir au prochain cycle ?
+        let list = urgentes.concat(lentes.slice(0, place)).map(d => d.p.live);
         // Garde-fou : si AUCUNE position n'est due, on lit quand même le lot complet. Sinon on rendrait
         // une map sans `checked`, et reconcileLivePositions ne saurait plus rien conclure. Ce cas est rare
         // (le `ttl` global au-dessus a déjà filtré les cycles où rien n'est dû).
