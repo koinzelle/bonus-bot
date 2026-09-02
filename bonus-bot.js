@@ -720,6 +720,19 @@ async function gmgnQualityOk(tok, sym) {
             console.log(`⚠️ [SHADOW clusters] ${sym}: plus gros ${maxClusterPct.toFixed(1)}% | total insiders ${totalInsiderPct.toFixed(0)}% — mesure seule (ne bloque pas)`);
             recordShadow('clusters', { symbol: sym, maxClusterPct: +maxClusterPct.toFixed(1), totalInsiderPct: +totalInsiderPct.toFixed(0) });
         }
+        // SHADOW SEUIL FEES (2026-09-02) — la règle EP n°1 (fees ≥ 30 SOL = "demande réelle") est de loin le
+        // 1er motif de rejet : 230 sur la semaine, médiane 1 SOL, et depuis le fix du 28/08 elle rejette PLUS
+        // de tokens qu'elle n'en laisse passer (ratio 0,23 le 27/08 → 1,69 le 02/09). Or les rejetés du jour
+        // affichent des volumes énormes sur DexScreener (OPENAI $102M, TSLA $52M, +695%). Deux lectures :
+        // soit EP a raison et c'est du wash trading (OPENAI tourne 343× sa liquidité en 24h, ce qui n'est pas
+        // organique), soit `total_fee` est simplement absent chez GMGN pour ces tokens et on jette des pools
+        // vivantes. Aucun trade réel ne permet de trancher : le filtre n'en a jamais laissé passer un seul.
+        // On enregistre donc mint + prix des rejets où les fees sont le SEUL motif → verdict sur forward réel.
+        if (fails.length === 1 && /^fees /.test(fails[0])) {
+            recordShadow('feesSeuil', { symbol: sym, tok, totalFee: totalFee != null ? +totalFee.toFixed(1) : null,
+                holders, top10: +top10.toFixed(0), price: info.price != null ? parseFloat(info.price) : null,
+                vol24h: info.volume_24h != null ? Math.round(parseFloat(info.volume_24h)) : null });
+        }
         if (fails.length) {
             gmgnRejected.set(tok, Date.now());
             console.log(`🚫 Qualité GMGN: ${sym} rejeté (${fails.join(', ')})`);
@@ -1488,6 +1501,21 @@ async function scan() {
             if (atDip && rsiLow && block && block.startsWith('ATH-épuisé') && !state.positions[tok] && !w.athShadowLogged) {
                 w.athShadowLogged = true;
                 recordShadow('athEpuise', { symbol: w.symbol, tok, price: curPrice, athBreaks: w.athBreaks || 0, curMcK: Math.round(curMc / 1000), feeTvl: +feeTvl.toFixed(1), dumpPct: +(dumpedFromHigh * 100).toFixed(0) });
+            }
+            // SHADOW PATTERN-KO (2026-09-02) — le pattern EP est le PREMIER gate de la chaîne, donc quand il
+            // refuse on ne sait rien de la suite : le token pourrait passer tout le reste. Mesuré le 02/09, il
+            // bloque 7 des 16 tokens de l'univers du jour, et surtout les MEILLEURES pools Meteora du moment
+            // (CTO 274% de fees/TVL, MARKET 108%, GPRO 90%, DICKBUTT 68% — le top du classement datapi).
+            // On enregistre donc ceux qui passent TOUS les autres gates : c'est exactement la population que
+            // relâcher le pattern ajouterait. Mesure seule, aucun changement de comportement. 1 record/token/h.
+            if (block === 'pattern-KO' && chopOk && atDip && rsiLow && canReenter && feesOk
+                && ((w.athBreaks || 0) < 4 || curMc >= 1_500_000) && !explosif && !onCooldown
+                && !state.positions[tok] && (!w._patShadowAt || now - w._patShadowAt > 3600e3)) {
+                w._patShadowAt = now;
+                console.log(`  🔬 [SHADOW pattern] ${w.symbol}: tout passe SAUF le pattern | dump -${(dumpedFromHigh * 100).toFixed(0)}% · RSI2 ${rsiEntry != null ? rsiEntry.toFixed(0) : '?'} · feeTvl ${feeTvl.toFixed(0)}% · MC $${Math.round(curMc / 1000)}k`);
+                recordShadow('patternKO', { symbol: w.symbol, tok, price: curPrice, dumpPct: +(dumpedFromHigh * 100).toFixed(0),
+                    rsi2: rsiEntry != null ? +rsiEntry.toFixed(0) : null, feeTvl: +feeTvl.toFixed(1),
+                    curMcK: Math.round(curMc / 1000), athBreaks: w.athBreaks || 0 });
             }
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
