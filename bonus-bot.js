@@ -1267,6 +1267,24 @@ async function scan() {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
                     // en attente de rebond, le RSI2>90 sort QUEL QUE SOIT le signe : c'est la seule issue
                     // d'une position profondément négative (LP>0 exigerait un prix ×2,22).
+                    // SHADOW PLANCHER RSI2 (2026-09-03) — mesure ce que coûterait/rapporterait d'autoriser
+                    // la sortie RSI2>90 dans le rouge. Backtest sur 279 trades : optimum à LP > -20%
+                    // (+0,2740 SOL, catastrophes 11% → 7%, meilleur aux 3 niveaux de retrait), et -3% est
+                    // MOINS bon que 0 — ce qui confirme le revert du 29/08 sur BULLSHIT. Mais le backtest
+                    // repose sur la fonction de transfert prix→LP, qui ne sait pas modéliser les fees : sortir
+                    // plus tôt en encaisse moins, et la fonction est calibrée sur des durées longues. Elle a
+                    // aussi produit ce soir un classement fees/TVL que les données réelles ont inversé.
+                    // On enregistre donc le LP du PREMIER déclenchement qui ne sort pas aujourd'hui mais
+                    // sortirait avec un plancher à -20%. Reporté sur le trade, il se compare directement à
+                    // `lpPct` : « serait sorti à X% » contre « est sorti à Y% », sans reconstruction.
+                    if (rsi2 != null && rsi2 > 90 && !armed && !pos._awaitBounce
+                        && realGain <= RSI2_FLOOR_LP && realGain > -0.20 && pos._rsiFloorLp == null) {
+                        pos._rsiFloorLp = +(realGain * 100).toFixed(2);
+                        pos._rsiFloorAt = Date.now();
+                        console.log(`  🔬 [SHADOW plancher RSI2] ${pos.symbol}: RSI2 ${rsi2.toFixed(0)}>90 à LP ${(realGain * 100).toFixed(1)}% — sortirait avec un plancher -20%, garde la position aujourd'hui`);
+                        recordShadow('planchrRsi2', { symbol: pos.symbol, tok, lp: +(realGain * 100).toFixed(2),
+                            price: px, peakPct: +((pos.peakGain || 0) * 100).toFixed(1), ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
+                    }
                     if (rsi2 != null && rsi2 > 90 && (pos._awaitBounce || realGain > RSI2_FLOOR_LP)) {
                         // (2026-08-24) RSI2 = PLANCHER quand pas armé (< +6% LP). Sort les positions molles DANS LE
                         // VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue (cc
@@ -1719,6 +1737,11 @@ async function closePaper(tok, pos, exitPrice, reason) {
         openValueSol: liveOpenVal != null ? +liveOpenVal.toFixed(4) : null, // mise déployée (LP% = pnlSolLive/mise)
         rsi2Entry: pos.rsi2Entry ?? null,
         mourantBypass: pos.mourantBypass ?? null,   // isole le PnL des entrées dues au déverrouillage par les fees
+        // (2026-09-03) LP au 1er RSI2>90 refusé par le plancher actuel : se compare directement à `lpPct`.
+        // « serait sorti à rsiFloorLp% » contre « est sorti à lpPct% » — le verdict du plancher -20% sans
+        // aucune reconstruction ni fonction de transfert.
+        rsiFloorLp: pos._rsiFloorLp ?? null,
+        rsiFloorDelayMin: pos._rsiFloorAt ? Math.round((Date.now() - pos._rsiFloorAt) / 60000) : null,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
