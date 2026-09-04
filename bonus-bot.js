@@ -1656,6 +1656,21 @@ async function scan() {
                         } else { console.log('  ⚠️ LIVE: aucune pool DLMM viable — trade papier seulement'); } // pas de notif Telegram pour le papier
                     } catch (e) { console.log(`  ⚠️ LIVE open échoué: ${String(e.message).slice(0, 80)} — papier seulement`); tg(`⚠️ LIVE ${w.symbol}: open échoué (${String(e.message).slice(0, 50)})`); }
                 }
+                // (2026-09-04, demande user) PLUS AUCUNE POSITION PAPIER EN MODE LIVE.
+                // Le bloc ci-dessus a quatre chemins d'échec — pool introuvable, solde insuffisant
+                // (`openBidAsk` rend null), exception, plafond MAX_LIVE_POSITIONS — et AUCUN ne
+                // supprimait la position créée juste avant. Elle restait dans l'état sans clé ni pool,
+                // occupait un slot, était pilotée AU PRIX faute de pouvoir être lue on-chain, et
+                // produisait à sa fermeture un trade à `pnlSolLive: null`. Mesuré le 04/09 : 67 trades
+                // dans ce cas sur 591, jusqu'à 29 % des trades d'une journée, et un CTO fantôme qui
+                // alertait à -56 % de PRIX pendant que la vraie position était à -24 % de LP.
+                // Désormais : pas d'ouverture réelle confirmée = pas de position, pas de slot, pas de
+                // trade, pas de notification. Le mode papier pur (`live.enabled` faux) est inchangé.
+                if (live.enabled && state.positions[tok] && !state.positions[tok].live) {
+                    delete state.positions[tok];
+                    save();
+                    console.log(`  🚫 ${w.symbol}: ouverture réelle non confirmée — entrée ANNULÉE, aucune position conservée`);
+                }
             }
         }
         console.log(`🔍 Scan ${hotOnly ? 'HOT' : 'complet'} | watch ${Object.keys(state.watch).length} | pos ${Object.keys(state.positions).length} | bougies OK ${cOk}/vide ${cKo}${rl429 ? `/429×${rl429}` : ''}${cOk === 0 && (cKo + rl429) > 0 ? ' ⚠️ SOURCE BOUGIES DOWN' : ''}`);
