@@ -243,7 +243,14 @@ async function sweepOrphans() {
 
 // ── Ouverture : Bid-Ask DOUBLE-SIDED ±34 bins (spec canonique EP) ──
 // Retourne { positionKeypairPub, poolAddress, depositedSol, lowerBinId, upperBinId, tokenMint } ou null.
+// (2026-09-05) VERROU DE MANQUE DE CASH. Quand la mise calculée tombe sous 0,01 SOL, le bot refusait
+// l'ouverture mais RETENTAIT à chaque scan : ZCAT a été annulé 16 fois en 6 minutes le 04/09, chaque
+// tentative coûtant une lecture de solde et un aller-retour de création/suppression de position papier.
+// Le solde ne remonte que lorsqu'une position se ferme — on mémorise donc le manque pendant 5 minutes,
+// et `closeVerified` lève le verrou immédiatement puisque c'est le seul événement qui rend du SOL.
+let _cashShortUntil = 0;
 async function openBidAsk(poolAddress, deployedSol) {
+    if (Date.now() < _cashShortUntil) return null;   // cash insuffisant récemment constaté : on ne retente pas
     const balBefore = await solBalance();
     const balSol = balBefore / LAMPORTS_PER_SOL;
     // MISE LP = X% du capital ; rent (récupéré au close) + gas réservés À CÔTÉ, ne rognent PAS la mise.
@@ -264,7 +271,11 @@ async function openBidAsk(poolAddress, deployedSol) {
     const amountSol = Math.min(cible, balSol - RENT_RESERVE_SOL - TX_RESERVE_SOL);
     const bride = amountSol < cible - 1e-9;
     console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (cible ${cible.toFixed(3)}${bride ? ' — BRIDÉE, cash libre ' + balSol.toFixed(3) : ''} | capital ${capitalSol.toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
-    if (amountSol < 0.01) { console.log(`❌ mise trop faible (${amountSol.toFixed(4)} SOL < 0.01) ou solde insuffisant`); return null; }
+    if (amountSol < 0.01) {
+        _cashShortUntil = Date.now() + 5 * 60 * 1000;   // stoppe la boucle de tentatives jusqu'au prochain close
+        console.log(`❌ mise trop faible (${amountSol.toFixed(4)} SOL < 0.01) ou solde insuffisant — ouvertures suspendues 5 min`);
+        return null;
+    }
 
     const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
     const xMint = dlmmPool.tokenX.publicKey.toString();
@@ -523,6 +534,7 @@ async function positionState(pos) {
 // lue AVANT le remove = mesure FIABLE. PnL réel = closeValueSol − pos.openValueSol (insensible au bruit
 // wallet). proceedsSol (flat-to-flat) gardé en secours/indicatif.
 async function closeVerified(pos) {
+    _cashShortUntil = 0;   // (2026-09-05) une fermeture rend du SOL : le verrou de manque de cash saute ici
     const balBefore = await solBalance();
     const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
     for (let attempt = 1; attempt <= 3; attempt++) {
