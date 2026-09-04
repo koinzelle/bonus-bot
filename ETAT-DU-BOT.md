@@ -1,4 +1,4 @@
-# État du bonus-bot — mis à jour le 03/09/2026
+# État du bonus-bot — mis à jour le 04/09/2026
 
 Document **vivant** : à relire au début de chaque session et à mettre à jour à la fin.
 Il existe pour éviter de re-dériver des conclusions qui ont coûté cher à établir, et
@@ -28,6 +28,28 @@ surtout pour ne pas retenter ce qui a déjà été invalidé.
 | 02/09 | `b6d641d` | Cadence de lecture par position | 429 : 36/h → **94/h** (contre-productif seul) |
 | 02/09 | `3a8203e` | Étalement des lectures (plafond 3, espacement 3 s) | 429 : 94/h → **0/h** |
 | 03/09 | `798312c` | Shadow `planchrRsi2` | mesure seule |
+| 04/09 | `fc9cc2c` | **Plus aucune position papier en mode live** | supprime les fantômes qui occupaient un slot |
+| 04/09 | `80ae30a` | Timeout de dépôt sondé + **filet des positions orphelines** | corrige la cause + alerte toutes les 30 min |
+
+### Le bug des positions orphelines — 04/09, six semaines de latence
+
+`Transaction was not confirmed in 30.00 seconds. It is UNKNOWN` **n'est pas un échec**, c'est une
+absence de réponse : la TX atterrit souvent après. Depuis le 22/07 le bot concluait à l'échec et
+repartait, laissant une position réelle avec de l'argent dedans dont la clé n'était jamais
+enregistrée — ni trail, ni RSI2, ni CUT. Et depuis le 19/07, la position papier créée juste avant
+survivait à l'échec, occupait un slot et était pilotée **au prix**.
+
+Cas concret : CTO ouverte le 04/09 à 08h45, timeout à 08h46, position toujours vivante à 0,083 SOL
+et −24 % huit heures plus tard, pendant que le bot alertait sur un fantôme du même nom à −56 % de prix.
+
+**Le signal était quotidien : 67 trades sur 591 à `pnlSolLive: null`, jusqu'à 6 sur 21 le 27/08.**
+Il a été masqué six semaines parce que chaque script d'analyse commençait par
+`filter(t => t.pnlSolLive != null)` pour « nettoyer » les données. La preuve du bug écartée comme
+du bruit — cf. [[feedback-verifier-avant-affirmer]].
+
+**Piège de nommage confirmé le même jour :** le « MARKET » du bot est le « GPRO » de Meteora, même
+mint `GPRR2u6N…`. DexScreener, Meteora et GeckoTerminal ne nomment pas les mêmes tokens pareil.
+**Toute réconciliation se fait par mint ou par clé de position, jamais par symbole.**
 
 ---
 
