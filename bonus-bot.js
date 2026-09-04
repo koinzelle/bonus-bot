@@ -59,6 +59,30 @@ if (live.enabled) {
         // une nuit (0,044 SOL). Coût : 2 lectures RPC toutes les 30 min, négligeable.
         setInterval(() => live.sweepOrphans().catch(e => console.log('⚠️ sweep périodique:', String(e.message).slice(0, 60))), 30 * 60 * 1000);
     }
+    // (2026-09-04) FILET POSITIONS ORPHELINES. Le sweep ci-dessus ne récupère que des TOKENS restés au
+    // wallet ; il ne voit pas une POSITION LP ouverte que le bot ne suit pas. Or une telle position n'a ni
+    // trail, ni RSI2, ni CUT : personne ne la fermera jamais. Cas du 04/09 : CTO, 0,083 SOL à -24 % pendant
+    // huit heures, née d'un dépôt dont la TX avait dépassé les 30 s de confirmation puis atterri quand même.
+    // La comparaison se fait par CLÉ DE POSITION, jamais par symbole — DexScreener et Meteora ne nomment pas
+    // les tokens pareil (le « MARKET » du bot est le « GPRO » de Meteora, même mint) et un filet qui
+    // comparerait des noms se tromperait exactement comme moi. Coût : 1 appel toutes les 30 min.
+    if (live.findOrphanPositions) {
+        const checkOrphans = async () => {
+            const known = new Set(Object.values(state.positions).map(p => p.live && p.live.positionKeypairPub).filter(Boolean));
+            const orph = await live.findOrphanPositions(known);
+            if (!orph.length) return;
+            const tot = orph.reduce((s, o) => s + o.valueSol, 0);
+            console.log(`🚨 ${orph.length} POSITION(S) ORPHELINE(S) on-chain — ${tot.toFixed(4)} SOL hors gestion :`);
+            for (const o of orph) console.log(`     ${o.valueSol.toFixed(4)} SOL | pool ${o.poolAddress.slice(0, 8)}… | clé ${o.key.slice(0, 8)}… | bin ${o.activeBinId} dans [${o.lowerBinId}→${o.upperBinId}]`);
+            tg(`🚨 ${orph.length} position(s) LP orpheline(s) — ${tot.toFixed(4)} SOL que le bot ne gère pas\n` +
+                orph.map(o => `${o.valueSol.toFixed(4)} SOL · pool ${o.poolAddress.slice(0, 8)}… · ${o.activeBinId >= o.lowerBinId && o.activeBinId <= o.upperBinId ? 'dans la range' : 'HORS range'}`).join('\n') +
+                `\napp.meteora.ag/dlmm/${orph[0].poolAddress}`);
+        };
+        // 60 s de délai : ce bloc s'exécute AVANT la déclaration de `state` (ligne ~271) et son chargement
+        // depuis le disque. Un appel immédiat lèverait une ReferenceError et ne verrait aucune position.
+        setTimeout(() => checkOrphans().catch(e => console.log('⚠️ orphelines démarrage:', String(e.message).slice(0, 60))), 60 * 1000);
+        setInterval(() => checkOrphans().catch(e => console.log('⚠️ orphelines périodique:', String(e.message).slice(0, 60))), 30 * 60 * 1000);
+    }
 } else console.log('🧪 Mode PAPER (LIVE≠1 ou bonus-live KO) — aucun ordre réel');
 
 // ── Filet anti-crash GLOBAL (2026-07-22) : un bot LIVE ne doit JAMAIS mourir sur une erreur transitoire

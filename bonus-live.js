@@ -304,7 +304,28 @@ async function openBidAsk(poolAddress, deployedSol) {
             console.log(`  ✅ TX ouverture: https://solscan.io/tx/${h}`);
         }
     } catch (e) {
-        // Dépôt échoué APRÈS le swap → les tokens sont orphelins : on les reswappe tout de suite en SOL.
+        // (2026-09-04) « Transaction was not confirmed in 30.00 seconds. It is UNKNOWN » n'est PAS un
+        // échec : c'est une absence de réponse. La transaction atterrit très souvent après ce délai.
+        // Conclure à l'échec créait alors une position bien réelle, avec de l'argent dedans, dont la clé
+        // n'était jamais enregistrée — invisible pour le bot, donc sans trail, sans RSI2 et sans CUT.
+        // Cas du 04/09 : CTO ouverte à 08h45, timeout à 08h46, position toujours ouverte à -24 % huit
+        // heures plus tard pendant que le bot pilotait un fantôme au prix et alertait à -56 %.
+        // On SONDE donc la chaîne avant d'abandonner — jusqu'à 32 s, la position est identifiable par sa
+        // clé qu'on possède déjà. Si elle est là, on la récupère normalement. Sinon seulement, on sweep.
+        const posRef = { poolAddress, positionKeypairPub: positionKeypair.publicKey.toString() };
+        let recup = null;
+        for (let attempt = 0; attempt < 8 && recup == null; attempt++) {
+            await new Promise(r => setTimeout(r, 4000));
+            try { recup = await positionValueSol(posRef, dlmmPool); } catch (_) { /* pas encore indexée */ }
+        }
+        if (recup != null) {
+            const balAfterR = await solBalance();
+            console.log(`  ✅ dépôt ATTERRI après le timeout (${String(e.message).slice(0, 45)}) — position récupérée, valeur LP ${recup.toFixed(4)} SOL`);
+            return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress,
+                depositedSol: (balBefore - balAfterR) / LAMPORTS_PER_SOL, openValueSol: recup,
+                lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint };
+        }
+        // Dépôt réellement échoué APRÈS le swap → les tokens sont orphelins : on les reswappe en SOL.
         console.log(`  ⚠️ dépôt LP échoué (${String(e.message).slice(0, 60)}) — sweep du token swappé...`);
         await sweepToken(xMint);
         return null;
@@ -412,6 +433,40 @@ async function positionValuesByKeys(list) {
         }
     }
     return out;
+}
+// (2026-09-04) FILET ORPHELINES. Compare les positions RÉELLES du wallet aux clés que le bot suit.
+// Toute position on-chain absente de son état n'a ni trail, ni RSI2, ni CUT : personne ne la fermera.
+// Découvert le 04/09 avec CTO — 0,083 SOL à -24 % pendant huit heures, née d'un dépôt dont la TX avait
+// dépassé les 30 s de confirmation puis atterri quand même. La comparaison se fait par CLÉ DE POSITION,
+// jamais par symbole : DexScreener et Meteora ne nomment pas les tokens pareil (le « MARKET » du bot est
+// le « GPRO » de Meteora, même mint), et un filet qui compare des noms se tromperait exactement comme moi.
+async function findOrphanPositions(knownKeys) {
+    const byPair = await DLMM.getAllLbPairPositionsByUser(connection, keypair.publicKey);
+    const orphans = [];
+    for (const [poolAddr, info] of byPair) {
+        let dlmm, ab, priceYperX, xDec, yDec;
+        try {
+            dlmm = await getDlmm(poolAddr);
+            ab = await dlmm.getActiveBin();
+            priceYperX = parseFloat(ab.pricePerToken);
+            xDec = dlmm.tokenX.decimal ?? dlmm.tokenX.mint?.decimals ?? 6;
+            yDec = dlmm.tokenY.decimal ?? dlmm.tokenY.mint?.decimals ?? 9;
+        } catch (_) { continue; }   // pool illisible : on ne conclut RIEN, on ne signale pas à tort
+        for (const lp of info.lbPairPositionsData || []) {
+            const key = lp.publicKey.toString();
+            if (knownKeys.has(key)) continue;
+            const d = lp.positionData;
+            const xHuman = Number(d.totalXAmount?.toString() ?? 0) / 10 ** xDec;
+            const yHuman = Number(d.totalYAmount?.toString() ?? 0) / 10 ** yDec;
+            const feeX = Number(d.feeX?.toString() ?? 0) / 10 ** xDec;
+            const feeY = Number(d.feeY?.toString() ?? 0) / 10 ** yDec;
+            const valueSol = yHuman + feeY + (xHuman + feeX) * priceYperX;
+            if (valueSol < 0.005) continue;   // poussière : une position vidée mais pas encore fermée
+            orphans.push({ key, poolAddress: poolAddr, valueSol, activeBinId: ab.binId,
+                lowerBinId: d.lowerBinId, upperBinId: d.upperBinId, tokenMint: dlmm.tokenX.publicKey.toString() });
+        }
+    }
+    return orphans;
 }
 async function allPositionValues(list) {
     if (Array.isArray(list) && list.length) {
@@ -536,4 +591,4 @@ async function closeVerified(pos) {
     }
 }
 
-module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans };
+module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions };
