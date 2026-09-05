@@ -18,10 +18,19 @@ surtout pour ne pas retenter ce qui a déjà été invalidé.
 - LP moyen par trade, par semaine : 4,81 % → 5,38 % → 4,63 % → 3,12 % → 2,15 %.
   **La baisse commence la semaine du 17/08**, avant presque toutes les modifs récentes.
 - **Wallet ~1,474 SOL au 05/09** (0,913 déployé + 0,081 cash + 0,480 de rent immobilisé).
-  Mise fixe 0,15. Plafond **7** depuis le 05/09 (était 8 ; était 5 du 26/08 au 31/08).
-  **Chaque position coûte 0,21 SOL** (0,15 de mise + 0,06 de rent) : le wallet en finance **6** à
-  mise pleine, pas 7 — il manque 0,016 SOL. Le rent est fixe quelle que soit la mise, donc une
-  position à 0,039 immobilise 154 % de son montant : c'est pourquoi le bridage a été supprimé.
+  Mise fixe 0,15. Plafond **8** (passé à 7 puis re-8 le 05/09 après dépôt ; était 5 du 26/08 au 31/08).
+  **Chaque position coûte 0,21 SOL** (0,15 de mise + 0,06 de rent). Le rent est fixe quelle que soit
+  la mise — une position à 0,039 immobilise 154 % de son montant — d'où la suppression du bridage.
+  **Solde on-chain au 05/09 20h : 1,7959 SOL** (0,913 liquide + 0,583 déployé + 0,300 de rent),
+  lu directement sur `BLwBuA1G…` : finance **8** positions pleines (besoin 1,700), 9 non.
+  ⚠️ Ne PAS reconstruire le solde depuis le champ `capital` des logs : il exclut le rent et se lit
+  en pleine transaction. Deux estimations fausses le 05/09 (1,474 puis 1,352 au lieu de 1,796).
+
+**Coût Helius du plafond.** Les lectures sont proportionnelles au nombre de positions
+(~11 200 lectures/jour à 6,6 positions, ~4,1 crédits par lecture). À **8 positions le quota est
+dépassé ~2,4 jours avant le reset** ; à 7 il tient tout juste. 429 mesurés le 05/09 : 6,7/h aux
+heures à 8 positions contre 1,9/h à 7 — ×3,5, mais 53/jour au total reste négligeable
+(2 342 le 01/09) et aucun « max usage reached ».
 - Helius : ~38 000 crédits/jour pour un budget de ~43 400. Cycle du 18/08 au 18/09.
 
 ---
