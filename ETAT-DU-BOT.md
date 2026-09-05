@@ -8,7 +8,12 @@ surtout pour ne pas retenter ce qui a déjà été invalidé.
 
 ## 1. Chiffres de référence
 
-- **465 trades** depuis le 22/07. PnL réalisé **+0,42 SOL**, latent variable.
+- **616 trades** depuis le 22/07 (529 avec `pnlSolLive`, **87 à `null`** — résidu du bug d'orphelines).
+  PnL réalisé **+0,7400 SOL** sur 45 jours. Rythme 7 jours : **+0,0425 SOL/jour**.
+  **Les 04 et 09/05 sont les deux meilleures journées de l'histoire du bot** (+0,1824 et +0,1023),
+  soit 38 % du résultat total en deux jours — obtenues à 8 positions avec mises rabotées, à 43 %
+  puis 64 % du temps à 7-8 positions. Si le rythme chute après le passage à 7/mise pleine, c'est
+  la première piste à regarder.
 - WR ~85 %. **Un perdant efface six gagnants** — c'est la queue qui décide, jamais la médiane.
 - LP moyen par trade, par semaine : 4,81 % → 5,38 % → 4,63 % → 3,12 % → 2,15 %.
   **La baisse commence la semaine du 17/08**, avant presque toutes les modifs récentes.
