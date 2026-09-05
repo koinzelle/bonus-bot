@@ -12,7 +12,11 @@ surtout pour ne pas retenter ce qui a déjà été invalidé.
 - WR ~85 %. **Un perdant efface six gagnants** — c'est la queue qui décide, jamais la médiane.
 - LP moyen par trade, par semaine : 4,81 % → 5,38 % → 4,63 % → 3,12 % → 2,15 %.
   **La baisse commence la semaine du 17/08**, avant presque toutes les modifs récentes.
-- Capital ~1,2 SOL. Mise fixe 0,15. Plafond 8 positions (jamais atteint avant le 31/08).
+- **Wallet ~1,474 SOL au 05/09** (0,913 déployé + 0,081 cash + 0,480 de rent immobilisé).
+  Mise fixe 0,15. Plafond **7** depuis le 05/09 (était 8 ; était 5 du 26/08 au 31/08).
+  **Chaque position coûte 0,21 SOL** (0,15 de mise + 0,06 de rent) : le wallet en finance **6** à
+  mise pleine, pas 7 — il manque 0,016 SOL. Le rent est fixe quelle que soit la mise, donc une
+  position à 0,039 immobilise 154 % de son montant : c'est pourquoi le bridage a été supprimé.
 - Helius : ~38 000 crédits/jour pour un budget de ~43 400. Cycle du 18/08 au 18/09.
 
 ---
@@ -30,6 +34,7 @@ surtout pour ne pas retenter ce qui a déjà été invalidé.
 | 03/09 | `798312c` | Shadow `planchrRsi2` | mesure seule |
 | 04/09 | `fc9cc2c` | **Plus aucune position papier en mode live** | supprime les fantômes qui occupaient un slot |
 | 04/09 | `80ae30a` | Timeout de dépôt sondé + **filet des positions orphelines** | corrige la cause + alerte toutes les 30 min |
+| 05/09 | — | **Plafond 8 → 7 et MISE PLEINE OU RIEN** (demande user) | plus aucune ouverture bridée |
 
 ### Le bug des positions orphelines — 04/09, six semaines de latence
 

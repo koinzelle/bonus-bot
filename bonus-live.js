@@ -268,12 +268,17 @@ async function openBidAsk(poolAddress, deployedSol) {
     // pas définie. Seul le troisième terme borne encore : on ne descend jamais sous les réserves rent+gas.
     const capitalSol = balSol + (deployedSol || 0);
     const cible = POSITION_SIZE_MAX_SOL < 999 ? POSITION_SIZE_MAX_SOL : capitalSol * (POSITION_SIZE_PCT / 100);
-    const amountSol = Math.min(cible, balSol - RENT_RESERVE_SOL - TX_RESERVE_SOL);
-    const bride = amountSol < cible - 1e-9;
-    console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (cible ${cible.toFixed(3)}${bride ? ' — BRIDÉE, cash libre ' + balSol.toFixed(3) : ''} | capital ${capitalSol.toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
-    if (amountSol < 0.01) {
+    // (2026-09-05, demande user) MISE PLEINE OU RIEN. Plus aucune ouverture bridée.
+    // Le rent est de 0,06 SOL par position QUELLE QUE SOIT SA TAILLE : une mise de 0,039 immobilise
+    // 154 % de son montant en rent, occupe un slot entier et consomme autant de lectures RPC qu'une
+    // pleine, pour le quart du gain. Mesuré le 05/09 : 8 positions = 0,913 SOL au travail contre
+    // 0,48 SOL de rent, soit 66 % seulement du capital engagé qui produit quelque chose.
+    const dispo = balSol - RENT_RESERVE_SOL - TX_RESERVE_SOL;
+    const amountSol = cible;
+    console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (cible ${cible.toFixed(3)} | cash libre ${balSol.toFixed(3)} | dispo ${dispo.toFixed(3)} | capital ${capitalSol.toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
+    if (dispo < cible) {
         _cashShortUntil = Date.now() + 5 * 60 * 1000;   // stoppe la boucle de tentatives jusqu'au prochain close
-        console.log(`❌ mise trop faible (${amountSol.toFixed(4)} SOL < 0.01) ou solde insuffisant — ouvertures suspendues 5 min`);
+        console.log(`❌ cash libre insuffisant pour une mise PLEINE (dispo ${dispo.toFixed(4)} < ${cible.toFixed(3)}) — AUCUNE ouverture partielle, on attend un close`);
         return null;
     }
 
