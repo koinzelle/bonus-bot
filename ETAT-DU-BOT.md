@@ -99,6 +99,16 @@ catastrophes de l'historique, mais bloquer cette bande coûte plus qu'elle ne ra
 Signature à connaître : la tranche <3h a le MEILLEUR LP médian (5,00 %) et le PIRE LP moyen (3,37 %),
 inversion typique d'une queue gauche épaisse.
 
+**Glissement du trail — INTRINSÈQUE, pas un défaut (05/09).** Le trail est réglé à 1,0 point sous
+le pic ; sur 202 sorties TRAIL on rend **1,50 pt de médiane et 2,09 de moyenne** (max 20,0 — Zoe,
+pic +40,3 % sorti à +20,3 %). Cumulé : 220,7 points de LP au-delà du réglage, **~0,114 SOL**.
+**Ce n'est PAS la cadence de lecture** : avant/après le déploiement du 02/09, la médiane est
+identique (1,50 pt dans les deux cas), et le chemin « rapide » ne fait pas mieux (1,50 vs 1,60).
+Le glissement suit la **vitesse du token** : pic 6-8 % → 1,83 pt de moyenne ; pic >20 % → 5,55 pt.
+Lire plus souvent ne récupérerait presque rien et coûterait des crédits Helius déjà en dépassement.
+Seule piste éventuelle : un trail à deux étages, plus serré sur les gros gains — mais n=8 au-dessus
+de +20 %, insuffisant pour trancher, et le trail actuel est validé à ×3 contre un TP fixe.
+
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :
 13 des 16 tokens bloqués sont libérés par l'expiration du compteur glissant (1 h à 130 h), pas
