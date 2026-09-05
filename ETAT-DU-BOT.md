@@ -60,6 +60,26 @@ trois fois moins bien (+5 pts contre +16). Le hold pur est nettement perdant (m�
 sur les gros, ×0,32 sur les petits). L'armement du rebond à −40 % : médiane 0,0 pt, Morty
 passerait de +2,7 % à −35,8 %.
 
+**Stop de temps — MESURÉ ET REJETÉ (05/09).** Couper une position à X heures détruit de la valeur à
+tous les seuils : X=4h **−0,269 SOL**, 6h **−0,329**, 8h **−0,325**, 12h **−0,184**, 24h **−0,059**.
+La cohorte (65 trades >4h, 862 h-position) a perdu −0,16 SOL en réel ; un stop à 6 h l'aurait portée
+à −0,49 SOL. **Robuste** : négatif dans les 4 sous-périodes, et empire au retrait des 3 meilleurs
+(−0,329 → −0,412). Le stop CONDITIONNEL (LP < 0 / −10 / −20 / −30 à X heures) est négatif partout aussi.
+Raison : à 6 h les perdantes sont déjà à −36 % de LP pour finir à −47 % (le stop cristallise la perte,
+il ne l'évite pas), et les gagnantes sont à −4,5 % pour finir à +1,5 % (le stop les tue au creux).
+Cas le plus cher : `cc`, **−45,3 % de LP à 6 h, +31,6 % à la clôture réelle**.
+
+**La durée ne prédit rien.** Gagnantes 9,4 h de médiane, perdantes 10,2 h. Les −0,16 SOL de la cohorte
+longue viennent de **9 accidents**, pas du fait de tenir. Ne pas rouvrir « couper plus tôt » sans un
+mécanisme qui vise les accidents, pas l'horloge.
+
+**Âge de l'ATH à l'entrée — mesuré, ne pas gater (05/09).** `athAgeH < 3h` concentre 5 des 7
+catastrophes de l'historique, mais bloquer cette bande coûte plus qu'elle ne rapporte : on abandonne
++0,42 SOL de trades sains pour épargner −0,21 SOL de désastres. Portefeuille conservé : 89,9 % à <2h,
+85,1 % à <3h, 72,5 % à <5h. Le SOL/trade est PLAT entre les tranches (0,0023 à 0,0035) — pas de gradient.
+Signature à connaître : la tranche <3h a le MEILLEUR LP médian (5,00 %) et le PIRE LP moyen (3,37 %),
+inversion typique d'une queue gauche épaisse.
+
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :
 13 des 16 tokens bloqués sont libérés par l'expiration du compteur glissant (1 h à 130 h), pas
