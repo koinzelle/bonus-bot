@@ -109,6 +109,23 @@ Lire plus souvent ne récupérerait presque rien et coûterait des crédits Heli
 Seule piste éventuelle : un trail à deux étages, plus serré sur les gros gains — mais n=8 au-dessus
 de +20 %, insuffisant pour trancher, et le trail actuel est validé à ×3 contre un TP fixe.
 
+**Resserrer le trail — TESTÉ ET REJETÉ (05/09).** Rejoué sur les **relevés LP réels du bot**
+(lignes `📊` des logs persistés : 71 530 relevés, cadence médiane 50 s), 64 sorties TRAIL.
+Contrôle du rejeu : écart médian **1,00 pt**. Résultat, largeur → delta SOL contre l'actuel :
+0,30 pt **−0,0011** · 0,50 **−0,0071** · 0,75 **−0,0107** · 0,90 **−0,0090** · 1,00 = référence.
+**Toutes les largeurs plus serrées perdent**, et le LP médian TOMBE de 7,30 % à 7,10 % : un trail
+serré ne sort pas plus haut, il sort **plus tôt sur un faux creux, avant le vrai sommet**.
+Robuste : le −0,0071 de la largeur 0,5 empire à −0,0108 en retirant les 3 meilleurs cas.
+Variantes à paliers (plus serré au-dessus de +10/12/15 %) : **+0,0030 SOL au mieux**, sous l'erreur
+de reconstruction, donc indistinguable de zéro.
+**Limite : seuls les trails PLUS SERRÉS sont testables** — au-delà de 1,0 pt la position serait
+restée ouverte après la fermeture réelle et il n'existe aucun relevé après. Tester 1,5 ou 2 pt
+exige un shadow, pas un backtest.
+
+**Méthode à réutiliser :** pour toute question sur les SORTIES, rejouer sur les lignes `📊` des logs
+(LP réel, cadence réelle, aucun modèle) plutôt que sur des bougies + fonction de transfert. Le même
+test fait sur bougies 5 min donnait un contrôle à **4,03 pt** d'écart — inexploitable.
+
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :
 13 des 16 tokens bloqués sont libérés par l'expiration du compteur glissant (1 h à 130 h), pas
