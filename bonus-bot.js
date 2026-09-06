@@ -289,7 +289,7 @@ if (!state.stMult2Reset) { for (const w of Object.values(state.watch || {})) del
 if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})) { if (!state.positions?.[tok]) delete state.watch[tok]; } state.poolOriginResetV1 = true; }
 // (2026-08-27) `_closing` est persisté par save() : un verrou posé avant un crash/redeploy rendrait la
 // position définitivement infermable. On le purge au démarrage.
-for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; delete p._priceHotUntil; }
+for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; delete p._priceHotUntil; delete p._peakLogged; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 // ── SHADOW STATS PERSISTÉS (2026-07-29, demande user) : les mesures shadow étaient des console.log
@@ -2018,7 +2018,23 @@ async function fastPositionCheck() {
             if (!bv || bv.valueSol == null) continue;
             const rg = bv.valueSol / pos.live.openValueSol - 1;
             recordLv(pos, rg, bv.activeBinId);
-            pos.peakGain = Math.max(pos.peakGain || 0, rg);
+            const pkAvant = pos.peakGain || 0;
+            pos.peakGain = Math.max(pkAvant, rg);
+            // ── (2026-09-06) TRACE DU PIC VU PAR LA BOUCLE RAPIDE ────────────────────────────────
+            // Question ouverte : le bot rate-t-il des sommets ? `peakGain` n'était journalisé qu'une
+            // fois par SCAN (~70 s), alors que cette boucle le met à jour toutes les 10 s. Un pic vu
+            // ici mais retombé avant le scan suivant était donc invisible dans les logs — et c'est
+            // exactement ce qu'on cherche à mesurer (cas CTO du 06/09 : peak 5,0 % contre un seuil
+            // d'armement à 6 %). La valeur est déjà en mémoire : coût RPC nul.
+            // Comparer ensuite ces lignes 🔺 au `peak` des lignes 📊 donne le sommet perdu entre scans.
+            // Le franchissement du seuil d'armement est journalisé TOUJOURS : c'est l'événement qui
+            // décide de la sortie, et le filtre anti-spam de 0,5 pt pouvait l'avaler (cas mesuré :
+            // pic 5,80 % → 6,10 %, +0,30 pt, sous le filtre, donc armement invisible).
+            const franchit = pkAvant < TP_PCT && pos.peakGain >= TP_PCT;
+            if (franchit || pos.peakGain > (pos._peakLogged ?? -Infinity) + 0.005) {
+                pos._peakLogged = pos.peakGain;
+                console.log(`  🔺 ${pos.symbol} | peak LP ${(pos.peakGain * 100).toFixed(2)}% (+${((pos.peakGain - pkAvant) * 100).toFixed(2)} pt) | LP ${(rg * 100).toFixed(2)}% | rapide${franchit ? ` | ⚡ ARMEMENT franchi (${(TP_PCT * 100).toFixed(0)}%)` : ''}`);
+            }
             const armed = pos.peakGain >= TP_PCT, exitPx = pos.lastPx || pos.entry;
             // CUT hors-range -55% PARTOUT (2026-08-19, backtest tenir-vs-couper : -35% coupait trop tôt, delta +121% sur 12 CUT-bas ; -55% tient les rebonds, garde un plancher anti-rug)
             if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId) {

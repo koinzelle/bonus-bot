@@ -49,6 +49,7 @@ heures à 8 positions contre 1,9/h à 7 — ×3,5, mais 53/jour au total reste n
 | 04/09 | `fc9cc2c` | **Plus aucune position papier en mode live** | supprime les fantômes qui occupaient un slot |
 | 04/09 | `80ae30a` | Timeout de dépôt sondé + **filet des positions orphelines** | corrige la cause + alerte toutes les 30 min |
 | 05/09 | — | **Plafond 8 → 7 et MISE PLEINE OU RIEN** (demande user) | plus aucune ouverture bridée |
+| 06/09 | — | **Trace `🔺` du pic dans la boucle rapide** | mesure seule, coût RPC nul |
 
 ### Le bug des positions orphelines — 04/09, six semaines de latence
 
@@ -126,6 +127,21 @@ exige un shadow, pas un backtest.
 (LP réel, cadence réelle, aucun modèle) plutôt que sur des bougies + fonction de transfert. Le même
 test fait sur bougies 5 min donnait un contrôle à **4,03 pt** d'écart — inexploitable.
 
+**Sommets manqués — MESURE EN COURS, rien de conclu (06/09).** Comparaison prix-contre-prix
+(aucune conversion) entre le prix max **vu** par le bot dans ses lignes 📊 et le max des bougies,
+sur 138 trades : le bot voit le sommet à moins d'1 pt dans **36 %** des cas seulement, écart médian
+**2,5 pt**. **26 trades sur 138 (19 %)** cumulent trail non armé (peak LP < 6 %) et sommet manqué
+de ≥ 3 pts. **MAIS ce n'est pas une preuve de perte** : le haut d'une bougie est souvent une mèche
+que la position LP ne traverse jamais vraiment (Zoe : +125 % de mèche pour un peak LP de 0,5 %).
+D'où la trace `🔺` déployée le 06/09, qui répond sans bougie ni fonction de transfert.
+
+**Deux erreurs de méthode commises ce jour-là, à ne pas refaire :**
+1. Les lignes `📊` sont émises **une fois par SCAN** (~70 s), pas à chaque lecture. Les compter comme
+   des lectures fait croire à tort que les paliers de cadence 8/10 s ne fonctionnent pas. La vérif du
+   trail tourne en réalité dans `fastPositionCheck`, **toutes les 10 s**, séparée du scan.
+2. Convertir un plus-haut de bougie en LP avec la fonction de transfert pour affirmer qu'un sommet a
+   été raté — alors que cette fonction est documentée comme non fiable au §« transfert ».
+
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :
 13 des 16 tokens bloqués sont libérés par l'expiration du compteur glissant (1 h à 130 h), pas
@@ -163,6 +179,7 @@ n'évite pas les CUT.
 | `patternKO` | Le pattern EP coûte-t-il les meilleures pools ? | prix + mint des refusés, à rejouer | 1 semaine |
 | `feesSeuil` | La règle EP « fees ≥ 30 SOL » protège-t-elle d'un wash trading ? | idem | 1 semaine |
 | `athEpuise` | idem cap ATH | déjà exploité, cf. §3 | — |
+| `🔺 peak` (lignes de log) | Le bot rate-t-il des sommets entre deux scans ? | comparer le `peak` max des lignes **🔺** (boucle rapide, 10 s) au `peak` des lignes **📊** (scan, ~70 s) sur le même trade | 1 semaine |
 
 **Backtest non déployé** : plancher RSI2 à −20 % donnait +0,2740 SOL (+9 %) sur 279 trades,
 catastrophes 11 % → 7 %, robuste aux 3 retraits, pic unique. **Non déployé** parce que la
