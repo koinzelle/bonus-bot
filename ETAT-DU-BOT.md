@@ -50,6 +50,7 @@ heures à 8 positions contre 1,9/h à 7 — ×3,5, mais 53/jour au total reste n
 | 04/09 | `80ae30a` | Timeout de dépôt sondé + **filet des positions orphelines** | corrige la cause + alerte toutes les 30 min |
 | 05/09 | — | **Plafond 8 → 7 et MISE PLEINE OU RIEN** (demande user) | plus aucune ouverture bridée |
 | 06/09 | — | **Trace `🔺` du pic dans la boucle rapide** | mesure seule, coût RPC nul |
+| 06/09 | — | **`PRICE_LP_DIVERGENCE` 8 → 5 pts** | 71 → 151 épisodes ⚡, +2 886 crédits/j |
 
 ### Le bug des positions orphelines — 04/09, six semaines de latence
 
@@ -141,6 +142,21 @@ D'où la trace `🔺` déployée le 06/09, qui répond sans bougie ni fonction d
    trail tourne en réalité dans `fastPositionCheck`, **toutes les 10 s**, séparée du scan.
 2. Convertir un plus-haut de bougie en LP avec la fonction de transfert pour affirmer qu'un sommet a
    été raté — alors que cette fonction est documentée comme non fiable au §« transfert ».
+
+**Seuil d'armement du trail — TESTÉ ET REJETÉ (06/09).** Balayé sur 188 trades rejoués sur les
+relevés réels (contrôle : écart médian **0,00 pt**, rejeu exact). Abaisser l'armement donne
+3 % **+0,1749** · 4 % **+0,0886** · 4,5 % +0,0461 · 5 % −0,0236 · 5,5 % −0,0022 · 6 % = référence.
+**Non monotone**, et surtout **non robuste** : à 4 %, le total tombe à −0,0665 en retirant les
+2 meilleurs cas ; le gain vient de **deux trades seulement** (rehanfal −55,1 % réel, fone −47,3 %),
+c'est-à-dire de catastrophes coupées tôt, pas d'un gradient. **17 trades dégradés contre 6 améliorés.**
+Instable dans le temps (+0,1458 sur un quartile, négatif sur les trois autres). Ne pas rouvrir.
+
+**Le tripwire prix↔LP est la vraie réponse aux sommets manqués.** Le prix vient des bougies (gratuit) ;
+quand il prend de l'avance sur le dernier LP lu, `_priceHotUntil` force une lecture fraîche + 3 min de
+cadence 8 s. Mesuré sur 73 145 paires de relevés : un gros écart annonce surtout une **BAISSE** du LP
+(−0,97 pt à 5-6 pts, −3,76 à 8-12), donc il sert autant à voir une chute qu'un sommet. Probabilité
+qu'il précède un nouveau pic : 13 % (4-5 pts) · 15 % (5-6) · 17 % (6-7) · 25 % (7-8) · 19 % (≥8),
+hausse moyenne ~1,2 pt dans toutes les bandes.
 
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :

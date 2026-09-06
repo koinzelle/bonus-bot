@@ -252,7 +252,15 @@ const RSI2_FLOOR_LP = 0;
 // partir — on force une lecture LP immédiate et on passe la position en cadence rapide quelques minutes.
 // Coût quasi nul : ne se déclenche que sur un vrai pump, quelques fois par jour, exactement quand ça
 // rapporte. Ne peut pas se déclencher à la baisse (l'écart y est négatif : LP ≈ 0,86 × prix + 4,1).
-const PRICE_LP_DIVERGENCE = 0.08;        // le prix a ≥ 8 points d'avance sur le LP mémorisé
+// (2026-09-06) 8 → 5 points. Cas CTO du 06/09 : prix +9,8 % contre un LP connu de 3,7 %, soit
+// 6,1 pts d'écart — sous l'ancien seuil, donc aucune lecture forcée, et le pic a plafonné à 5,0 %
+// pour un armement à 6 %. Mesuré sur 73 145 paires de relevés : la bande 5-6 pts précède une hausse
+// du pic dans 15 % des cas (+1,22 pt en moyenne) contre 17 % pour 6-7 et 19 % au-dessus de 8 — pas
+// de falaise entre 5 et 6. Et un gros écart annonce surtout une BAISSE du LP (-0,97 pt en moyenne
+// à 5-6 pts) : le tripwire sert donc autant à voir une chute qu'un sommet. Coût mesuré : 71 → 151
+// épisodes, +2 886 crédits/jour, absorbable depuis l'ajout du 2e compte Helius.
+// NE PAS descendre sous 4 : la bande 4-5 tombe à 13 % pour 20 % de lectures forcées en plus.
+const PRICE_LP_DIVERGENCE = 0.05;        // le prix a ≥ 5 points d'avance sur le LP mémorisé
 const PRICE_HOT_MS = 3 * 60 * 1000;      // durée de la cadence rapide déclenchée
 const MAX_POSITIONS = 10;         // positions papier simultanées (8→10, 2026-08-10 ; EP : beaucoup de petites positions, pas all-in)
 // (2026-08-29, demande user) plafond DUR 5 → 8 positions réelles. Le plafond borne deux choses :
