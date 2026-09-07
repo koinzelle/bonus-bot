@@ -137,10 +137,23 @@ async function findMeteoraPool(tokenAddress, preferredPool) {
         } catch (_) {}
     }
     if (!candidates.length) { _poolCache.set(tokenAddress, { addr: null, ts: Date.now() }); return null; }
-    // Priorité SCALP (2026-08-04, preuve image CATE : EP scalpe en fee 1-2% = +SOL ; notre 5% = 0% car le
-    // swap round-trip du scalp mange la grosse fee + moins de volume). On prend la fee la plus BASSE
-    // (viable ≥0.5%), puis la plus PROFONDE (volume), puis bin step 100 canonique. (L'ancien "5% d'abord"
-    // = bot 1 classique / harvest range large — PAS le scalp bonus stage.)
+    // Priorité SCALP (2026-08-04) : fee la plus BASSE (viable ≥0.5%), puis la plus PROFONDE, puis bin
+    // step 100. ⚠️ ATTENTION À LA JUSTIFICATION D'ORIGINE — CORRIGÉE LE 08/09/2026.
+    // Le commentaire d'origine disait « notre 5% = 0% car le swap round-trip du scalp mange la grosse
+    // fee ». C'est FAUX : le bot swappe via JUPITER (jupSwapOnce, lite-api.jup.ag), qui route par le
+    // chemin le moins cher de tout Solana et n'emprunte donc pas la pool Meteora où l'on dépose. À la
+    // sortie, closeVerified RETIRE la liquidité (aucun swap dans la pool) et ne reswappe que le résidu,
+    // encore via Jupiter. **Le fee de la pool n'est JAMAIS payé par le bot : c'est du revenu pur.**
+    // Coût d'entrée réel mesuré sur 114 ouvertures : −0,37 % de médiane (−0,77 % de moyenne), pas 5-10 %.
+    //
+    // Ce tri n'est donc PAS justifié par le coût du swap. Il reste défendable pour une autre raison,
+    // celle-là mesurée le 08/09 sur 12 100 relevés : les pools CHÈRES DÉCROCHENT du marché. Une pool à
+    // 5 % a 165 SOL de réserves médianes contre 952 pour une pool à 1 % ; les agrégateurs y routent peu
+    // de flux, donc son bin actif ne bouge pas quand le token monte ailleurs. Résultat : 1,6 % des
+    // relevés y montrent le prix avec >10 pts d'avance sur le LP, contre 0,6 % à 1 % (×2,7).
+    //
+    // Quel niveau de fee rapporte le plus n'est PAS tranché : trois découpages donnent trois réponses
+    // opposées (cf. ETAT-DU-BOT.md §3). Ne pas modifier ce tri sans un A/B réel.
     candidates.sort((a, b) => a.baseFeePct - b.baseFeePct || b.reserveSol - a.reserveSol || (b.binStep === 100) - (a.binStep === 100));
     // (2026-08-30) POOL DÉSIGNÉE PAR LA DATAPI. Le tri ci-dessus prend la fee la plus BASSE — un choix du
     // 04/08 qui ignore complètement le VOLUME traversant, donc le rendement réel. La datapi a déjà classé

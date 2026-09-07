@@ -158,6 +158,37 @@ cadence 8 s. Mesuré sur 73 145 paires de relevés : un gros écart annonce surt
 qu'il précède un nouveau pic : 13 % (4-5 pts) · 15 % (5-6) · 17 % (6-7) · 25 % (7-8) · 19 % (≥8),
 hausse moyenne ~1,2 pt dans toutes les bandes.
 
+**Choix de la pool — NON TRANCHÉ, ne pas rouvrir sans A/B (08/09).** Trois découpages de la même
+donnée donnent trois réponses opposées : par niveau de frais brut le 2 % gagne (0,00394 vs 0,00099
+SOL/trade à 1 %) ; en comparant « pool désignée par le fee/TVL » contre « repli sur le fee le plus
+bas », c'est le repli qui gagne (0,00598 vs 0,00281, n=25 vs 90) ; apparié token par token, le 2 %
+regagne (3 tokens sur 4). Seuls **4 tokens** ont connu deux niveaux de frais et **6 trades** ont eu
+lieu sur du 5 %. C'est de la sélection de tokens qu'on mesure, pas l'effet du fee. **Trancher exige
+un A/B réel** : prendre délibérément la pool la plus chère une entrée sur deux.
+
+**Le bot ne paie JAMAIS le fee de la pool — le commentaire du 04/08 était faux.** Les swaps passent
+par **Jupiter** (`lite-api.jup.ag`), qui route par le chemin le moins cher de Solana et n'emprunte
+pas la pool Meteora de dépôt ; à la sortie on retire la liquidité sans swap et on ne reswappe que le
+résidu. Le fee de la pool est donc **du revenu pur**. Coût d'entrée réel : **−0,37 % de médiane**
+sur 114 ouvertures (moyenne −0,77 %, queue à −4,7 %), et non 5-10 %. Commentaire corrigé dans
+`bonus-live.js` le 08/09. `slippageBps: 1000` (10 %) explique la queue — le resserrer à 300-500
+serait sans effet 99 % du temps.
+
+**Les pools chères DÉCROCHENT du marché (mesuré, mécanique).** Sur 12 100 relevés en pool à 5 % :
+**1,6 %** montrent le prix avec plus de 10 pts d'avance sur le LP, contre **0,6 %** à 1 % (×2,7).
+Cause : réserves médianes **165 SOL** à 5 % contre **952** à 1 %. Dans un DLMM le bin actif ne bouge
+que si l'on trade DANS cette pool ; les agrégateurs routant vers la moins chère, une pool chère et
+peu profonde reste figée pendant que le token monte ailleurs — la position ne se convertit pas et
+n'encaisse rien. Explique le paradoxe du 5 % : **meilleur LP médian (10,87 %) mais SOL/trade négatif
+(−0,00297, n=6)**. Un plancher de réserves indexé sur le fee serait le bon garde-fou, mais n=6 ne
+permet pas de le calibrer. **À surveiller : compter les lignes `⚡` sur AGI**, actuellement sur une
+pool à 5 % / 331 SOL, pour chiffrer ce que coûte le décrochage.
+
+**Couverture du fee/TVL : plafonnée par l'API, pas par le code.** Le mécanisme du 30/08 ne s'applique
+qu'à **115 choix sur 225**. Augmenter `page_size` ne sert à rien : `dlmm.datapi.meteora.ag/pools`
+renvoie ~101 pools quel que soit le paramètre (testé à 100/300/500), soit **60 tokens distincts**.
+Seuls ces 60 dépassent réellement 3 % de fee/TVL avec ≥5 k$ de TVL. Le trou n'est pas comblable.
+
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :
 13 des 16 tokens bloqués sont libérés par l'expiration du compteur glissant (1 h à 130 h), pas
