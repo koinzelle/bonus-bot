@@ -51,6 +51,8 @@ heures à 8 positions contre 1,9/h à 7 — ×3,5, mais 53/jour au total reste n
 | 05/09 | — | **Plafond 8 → 7 et MISE PLEINE OU RIEN** (demande user) | plus aucune ouverture bridée |
 | 06/09 | — | **Trace `🔺` du pic dans la boucle rapide** | mesure seule, coût RPC nul |
 | 06/09 | — | **`PRICE_LP_DIVERGENCE` 8 → 5 pts** | 71 → 151 épisodes ⚡, +2 886 crédits/j |
+| 08/09 | `e3f79b6` | Shadow rendement de pool (fee/TVL réel + bin step) | mesure seule, HTTP gratuit |
+| 08/09 | — | **Mesure du temps HORS RANGE BAS** (`🔻`/`🔺`, champs `outBottom*`) | mesure seule, coût nul |
 
 ### Le bug des positions orphelines — 04/09, six semaines de latence
 
@@ -188,6 +190,41 @@ pool à 5 % / 331 SOL, pour chiffrer ce que coûte le décrochage.
 qu'à **115 choix sur 225**. Augmenter `page_size` ne sert à rien : `dlmm.datapi.meteora.ag/pools`
 renvoie ~101 pools quel que soit le paramètre (testé à 100/300/500), soit **60 tokens distincts**.
 Seuls ces 60 dépassent réellement 3 % de fee/TVL avec ≥5 k$ de TVL. Le trou n'est pas comblable.
+
+**LA LARGEUR DE RANGE — ne JAMAIS resserrer, désormais chiffré (08/09).** `BIN_RANGE = 34` est fixe,
+mais `OK_BIN_STEPS = [80,100,125,160,200,250]` fait varier la largeur RÉELLE du simple au double :
+bs80 → **-24 %** en bas, bs100 → **-29 %**, bs125 → -34 %, bs200 → **-49 %**, bs250 → -57 %.
+Répartition sur 441 sélections : 65 % bs100, 20 % bs200, 10 % bs80. **La protection varie donc au
+hasard de la pool, sans que rien ne le signale.**
+
+Résultat par largeur (197 trades) : bs80 **0,00062 SOL/trade** et 7 % de catastrophes · bs100
+0,00833 et 2 % · bs200 **0,01327** et 0 %. ⚠️ Cette comparaison est **confondue par le token**
+(les bs200 sont sur PURR/ZCAT/CTO/AGI, les meilleurs du moment) — ne pas en conclure que large = mieux.
+
+**Le contrefactuel propre**, lui, conclut : sur les 48 trades en bs200, **87 % auraient tenu** dans une
+range -29 %, pour ~2× plus de frais (une range -29 % est 2,05× plus étroite). Ça semblait plaider pour
+resserrer. **C'est faux, et voici pourquoi.**
+
+**LE TEMPS HORS RANGE BAS EST LA MÉTRIQUE QUI PRÉCÈDE LES CATASTROPHES.** Sur 192 trades :
+
+| | n | LP médian | SOL/trade | durée médiane |
+|---|---|---|---|---|
+| sorti de range par le BAS | 19 | **1,06 %** | **−0,00898** | **6,3 h** |
+| resté DANS la range | 173 | **4,61 %** | **+0,01072** | **1,2 h** |
+
+Écart : **−0,0197 SOL par trade**, et 5× plus long — hors range la position est 100 % en token,
+n'encaisse plus AUCUN frais, et sa seule issue est le rebond ou le CUT. **Les CINQ pires trades de
+l'historique sont TOUS des sorties par le bas** : OTC −0,0719 · HeeHaw −0,0647 · AGI −0,0605 ·
+fone −0,0589 · STONK −0,0443, soit **−0,3003 SOL**.
+
+Resserrer ferait passer le taux de sortie par le bas de 2 % à ~13 %. Le gain de concentration repose
+sur une hypothèse de « 2× les frais » **non vérifiable** ; le coût, lui, est mesuré sur 19 cas réels.
+**La règle « range intouchable » du user est validée**, pour une raison précise : la range large
+n'augmente pas le rendement moyen, elle évite l'endroit où toutes les catastrophes se produisent.
+
+Mesure déployée le 08/09 : lignes `🔻`/`🔺` à chaque franchissement, et champs `outBottomMin`,
+`outBottomPct`, `outBottomEpisodes` sur chaque trade. **À exploiter : le temps hors-range bas
+prédit-il le CUT, et à partir de quel seuil ?**
 
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :

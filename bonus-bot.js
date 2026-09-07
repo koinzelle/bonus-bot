@@ -297,7 +297,7 @@ if (!state.stMult2Reset) { for (const w of Object.values(state.watch || {})) del
 if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})) { if (!state.positions?.[tok]) delete state.watch[tok]; } state.poolOriginResetV1 = true; }
 // (2026-08-27) `_closing` est persisté par save() : un verrou posé avant un crash/redeploy rendrait la
 // position définitivement infermable. On le purge au démarrage.
-for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; delete p._priceHotUntil; delete p._peakLogged; }
+for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; delete p._priceHotUntil; delete p._peakLogged; delete p._obLast; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 // ── SHADOW STATS PERSISTÉS (2026-07-29, demande user) : les mesures shadow étaient des console.log
@@ -1721,8 +1721,37 @@ async function scan() {
 // consultable via /trades?all=1 (jamais perdue). Un trou de temps entre 2 points = lecture gelée (429) ;
 // une décroissance lisse = mécanique LP. Tranche « 429 vs LP non-linéaire » sur les sorties trail tardives.
 function recordLv(pos, rg, bin) {
-    pos._lv = { rg, bin, ts: Date.now() };
-    (pos._lvHist = pos._lvHist || []).push({ t: Date.now(), lp: +(rg * 100).toFixed(1), bin });
+    const now = Date.now();
+    // ── (2026-09-08) TEMPS PASSÉ HORS RANGE PAR LE BAS ──────────────────────────────────────────
+    // Mesuré le 08/09 sur 192 trades : une position sortie par le bas rend **-0,00898 SOL/trade**
+    // contre **+0,01072** pour une qui tient, LP médian 1,06 % contre 4,61 %, et elle dure 6,3 h au
+    // lieu de 1,2 h. Surtout : les CINQ pires trades de l'historique sont TOUS des sorties par le bas
+    // (OTC -0,0719 · HeeHaw -0,0647 · AGI -0,0605 · fone -0,0589 · STONK -0,0443 = -0,3003 SOL).
+    // Hors range basse la position est 100 % en token, n'encaisse plus AUCUN frais, et sa seule issue
+    // est le rebond ou le CUT. C'est donc la métrique qui précède les catastrophes — et elle n'était
+    // journalisée nulle part. On l'accumule ici : `recordLv` est le point de passage UNIQUE du bin,
+    // appelé par le scan comme par la boucle rapide. Coût nul (aucun appel supplémentaire).
+    if (bin != null && pos.live && pos.live.lowerBinId != null) {
+        const dehors = bin < pos.live.lowerBinId;
+        if (pos._obLast != null) {
+            const dt = now - pos._obLast;
+            if (dt > 0 && dt < 10 * 60 * 1000) {                  // ignore les trous (redémarrage, 429)
+                pos._obTotalMs = (pos._obTotalMs || 0) + dt;
+                if (pos._obDehors) pos._obOutMs = (pos._obOutMs || 0) + dt;
+            }
+        }
+        if (dehors && !pos._obDehors) {
+            pos._obDehors = true; pos._obSince = now; pos._obEpisodes = (pos._obEpisodes || 0) + 1;
+            console.log(`  🔻 ${pos.symbol}: SORTIE DE RANGE PAR LE BAS (bin ${bin} < ${pos.live.lowerBinId}) | LP ${(rg * 100).toFixed(1)}% | plus aucun frais encaissé`);
+        } else if (!dehors && pos._obDehors) {
+            pos._obDehors = false;
+            const min = pos._obSince ? Math.round((now - pos._obSince) / 60000) : 0;
+            console.log(`  🔺 ${pos.symbol}: RETOUR DANS LA RANGE après ${min} min hors range | LP ${(rg * 100).toFixed(1)}%`);
+        }
+        pos._obLast = now;
+    }
+    pos._lv = { rg, bin, ts: now };
+    (pos._lvHist = pos._lvHist || []).push({ t: now, lp: +(rg * 100).toFixed(1), bin });
     if (pos._lvHist.length > 40) pos._lvHist.shift();
 }
 // (2026-08-27) Garde-fou anti-await-infini : AUCUN appel RPC de bonus-live.js n'a de timeout (web3.js
@@ -1799,6 +1828,10 @@ async function closePaper(tok, pos, exitPrice, reason) {
         stTrend: pos.stTrend ?? null, stDistPct: pos.stDistPct ?? null, stTrendHtf: pos.stTrendHtf ?? null, htfLabel: pos.htfLabel ?? null,
         established: pos.established ?? null,
         lvHist: pos._lvHist || null, // trajectoire valeur LP (lp%, bin, ts) → trous = 429, décroissance lisse = mécanique LP
+        // (2026-09-08) hors-range BAS : la métrique qui précède les catastrophes (cf. recordLv).
+        outBottomMin: pos._obOutMs != null ? Math.round(pos._obOutMs / 60000) : null,
+        outBottomPct: pos._obTotalMs > 0 ? +((pos._obOutMs || 0) / pos._obTotalMs * 100).toFixed(1) : null,
+        outBottomEpisodes: pos._obEpisodes || 0,
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
