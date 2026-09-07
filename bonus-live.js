@@ -169,6 +169,36 @@ async function findMeteoraPool(tokenAddress, preferredPool) {
     console.log(`  🔬 [SHADOW pools] ${tokenAddress.slice(0, 8)} → ${candidates.map(c => `${c.addr.slice(0, 6)}(bs${c.binStep},fee${c.baseFeePct}%,${c.reserveSol.toFixed(0)}SOL)${c.addr === best.addr ? '*' : ''}`).join(' ')}`);
     console.log(`  🏆 Pool: ${best.addr.slice(0, 8)}... | bin step ${best.binStep} | fee ${best.baseFeePct}% | réserve ${best.reserveSol.toFixed(1)} SOL${wanted ? ' | désignée par fees/TVL datapi' : ''}`);
     _poolCache.set(tokenAddress, { addr: best.addr, ts: Date.now() });
+    // ── SHADOW rendement de pool (2026-09-08) ────────────────────────────────────────────────────
+    // Le tri interne ne connaît que le fee et les réserves : il IGNORE le volume, donc le rendement
+    // réel. Mesuré le 08/09 sur 18 décisions : 28 % des entrées se font sur une pool sous 3 %/jour de
+    // fee/TVL, alors que le token, lui, a été qualifié sur ≥3 %. Cas ZCAT : pool prise à 1,9 %/jour
+    // quand une autre du même token en offrait 6,5 %.
+    // On calcule ici le fee/TVL RÉEL de chaque candidate (volume 24h × fee ÷ TVL) via DexScreener —
+    // appel HTTP gratuit, AUCUN crédit RPC. Non bloquant : lancé sans await, échec silencieux.
+    // On journalise aussi le BIN STEP, parce qu'il détermine la largeur de range à ±34 bins :
+    // bs80 = -24 % en bas, bs100 = -29 %, bs200 = -49 %. Changer de pool change donc la protection
+    // anti-rug — c'est le vrai effet de bord à mesurer avant d'envisager une sélection par rendement.
+    (async () => {
+        try {
+            const r = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 8000 });
+            const met = (r.data?.pairs || []).filter(p => p.chainId === 'solana' && /meteora/i.test(p.dexId));
+            if (!met.length) return;
+            const enr = candidates.map(c => {
+                const m = met.find(p => p.pairAddress === c.addr);
+                const tvl = m ? (m.liquidity?.usd || 0) : 0, vol = m ? (m.volume?.h24 || 0) : 0;
+                return { ...c, ftv: tvl > 0 ? (vol * (c.baseFeePct / 100)) / tvl * 100 : null };
+            }).filter(c => c.ftv != null);
+            if (!enr.length) return;
+            const pris = enr.find(c => c.addr === best.addr);
+            const top = enr.slice().sort((a, b) => b.ftv - a.ftv)[0];
+            if (!pris) return;
+            const larg = bs => ((1 - Math.pow(1 + bs / 10000, -BIN_RANGE)) * 100).toFixed(0);
+            const rate = top.addr !== pris.addr;
+            console.log(`  🔬 [SHADOW rendement] ${tokenAddress.slice(0, 8)} → PRISE ${pris.addr.slice(0, 6)} bs${pris.binStep} fee${pris.baseFeePct}% ${pris.ftv.toFixed(1)}%/j (range -${larg(pris.binStep)}%)` +
+                (rate ? ` | MEILLEURE ${top.addr.slice(0, 6)} bs${top.binStep} fee${top.baseFeePct}% ${top.ftv.toFixed(1)}%/j (range -${larg(top.binStep)}%) → MANQUÉ ${(top.ftv - pris.ftv).toFixed(1)} pts${top.binStep !== pris.binStep ? ' ⚠️RANGE-DIFF' : ''}` : ` | déjà la meilleure des ${enr.length}`));
+        } catch (_) { /* shadow : jamais bloquant */ }
+    })();
     return best.addr;
 }
 
