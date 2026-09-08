@@ -553,13 +553,44 @@ async function gtOhlcv(mint, gmgnRes, limit) {
         .map(k => [k[0], +k[1], +k[2], +k[3], +k[4], +k[5]]).sort((a, b) => a[0] - b[0]);
 }
 
-async function birdeyeOhlcv(mint, type, limit, intervalSec) {
-    const to = Math.floor(Date.now() / 1000), from = to - limit * intervalSec;
-    const r = await axios.get('https://public-api.birdeye.so/defi/ohlcv', {
+// (2026-09-08) V3 D'ABORD, REPLI V1. Pendant la panne du 08/09 la v1 a rendu des réponses VIDES
+// (HTTP 200, 0 bougie) avec 29 % de quota restant et un débit de 0,4 RPS pour une limite à 1 RPS —
+// donc ni quota ni rate-limit. Les deux endpoints EXISTENT (401 sans clé, pas 404), c'est donc un
+// problème d'accès par package : depuis fin 2025 Birdeye ouvre les endpoints selon le plan. On tente
+// donc la v3 en premier et on retombe sur la v1 : si la clé a droit à l'une des deux, le bot repart
+// tout seul. `_beVer` mémorise celle qui marche pour ne pas payer deux appels à chaque fois.
+let _beVer = null;   // 'v3' | 'v1' | null (inconnu → on essaie les deux)
+function _beParse(d) {
+    const it = d?.data?.items || d?.data || [];
+    return (Array.isArray(it) ? it : []).map(k => [
+        k.unixTime ?? k.unix_time ?? k.time ?? 0,
+        +(k.o ?? k.open), +(k.h ?? k.high), +(k.l ?? k.low), +(k.c ?? k.close), +(k.v ?? k.volume ?? 0),
+    ]).filter(c => c[0] && isFinite(c[4])).sort((a, b) => a[0] - b[0]);
+}
+async function _beCall(path, mint, type, from, to) {
+    const r = await axios.get(`https://public-api.birdeye.so/${path}`, {
         params: { address: mint, type, time_from: from, time_to: to },
         headers: { 'X-API-KEY': BIRDEYE_KEY, 'x-chain': 'solana' }, timeout: 12000,
     });
-    return (r.data?.data?.items || []).map(k => [k.unixTime, +k.o, +k.h, +k.l, +k.c, +k.v]).sort((a, b) => a[0] - b[0]);
+    return _beParse(r.data);
+}
+async function birdeyeOhlcv(mint, type, limit, intervalSec) {
+    const to = Math.floor(Date.now() / 1000), from = to - limit * intervalSec;
+    const ordre = _beVer === 'v1' ? ['defi/ohlcv', 'defi/v3/ohlcv'] : ['defi/v3/ohlcv', 'defi/ohlcv'];
+    let derr = null;
+    for (const p of ordre) {
+        try {
+            const cs = await _beCall(p, mint, type, from, to);
+            if (cs.length) {
+                const v = p.includes('v3') ? 'v3' : 'v1';
+                if (_beVer !== v) { _beVer = v; console.log(`  ✅ Birdeye répond sur ${p} (${cs.length} bougies) — endpoint retenu`); }
+                return cs;
+            }
+        } catch (e) { derr = e; }
+        if (_beVer) break;   // version connue et sans données → ne pas doubler les appels (1 RPS)
+    }
+    if (derr) throw derr;
+    return [];
 }
 const candleCache = new Map(); // (mint+res) -> { cs, ts }
 let birdeyeBackoffUntil = 0, birdeye429Warned = false, birdeyeFails = 0, birdeyeEmpty = 0, gtFallbackWarned = false; // BACKOFF (outage 10/08) : sur 429/échecs, on ARRÊTE de taper
