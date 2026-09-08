@@ -514,6 +514,45 @@ async function gmgnKline(mint, res, limit, intervalSec) {
     // GMGN {time(ms),open,high,low,close,volume} → [ts(sec),o,h,l,c,v]
     return list.map(k => [Math.floor((k.time || k.timestamp || 0) / 1000), +k.open, +k.high, +k.low, +k.close, +k.volume]).sort((a, b) => a[0] - b[0]);
 }
+// ── REPLI GECKOTERMINAL (2026-09-08) — sans clé, gratuit ────────────────────────────────────────
+// Le 08/09, Birdeye a rendu des réponses VIDES (HTTP 200, 0 bougie) pendant onze heures alors qu'il
+// restait 29 % du quota mensuel. Les deux sources du bot (Birdeye, GMGN) exigent une clé ; quand
+// elles tombent ensemble, le bot est aveugle et ne peut plus évaluer AUCUNE entrée. GeckoTerminal
+// ne demande pas de clé et répondait normalement pendant toute la panne.
+// Lent (rate-limit agressif → 7 s entre appels) : c'est un FILET, pas une source principale. Il ne
+// se déclenche que si Birdeye ET GMGN rendent moins de 15 bougies.
+const _gtPoolCache = new Map();      // mint -> { pool, ts }
+let _gtLastCall = 0;
+const GT_MIN_GAP_MS = 7000;
+async function gtThrottle() {
+    const wait = GT_MIN_GAP_MS - (Date.now() - _gtLastCall);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    _gtLastCall = Date.now();
+}
+async function gtPoolFor(mint) {
+    const c = _gtPoolCache.get(mint);
+    if (c && Date.now() - c.ts < 6 * 3600 * 1000) return c.pool;
+    await gtThrottle();
+    const r = await axios.get(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${mint}/pools`,
+        { headers: { Accept: 'application/json' }, timeout: 12000 });
+    // pool la PLUS LIQUIDE — jamais data[0] : les pools mortes donnent des prix faux (piège du 27/06)
+    const best = (r.data?.data || []).slice().sort((a, b) =>
+        (+b.attributes?.reserve_in_usd || 0) - (+a.attributes?.reserve_in_usd || 0))[0];
+    const pool = best?.attributes?.address || null;
+    _gtPoolCache.set(mint, { pool, ts: Date.now() });
+    return pool;
+}
+const GT_TF = { '5m': ['minute', 5], '15m': ['minute', 15], '1h': ['hour', 1], '1d': ['day', 1] };
+async function gtOhlcv(mint, gmgnRes, limit) {
+    const tf = GT_TF[gmgnRes]; if (!tf) return [];
+    const pool = await gtPoolFor(mint); if (!pool) return [];
+    await gtThrottle();
+    const r = await axios.get(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/ohlcv/${tf[0]}`,
+        { params: { aggregate: tf[1], limit: Math.min(limit, 1000) }, headers: { Accept: 'application/json' }, timeout: 12000 });
+    return (r.data?.data?.attributes?.ohlcv_list || [])
+        .map(k => [k[0], +k[1], +k[2], +k[3], +k[4], +k[5]]).sort((a, b) => a[0] - b[0]);
+}
+
 async function birdeyeOhlcv(mint, type, limit, intervalSec) {
     const to = Math.floor(Date.now() / 1000), from = to - limit * intervalSec;
     const r = await axios.get('https://public-api.birdeye.so/defi/ohlcv', {
@@ -523,7 +562,7 @@ async function birdeyeOhlcv(mint, type, limit, intervalSec) {
     return (r.data?.data?.items || []).map(k => [k.unixTime, +k.o, +k.h, +k.l, +k.c, +k.v]).sort((a, b) => a[0] - b[0]);
 }
 const candleCache = new Map(); // (mint+res) -> { cs, ts }
-let birdeyeBackoffUntil = 0, birdeye429Warned = false, birdeyeFails = 0; // BACKOFF (outage 10/08) : sur 429/échecs, on ARRÊTE de taper
+let birdeyeBackoffUntil = 0, birdeye429Warned = false, birdeyeFails = 0, birdeyeEmpty = 0, gtFallbackWarned = false; // BACKOFF (outage 10/08) : sur 429/échecs, on ARRÊTE de taper
 // Birdeye 60s → l'IP Railway refroidit → Birdeye lève le throttle → 1er appel OK → le cache s'amorce → moins
 // d'appels. Sans ça, le bot re-tape 13×/scan et ENTRETIENT le throttle (jamais de récup).
 async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, force = false) {
@@ -532,7 +571,21 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
     if (!force && c && Date.now() - c.ts < ttlMs) return c.cs; // cache : ÉVITE l'appel (force=on rejoue, pour le fetch HTF du pattern)
     let cs = [];
     if (force || Date.now() >= birdeyeBackoffUntil) { // pas en backoff (ou FORCÉ : fetch HTF pattern, victime sinon du backoff partagé → faux pattern-KO)
-        try { cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec)); birdeye429Warned = false; birdeyeFails = 0; }
+        try {
+            cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec));
+            // (2026-09-08) UN 200 VIDE N'EST PAS UNE ERREUR — et c'est le pire cas. Crédits Birdeye à zéro
+            // le 08/09 : l'API renvoie 200 avec un corps sans `data.items`, donc aucune exception, aucun
+            // backoff, aucun log. Le bot a tourné ONZE HEURES sans bougies sans que rien ne l'annonce.
+            // On compte donc les réponses vides et on alerte, une fois, au 10e cas d'affilée.
+            if (!cs.length) {
+                birdeyeEmpty++;
+                if (birdeyeEmpty === 10) {
+                    console.log('🚨 BIRDEYE RÉPOND VIDE (HTTP 200, 0 bougie) 10 fois d\'affilée — crédits épuisés ou plan expiré ? Vérifier le tableau de bord Birdeye.');
+                    tg('🚨 Birdeye renvoie des réponses VIDES (200 sans données) — crédits probablement épuisés. Le bot ne peut plus évaluer d\'entrée.');
+                }
+            } else { birdeyeEmpty = 0; }
+            birdeye429Warned = false; birdeyeFails = 0;
+        }
         catch (e) {
             const st = (e && e.response && e.response.status) || (e && e.code) || String(e && e.message).slice(0, 30);
             birdeyeFails++;
@@ -543,6 +596,15 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
     if (cs.length < 15) { // Birdeye vide/rate-limité → fallback GMGN (épargné au max)
         try { const g = await throttled(() => gmgnKline(mint, gmgnRes, limit, intervalSec)); if (g.length > cs.length) cs = g; } catch (_) {}
     }
+    if (cs.length < 15) { // 2e repli : GeckoTerminal, sans clé (filet anti-panne du 08/09)
+        try {
+            const gt = await gtOhlcv(mint, gmgnRes, limit);
+            if (gt.length > cs.length) {
+                cs = gt;
+                if (!gtFallbackWarned) { gtFallbackWarned = true; console.log('  🦎 Repli GeckoTerminal actif — Birdeye et GMGN sans données (lent : 7s entre appels)'); }
+            }
+        } catch (_) {}
+    } else { gtFallbackWarned = false; }
     if (cs.length) candleCache.set(key, { cs, ts: Date.now() });
     return cs.length ? cs : (c ? c.cs : []);
 }
@@ -1142,10 +1204,19 @@ async function scan() {
                 if (!inPos) w.nextCheckAt = now + 90e3;
                 if (/429/.test(w.lastFetchErr || '')) { rl429++; if (!w.diag) w.lastSkip = '429-fetch-direct'; if (rl429 === 1) console.log(`  ⏳ GT rate-limit (429) ce tick — backoff, le cache prend le relais`); continue; }
                 cKo++;
+                // vrai dès qu'on a tenté au moins 3 tokens sur ce tick sans UN SEUL succès de bougies
+                const sourceGloballyDown = cOk === 0 && (cOk + cKo) >= 3;
                 if (!state.positions[tok]) {
                     w.fetchFails = (w.fetchFails || 0) + 1;
                     if (!w.diag) w.lastSkip = 'bougies-vides×' + w.fetchFails;
-                    if (w.fetchFails >= 8) {
+                    // (2026-09-08) NE PAS PURGER SI LA SOURCE EST GLOBALEMENT MORTE. Le 08/09, les crédits
+                    // Birdeye sont tombés à zéro : l'API répond 200 avec un corps VIDE (pas d'erreur), donc
+                    // chaque token comptait un « échec bougies » et la watchlist est passée de 35 à 11 en
+                    // onze heures. Or c'était l'API qui était morte, pas les tokens. Si AUCUN token du tick
+                    // n'a de bougies alors que plusieurs ont été tentés, on gèle le compteur : le bot garde
+                    // son univers et repart intact dès que la source revient.
+                    if (sourceGloballyDown) { w.fetchFails = Math.min(w.fetchFails, 7); }
+                    else if (w.fetchFails >= 8) {
                         console.log(`🧹 Purge watch: ${w.symbol} (${w.fetchFails} échecs bougies consécutifs — ${w.lastFetchErr || 'réponse vide'})`);
                         state.purgedAt[tok] = now;
                         delete state.watch[tok];

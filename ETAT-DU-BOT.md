@@ -53,6 +53,7 @@ heures à 8 positions contre 1,9/h à 7 — ×3,5, mais 53/jour au total reste n
 | 06/09 | — | **`PRICE_LP_DIVERGENCE` 8 → 5 pts** | 71 → 151 épisodes ⚡, +2 886 crédits/j |
 | 08/09 | `e3f79b6` | Shadow rendement de pool (fee/TVL réel + bin step) | mesure seule, HTTP gratuit |
 | 08/09 | — | **Mesure du temps HORS RANGE BAS** (`🔻`/`🔺`, champs `outBottom*`) | mesure seule, coût nul |
+| 08/09 | — | **Repli bougies GeckoTerminal** + purge gelée si source morte + alerte 200-vide | corrige une panne de 11 h |
 
 ### Le bug des positions orphelines — 04/09, six semaines de latence
 
@@ -296,6 +297,35 @@ Sept conclusions ont dû être corrigées en une session. Toutes de la même fam
 vérifier depuis quand un champ est écrit avant de l'analyser.
 
 ---
+
+## 5quater. PANNE DU 08/09 — Birdeye renvoie du VIDE sans erreur
+
+**Symptôme** : de 00:00 à 11:30 UTC, `bougies OK 0/vide N ⚠️ SOURCE BOUGIES DOWN` à chaque scan,
+**aucune entrée possible** (sans bougies : pas de RSI, pas de SuperTrend, pas de pattern). Le
+21:52 la veille tout allait bien (`bougies OK 17/vide 2`, watch 35). Aucun redémarrage entre les deux.
+
+**Cause technique** : `birdeyeOhlcv` fait `return (r.data?.data?.items || [])`. Un **HTTP 200 au corps
+vide ne lève PAS d'exception** → aucun log, aucun backoff, aucune alerte. Le bot a tourné onze heures
+en croyant simplement que les tokens n'avaient pas de bougies.
+
+**Cause racine : NON DÉTERMINÉE.** Le quota n'était PAS épuisé (21,35K unités sur 30K, 29 % restants).
+Candidats : endpoint v1 `/defi/ohlcv` devenu payant (une **v3** `/defi/v3/ohlcv` existe et l'accès
+par endpoint dépend du package depuis fin 2025), ou limite de débit par seconde. Le « Credit Balance
+$0.00 » du tableau de bord est un solde prépayé distinct du quota — ne pas le confondre (erreur faite
+le 08/09).
+
+**Dégât collatéral, le plus coûteux** : le bot purgeait un token du watch après 8 échecs de bougies,
+en supposant le token mort. Comme c'était l'API, **la watchlist est tombée de 35 à 11 en onze heures**.
+
+**Corrigé le 08/09 :**
+1. `sourceGloballyDown` — si aucun token n'a de bougies sur un tick alors que ≥3 ont été tentés, le
+   compteur d'échecs est **gelé** : plus aucune purge pendant une panne de source.
+2. Alerte console + Telegram au **10e** « 200 vide » d'affilée (`birdeyeEmpty`).
+3. **Repli GeckoTerminal** (`gtOhlcv`) — sans clé, gratuit, actif seulement si Birdeye ET GMGN rendent
+   <15 bougies. Lent (7 s entre appels, pool résolue puis cachée 6 h) : c'est un filet, pas une source.
+
+**Leçon générale** : les deux sources de bougies exigeaient une clé. Toute source unique keyée doit
+avoir un repli sans clé, sinon une panne de facturation arrête le bot sans le dire.
 
 ## 6. Couverture des données
 
