@@ -561,6 +561,13 @@ async function gtOhlcv(mint, gmgnRes, limit) {
 // tout seul. `_beVer` mémorise celle qui marche pour ne pas payer deux appels à chaque fois.
 let _beVer = null;   // 'v3' | 'v1' | null (inconnu → on essaie les deux)
 function _beParse(d) {
+    // (2026-09-08) BIRDEYE RENVOIE SES ERREURS EN HTTP 200 AVEC `success: false`.
+    // Cas réel : {"success":false,"message":"Compute units usage limit exceeded"} — quota épuisé,
+    // servi en 200, donc axios ne lève RIEN et l'ancien parseur (`d.data.items || []`) rendait un
+    // tableau vide indistinguable d'un "pas de données". Le bot a tourné ONZE HEURES sans bougies
+    // en silence, et le tableau de bord affichait pourtant 71 % de quota — il est faux ou décalé.
+    // On lève donc une vraie erreur : elle remonte au backoff et s'affiche dans les logs.
+    if (d && d.success === false) throw new Error(`Birdeye: ${d.message || 'success=false'}`);
     const it = d?.data?.items || d?.data || [];
     return (Array.isArray(it) ? it : []).map(k => [
         k.unixTime ?? k.unix_time ?? k.time ?? 0,
@@ -648,7 +655,9 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
             birdeye429Warned = false; birdeyeFails = 0;
         }
         catch (e) {
-            const st = (e && e.response && e.response.status) || (e && e.code) || String(e && e.message).slice(0, 30);
+            const st = (e && e.response && e.response.data && e.response.data.message)
+                || String(e && e.message || '').replace(/^Birdeye: /, '').slice(0, 60)
+                || (e && e.response && e.response.status) || (e && e.code) || 'inconnu';
             birdeyeFails++;
             if (st === 429 || birdeyeFails >= 3) { birdeyeBackoffUntil = Date.now() + 60000; birdeyeFails = 0; } // 429 OU 3 échecs → pause 60s
             if (!birdeye429Warned) { birdeye429Warned = true; console.log(`  ⏳ Birdeye échec (${st}) — backoff 60s (cache prend le relais)`); }
