@@ -274,6 +274,19 @@ Détail utile : **−3 % est moins bon que 0**, ce qui confirme le revert du 29/
 
 ---
 
+## 4bis. RÈGLE DE DÉPLOIEMENT — ne pas pousser si un trail est armé
+
+**Avant tout `git push`, vérifier qu'aucune position n'a `armé✓`.** Un push redéploie Railway et
+redémarre le bot ; pendant la coupure, **le trail n'est plus évalué**. Or une position armée est
+celle qui peut devoir sortir dans les 10 secondes — mesuré le 08/09, la boucle rapide l'évalue
+toutes les 10 s sur des données de moins de 2 s, et HONTER a perdu **5,6 points de LP dans une
+seule fenêtre** (pic 8,65 % → sortie 3,1 %). Redémarrer à cet instant, c'est risquer de rendre un
+gain acquis.
+
+Comment vérifier : chercher `armé✓` dans les lignes `📊` de `/logs`, ou les lignes `⏱️ … armé`.
+Les positions NON armées ne courent pas ce risque (RSI2, CUT et rebond sont des variables lentes).
+Exception : un correctif urgent (bot aveugle, positions non gérées) prime — pousser et le signaler.
+
 ## 5. Pièges de méthode — tous rencontrés le 02/09
 
 Sept conclusions ont dû être corrigées en une session. Toutes de la même famille :
