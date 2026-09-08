@@ -587,7 +587,10 @@ async function birdeyeOhlcv(mint, type, limit, intervalSec) {
                 return cs;
             }
         } catch (e) { derr = e; }
-        if (_beVer) break;   // version connue et sans données → ne pas doubler les appels (1 RPS)
+        // (2026-09-08, 12h) NE JAMAIS doubler l'appel quand la 1re version rend du vide : chaque essai
+        // est facturé. On ne tente la 2e version que si la 1re a levé une ERREUR (donc probablement non
+        // servie), jamais sur un 200-vide qui, lui, a déjà coûté un crédit.
+        if (_beVer || !derr) break;
     }
     if (derr) throw derr;
     return [];
@@ -610,6 +613,15 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
             // On compte donc les réponses vides et on alerte, une fois, au 10e cas d'affilée.
             if (!cs.length) {
                 birdeyeEmpty++;
+                // (2026-09-08, 12h) UN 200-VIDE CONSOMME QUAND MÊME DES CRÉDITS. Confirmé sur le tableau
+                // de bord : l'usage v1 ET v3 est compté alors qu'aucune bougie ne revient. Sans backoff,
+                // le bot brûlait ses 8 650 CU restants sur des réponses vides — et le repli v3→v1 doublait
+                // la facture. On coupe donc Birdeye pour 30 min après 5 vides d'affilée : GeckoTerminal
+                // prend le relais gratuitement, et les crédits sont préservés pour quand la source revient.
+                if (birdeyeEmpty >= 5) {
+                    birdeyeBackoffUntil = Date.now() + 30 * 60 * 1000;
+                    if (birdeyeEmpty === 5) console.log('  💤 Birdeye mis en pause 30 min (5 réponses vides d\'affilée) — crédits préservés, GeckoTerminal prend le relais');
+                }
                 if (birdeyeEmpty === 10) {
                     console.log('🚨 BIRDEYE RÉPOND VIDE (HTTP 200, 0 bougie) 10 fois d\'affilée — crédits épuisés ou plan expiré ? Vérifier le tableau de bord Birdeye.');
                     tg('🚨 Birdeye renvoie des réponses VIDES (200 sans données) — crédits probablement épuisés. Le bot ne peut plus évaluer d\'entrée.');
