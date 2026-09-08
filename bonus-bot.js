@@ -574,10 +574,21 @@ async function _beCall(path, mint, type, from, to) {
     // et son exemple officiel passe désormais `currency`, `chart_type` et `ui_amount_mode`. Si l'une de
     // ces valeurs par défaut a changé pendant la migration, ça expliquerait les 200-vides du 08/09.
     // On ne suppose plus aucun défaut : on envoie ce que leur propre exemple envoie.
+    const p = { address: mint, type, time_from: from, time_to: to,
+                currency: 'usd', chart_type: 'price', ui_amount_mode: 'raw' };
+    if (path.includes('v3')) {
+        // (2026-09-08) SPÉCIFIQUE V3, deux points critiques lus dans sa doc :
+        // · « Empty candles are not returned unless padding=true » — sur un memecoin, beaucoup de
+        //   bougies 15m n'ont AUCUNE transaction. Sans padding la série revient TROUÉE, et le RSI
+        //   comme la SuperTrend supposent des intervalles réguliers : ils se fausseraient en silence.
+        //   La v1 padde par défaut (« Compared to v1: … no candle padding »), d'où l'écart.
+        // · `mode` : en mode `count` la doc interdit d'envoyer time_from ET time_to. On force donc
+        //   `range` explicitement plutôt que de dépendre d'un défaut qui pourrait changer.
+        p.padding = 'true';
+        p.mode = 'range';
+    }
     const r = await axios.get(`https://public-api.birdeye.so/${path}`, {
-        params: { address: mint, type, time_from: from, time_to: to,
-                  currency: 'usd', chart_type: 'price', ui_amount_mode: 'raw' },
-        headers: { 'X-API-KEY': BIRDEYE_KEY, 'x-chain': 'solana' }, timeout: 12000,
+        params: p, headers: { 'X-API-KEY': BIRDEYE_KEY, 'x-chain': 'solana' }, timeout: 12000,
     });
     return _beParse(r.data);
 }
