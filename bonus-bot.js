@@ -489,7 +489,29 @@ async function dexInfo(token) {
 // (vs 44 GMGN). GMGN en FALLBACK seulement quand Birdeye vide/rate-limité. On MINIMISE les appels :
 // fréquence adaptative (peu de tokens dus/tick) + caches longs (macro pattern/ATH lent) + throttle
 // global 1.5s. Les deux TOKEN-LEVEL → suivent la migration (supprime le bricolage pool d'origine).
-const BIRDEYE_KEY = (process.env.BIRDEYE_API_KEY || '').trim();
+// (2026-09-08) ROTATION DE CLÉS BIRDEYE, comme pour Helius. `BIRDEYE_API_KEY` accepte désormais
+// PLUSIEURS clés séparées par des virgules. Conso mesurée ~1 000 CU/jour soit ~31 000/mois pour un
+// plafond de 30 000 : un seul compte ne suffit pas, deux couvrent avec de la marge.
+// Quand une clé rend « Compute units usage limit exceeded », elle est marquée épuisée pour 6 h et on
+// passe à la suivante. Toutes épuisées → on tombe sur GMGN puis GeckoTerminal (gratuit, sans clé).
+const BIRDEYE_KEYS = (process.env.BIRDEYE_API_KEY || '').split(',').map(s => s.trim()).filter(Boolean);
+const _beDead = new Map();          // index de clé -> timestamp jusqu'auquel elle est considérée épuisée
+const BE_DEAD_MS = 6 * 3600 * 1000;
+function _beKey() {
+    for (let i = 0; i < BIRDEYE_KEYS.length; i++) {
+        const mort = _beDead.get(i) || 0;
+        if (Date.now() >= mort) return { key: BIRDEYE_KEYS[i], idx: i };
+    }
+    return null;                     // toutes épuisées
+}
+function _beMarkDead(idx, why) {
+    if (idx == null || _beDead.get(idx) > Date.now()) return;
+    _beDead.set(idx, Date.now() + BE_DEAD_MS);
+    const reste = BIRDEYE_KEYS.length - [...Array(BIRDEYE_KEYS.length).keys()].filter(i => (_beDead.get(i) || 0) > Date.now()).length;
+    console.log(`  🔑 Birdeye: clé #${idx + 1}/${BIRDEYE_KEYS.length} épuisée (${why}) — mise de côté 6 h, ${reste} clé(s) encore active(s)`);
+    if (!reste) tg('🔑 Toutes les clés Birdeye sont épuisées — le bot passe sur GeckoTerminal (plus lent, gratuit). Ajouter une clé ou attendre le reset.');
+}
+const BIRDEYE_KEY = BIRDEYE_KEYS[0] || '';   // compat : premier élément pour les logs de démarrage
 const { randomUUID: _uuid } = require('crypto');
 // throttle global partagé (sérialise + espace) — 1.5s mini entre 2 appels bougies (Birdeye tient à 1.5s).
 let candleChain = Promise.resolve();
@@ -575,6 +597,8 @@ function _beParse(d) {
     ]).filter(c => c[0] && isFinite(c[4])).sort((a, b) => a[0] - b[0]);
 }
 async function _beCall(path, mint, type, from, to) {
+    const k = _beKey();
+    if (!k) throw new Error('Birdeye: toutes les clés épuisées');
     // (2026-09-08) PARAMÈTRES OPTIONNELS EXPLICITES. Les 4 obligatoires (address, type, time_from,
     // time_to) étaient déjà envoyés — la requête du bot était donc valide. Mais Birdeye a migré sa doc
     // (docs.birdeye.so/reference/* → data.birdeye.so/docs/data-api/*), marqué `/defi/ohlcv` DEPRECATED,
@@ -595,8 +619,12 @@ async function _beCall(path, mint, type, from, to) {
         p.mode = 'range';
     }
     const r = await axios.get(`https://public-api.birdeye.so/${path}`, {
-        params: p, headers: { 'X-API-KEY': BIRDEYE_KEY, 'x-chain': 'solana' }, timeout: 12000,
+        params: p, headers: { 'X-API-KEY': k.key, 'x-chain': 'solana' }, timeout: 12000,
     });
+    // quota dépassé sur CETTE clé → on la met de côté et on laisse l'appel suivant prendre la suivante
+    if (r.data && r.data.success === false && /compute unit|usage limit|quota/i.test(r.data.message || '')) {
+        _beMarkDead(k.idx, r.data.message);
+    }
     return _beParse(r.data);
 }
 async function birdeyeOhlcv(mint, type, limit, intervalSec) {
