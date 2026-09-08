@@ -306,7 +306,7 @@ if (!state.stMult2Reset) { for (const w of Object.values(state.watch || {})) del
 if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})) { if (!state.positions?.[tok]) delete state.watch[tok]; } state.poolOriginResetV1 = true; }
 // (2026-08-27) `_closing` est persisté par save() : un verrou posé avant un crash/redeploy rendrait la
 // position définitivement infermable. On le purge au démarrage.
-for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; delete p._priceHotUntil; delete p._peakLogged; delete p._obLast; }
+for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; delete p._priceHotUntil; delete p._peakLogged; delete p._obLast; delete p._armEvalTs; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 // ── SHADOW STATS PERSISTÉS (2026-07-29, demande user) : les mesures shadow étaient des console.log
@@ -2289,6 +2289,22 @@ async function fastPositionCheck() {
                 console.log(`  🔺 ${pos.symbol} | peak LP ${(pos.peakGain * 100).toFixed(2)}% (+${((pos.peakGain - pkAvant) * 100).toFixed(2)} pt) | LP ${(rg * 100).toFixed(2)}% | rapide${franchit ? ` | ⚡ ARMEMENT franchi (${(TP_PCT * 100).toFixed(0)}%)` : ''}`);
             }
             const armed = pos.peakGain >= TP_PCT, exitPx = pos.lastPx || pos.entry;
+            // ── (2026-09-08) TRACE DE CADENCE SUR POSITION ARMÉE ────────────────────────────────
+            // Cas OTC et HONTER : armées à 6,16 % et 8,65 %, sorties à 3,8 % et 3,1 % — soit 2,4 et
+            // 5,6 points rendus pour un trail réglé à 1. Une position armée relève du palier 8 s
+            // (`pk >= TP_PCT`), mais rien dans les logs ne permet de vérifier la cadence RÉELLE :
+            // les lignes 📊 viennent du SCAN, les 🔺 seulement des progressions de pic.
+            // On trace donc ici, à chaque évaluation du trail sur une position armée : l'intervalle
+            // depuis l'évaluation précédente et l'ÂGE de la valeur LP utilisée. Si l'intervalle est
+            // ~10 s mais l'âge élevé, la boucle tourne sur du cache périmé ; s'il est grand, elle ne
+            // tourne pas. Volume négligeable : seulement les positions armées, donc quelques minutes.
+            if (armed) {
+                const now2 = Date.now();
+                const depuis = pos._armEvalTs ? ((now2 - pos._armEvalTs) / 1000).toFixed(1) : '?';
+                const age = _batchLv && _batchLv.ts ? ((now2 - _batchLv.ts) / 1000).toFixed(1) : '?';
+                pos._armEvalTs = now2;
+                console.log(`  ⏱️ ${pos.symbol} armé | LP ${(rg * 100).toFixed(2)}% | peak ${(pos.peakGain * 100).toFixed(2)}% | seuil ${((pos.peakGain - TRAIL) * 100).toFixed(2)}% | éval +${depuis}s | âge donnée ${age}s`);
+            }
             // CUT hors-range -55% PARTOUT (2026-08-19, backtest tenir-vs-couper : -35% coupait trop tôt, delta +121% sur 12 CUT-bas ; -55% tient les rebonds, garde un plancher anti-rug)
             if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId) {
                 await closePaper(tok, pos, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, rapide)`);
