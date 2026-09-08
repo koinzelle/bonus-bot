@@ -627,13 +627,30 @@ async function _beCall(path, mint, type, from, to) {
         p.padding = 'true';
         p.mode = 'range';
     }
-    const r = await axios.get(`https://public-api.birdeye.so/${path}`, {
-        params: p, headers: { 'X-API-KEY': k.key, 'x-chain': 'solana' }, timeout: 12000,
-    });
-    // quota dépassé sur CETTE clé → on la met de côté et on laisse l'appel suivant prendre la suivante
-    if (r.data && r.data.success === false && /compute unit|usage limit|quota/i.test(r.data.message || '')) {
-        _beMarkDead(k.idx, r.data.message);
+    // (2026-09-08, correctif) Birdeye renvoie « Compute units usage limit exceeded » en HTTP 4xx,
+    // pas en 200 : axios LÈVE, et le test de bascule placé dans le chemin de succès n'était jamais
+    // atteint — la 2e clé n'était donc jamais essayée. On marque la clé épuisée dans les DEUX chemins.
+    const quotaKO = m => /compute unit|usage limit|quota|limit exceeded/i.test(m || '');
+    let r;
+    try {
+        r = await axios.get(`https://public-api.birdeye.so/${path}`, {
+            params: p, headers: { 'X-API-KEY': k.key, 'x-chain': 'solana' }, timeout: 12000,
+        });
+    } catch (e) {
+        const msg = (e && e.response && e.response.data && e.response.data.message) || '';
+        if (quotaKO(msg)) {
+            _beMarkDead(k.idx, msg);
+            const suivant = _beKey();
+            if (suivant && suivant.idx !== k.idx) {   // une autre clé est dispo → on réessaie TOUT DE SUITE
+                const r2 = await axios.get(`https://public-api.birdeye.so/${path}`, {
+                    params: p, headers: { 'X-API-KEY': suivant.key, 'x-chain': 'solana' }, timeout: 12000,
+                });
+                return _beParse(r2.data);
+            }
+        }
+        throw e;
     }
+    if (r.data && r.data.success === false && quotaKO(r.data.message)) _beMarkDead(k.idx, r.data.message);
     return _beParse(r.data);
 }
 async function birdeyeOhlcv(mint, type, limit, intervalSec) {
