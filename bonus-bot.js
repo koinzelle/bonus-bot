@@ -505,6 +505,15 @@ async function dexInfo(token) {
 // passe à la suivante. Toutes épuisées → on tombe sur GMGN puis GeckoTerminal (gratuit, sans clé).
 const BIRDEYE_KEYS = (process.env.BIRDEYE_API_KEY || '').split(',').map(s => s.trim()).filter(Boolean);
 const _beDead = new Map();          // index de clé -> timestamp jusqu'auquel elle est considérée épuisée
+// (2026-09-08) Diagnostic au démarrage : combien de clés, et sont-elles DISTINCTES ? Le 08/09 les deux
+// clés sont tombées à 0,4 s d'intervalle — signe qu'elles partagent un quota. On affiche donc leur
+// empreinte (6 premiers + 4 derniers caractères) pour que le user voie d'un coup d'œil s'il a collé
+// deux fois la même, ou deux clés du même compte (régénérer une clé ne crée PAS un nouveau quota).
+if (BIRDEYE_KEYS.length) {
+    const uniques = new Set(BIRDEYE_KEYS).size;
+    console.log(`🔑 Birdeye: ${BIRDEYE_KEYS.length} clé(s) chargée(s) — ${BIRDEYE_KEYS.map((k, i) => `#${i + 1} ${k.slice(0, 6)}…${k.slice(-4)}`).join(' · ')}` +
+        (uniques < BIRDEYE_KEYS.length ? `  ⚠️ ATTENTION : seulement ${uniques} clé(s) DISTINCTE(S) — doublon dans BIRDEYE_API_KEY` : ''));
+} else console.log('🔑 Birdeye: AUCUNE clé configurée');
 const BE_DEAD_MS = 6 * 3600 * 1000;
 function _beKey() {
     for (let i = 0; i < BIRDEYE_KEYS.length; i++) {
@@ -513,11 +522,12 @@ function _beKey() {
     }
     return null;                     // toutes épuisées
 }
+const _beEmpreinte = i => (BIRDEYE_KEYS[i] || '').slice(0, 6) + '…' + (BIRDEYE_KEYS[i] || '').slice(-4);
 function _beMarkDead(idx, why) {
     if (idx == null || _beDead.get(idx) > Date.now()) return;
     _beDead.set(idx, Date.now() + BE_DEAD_MS);
     const reste = BIRDEYE_KEYS.length - [...Array(BIRDEYE_KEYS.length).keys()].filter(i => (_beDead.get(i) || 0) > Date.now()).length;
-    console.log(`  🔑 Birdeye: clé #${idx + 1}/${BIRDEYE_KEYS.length} épuisée (${why}) — mise de côté 6 h, ${reste} clé(s) encore active(s)`);
+    console.log(`  🔑 Birdeye: clé #${idx + 1}/${BIRDEYE_KEYS.length} [${_beEmpreinte(idx)}] épuisée (${why}) — mise de côté 6 h, ${reste} clé(s) encore active(s)`);
     if (!reste) tg('🔑 Toutes les clés Birdeye sont épuisées — le bot passe sur GeckoTerminal (plus lent, gratuit). Ajouter une clé ou attendre le reset.');
 }
 const BIRDEYE_KEY = BIRDEYE_KEYS[0] || '';   // compat : premier élément pour les logs de démarrage
@@ -655,7 +665,16 @@ async function _beCall(path, mint, type, from, to) {
 }
 async function birdeyeOhlcv(mint, type, limit, intervalSec) {
     const to = Math.floor(Date.now() / 1000), from = to - limit * intervalSec;
-    const ordre = _beVer === 'v1' ? ['defi/ohlcv', 'defi/v3/ohlcv'] : ['defi/v3/ohlcv', 'defi/ohlcv'];
+    // (2026-09-08, 17h — CORRECTIF URGENT) V1 D'ABORD, PAS LA V3.
+    // La doc « What is Compute Unit Cost » donne deux modèles de facturation différents :
+    //   /defi/ohlcv      → CU model **fixed**                 (montant constant par appel)
+    //   /defi/v3/ohlcv   → CU model **dynamic-by-resolution** (CU selon résolution, profondeur ET
+    //                       ancienneté de l'historique demandé)
+    // Le bot demande 192 bougies 15m, 200 en 5m, 720 en 1h et 1000 en 1d : exactement ce que la v3
+    // fait payer cher. Avoir mis la v3 en tête ce matin (37dd979) a brûlé les 30 000 CU d'un compte
+    // NEUF en ~4 heures. On repasse donc la v1 en priorité — elle est marquée « deprecated » mais
+    // reste servie, et son coût est prévisible. La v3 n'est qu'un repli si la v1 ne répond pas.
+    const ordre = _beVer === 'v3' ? ['defi/v3/ohlcv', 'defi/ohlcv'] : ['defi/ohlcv', 'defi/v3/ohlcv'];
     let derr = null;
     for (const p of ordre) {
         try {
@@ -684,6 +703,24 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
     const c = candleCache.get(key);
     if (!force && c && Date.now() - c.ts < ttlMs) return c.cs; // cache : ÉVITE l'appel (force=on rejoue, pour le fetch HTF du pattern)
     let cs = [];
+    // ── (2026-09-08, 17h) ROUTAGE PAR COÛT : 1H et 1D vont chez GeckoTerminal EN PREMIER ───────
+    // Coût d'un appel v3 (formule Birdeye : base(résolution) × profondeur × ancienneté) :
+    //     5m  limit 200  →   20 × 2 × 1,0 =     40 CU
+    //    15m  limit 192  →   20 × 2 × 1,5 =     60 CU
+    //     1H  limit 720  →   50 × 4 × 1,5 =    300 CU
+    //     1D  limit 1000 → 2000 × 4 × 3,0 = 24 000 CU   ← 80 % du quota mensuel EN UN APPEL
+    // La résolution journalière a une base de 2000 CU : elle est hors de portée d'un package à
+    // 30 000 CU, quelle que soit la profondeur demandée. C'est ce qui a vidé un compte NEUF en 4 h.
+    // Or ces deux timeframes sont les MOINS fréquents (cache 20 min pour 1H, 60 min pour 1D) :
+    // la lenteur de GeckoTerminal (7 s entre appels) n'a donc aucune conséquence pour eux.
+    // Birdeye reste prioritaire sur 5m et 15m, où il est bon marché ET rapide.
+    // Bénéfice durable : le jour où la v1 (coût fixe, marquée deprecated) disparaîtra, seuls 5m et
+    // 15m basculeront sur la v3 — à 40 et 60 CU l'appel, c'est tenable.
+    const chersEnV3 = gmgnRes === '1h' || gmgnRes === '1d';
+    if (chersEnV3) {
+        try { cs = await gtOhlcv(mint, gmgnRes, limit); } catch (_) {}
+        if (cs.length >= 15) { candleCache.set(key, { cs, ts: Date.now() }); return cs; }
+    }
     if (force || Date.now() >= birdeyeBackoffUntil) { // pas en backoff (ou FORCÉ : fetch HTF pattern, victime sinon du backoff partagé → faux pattern-KO)
         try {
             cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec));
