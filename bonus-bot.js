@@ -175,6 +175,15 @@ function atrPct15(cs) {   // ATR14 sur les bougies 15m, en % du prix courant
 }
 const MC_MIN_ATH = 250_000;       // l'ATH doit avoir dépassé cette MC
 const AGE_MAX_H = 24 * 365;       // garde-fou zombies 1 an — pas de MAX (EP joue les vieux coins).
+// (2026-09-08) PLAFOND DU WATCH sorti en constante — il était en dur à deux endroits (1190, 1218).
+// Monté de 35 à 45 sur demande user : « on prend tout, le bot fait le tri avec les autres filtres ».
+// Mesuré avant la hausse : le plafond n'était atteint que dans 1,6 % des scans (308 sur ~19 500) et
+// n'avait provoqué que 28 évictions en 4 jours — il n'est donc PAS le goulot. Le vrai goulot est en
+// amont, au filtre d'ajout (GMGN fees ≥ 30 SOL, ~230 rejets/semaine, cf. shadow feesSeuil).
+// Coût de la hausse : +29 % de bougies par scan, soit ~994 → ~1 278 CU/jour Birdeye. Compensé par
+// le passage du cache 15m de 300 à 450 s (-33 %), ce qui ramène à ~852 CU/jour sous un budget de 909.
+// Un cache de 450 s reste très en deçà de la période d'une bougie 15 min : aucune perte d'information.
+const MAX_WATCH = parseInt(process.env.MAX_WATCH || '45', 10);
 const AGE_MIN_H = 10;             // MINIMUM d'âge de coin (2026-07-28, abaissé 24h→10h) : 24h bloquait Looks (16h) qui a fait +66% en V — l'âge n'est PAS un bon discriminateur (le plus jeune a gagné, les vieux saignent). 10h ne vire que les launch snipes purs (<10h) ; le pattern + anti-pump-explosif font le vrai tri.
 const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener exact d'EP (aligné 2026-07-22, avant 500k)
 // ── SEUILS DE SORTIE — SOURCE UNIQUE (2026-08-27) : ils étaient dupliqués dans 3 endroits (scan, chemin
@@ -708,7 +717,7 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
 }
 // TTL longs = moins d'appels : 15m→120s (support/exit) ; 1H→20min ; daily→60min (macro = lent).
 const candles5 = (mint, limit = 200) => candlesTF(mint, '5m', '5m', limit, 300, 120 * 1000);   // cache 60s→120s (charge Birdeye)
-const candles15 = (mint, limit = 192, ttl = 300 * 1000) => candlesTF(mint, '15m', '15m', limit, 900, ttl); // cache 300s (45s pour les tokens near-entry, cf w.nearEntry)
+const candles15 = (mint, limit = 192, ttl = 450 * 1000) => candlesTF(mint, '15m', '15m', limit, 900, ttl); // cache 300s (45s pour les tokens near-entry, cf w.nearEntry)
 const candles1h = (mint, limit = 720, force = false) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000, force);
 const candlesDay = (mint, limit = 1000, force = false) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000, force);
 
@@ -1187,7 +1196,7 @@ async function scan() {
             if (state.watch[tok] || state.positions[tok]) continue;
             // cooldown re-add 30min après purge (sinon cycle purge→re-add sur les tokens trending morts)
             if (state.purgedAt[tok] && now - state.purgedAt[tok] < 30 * 60 * 1000) continue;
-            if (Object.keys(state.watch).length >= 35 && replaceBudget <= 0) break; // pleine + plus de remplacement ce scan → stop
+            if (Object.keys(state.watch).length >= MAX_WATCH && replaceBudget <= 0) break; // pleine + plus de remplacement ce scan → stop
             try {
                 const d = await dexInfo(tok);
                 if (!d || !d.birthMs || !d.supply) continue;
@@ -1215,7 +1224,7 @@ async function scan() {
                 // WATCH PLEINE → REMPLACEMENT (2026-08-14, option 2) : le coin a passé TOUS les filtres = bonne
                 // pépite → on éjecte le plus VIEUX candidat ordinaire (ni position, ni fee-machine) pour lui faire
                 // de la place. Garantit que les résurrections entrent toujours ; les coins morts/dormants sortent.
-                if (Object.keys(state.watch).length >= 35) {
+                if (Object.keys(state.watch).length >= MAX_WATCH) {
                     let oldest = null, oldestTs = Infinity;
                     for (const [t, ww] of Object.entries(state.watch)) {
                         if (state.positions[t] || feeTvlMap.has(t)) continue; // protégés : positions + fee-machines (on farme)
