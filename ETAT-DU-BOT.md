@@ -324,8 +324,25 @@ en supposant le token mort. Comme c'était l'API, **la watchlist est tombée de 
 3. **Repli GeckoTerminal** (`gtOhlcv`) — sans clé, gratuit, actif seulement si Birdeye ET GMGN rendent
    <15 bougies. Lent (7 s entre appels, pool résolue puis cachée 6 h) : c'est un filet, pas une source.
 
+**UN 200-VIDE EST FACTURÉ (constat du 08/09 midi).** Le tableau de bord Birdeye compte l'usage de la
+v1 ET de la v3 alors qu'aucune bougie ne revient : ces API facturent la **requête servie**, pas le
+résultat utile. Sans backoff, le bot brûlait ses 8 650 CU restants sur du vide — et le repli v3→v1
+que j'avais ajouté à 11 h **doublait** la facture (~1 988 CU/jour, épuisement en 4,4 jours pour rien).
+Corrigé : pause de 30 min après **5** réponses vides (~240 CU/jour), et plus jamais de 2e essai sur un
+vide — on ne tente l'autre version que si la 1re a levé une ERREUR.
+
+**Ce qu'on sait / ce qu'on ne sait pas.** La clé est VALIDE (l'usage est compté ; une clé morte
+renverrait 401 sans consommer). Ni le quota (29 % restants) ni le rate-limit (0,4 RPS mesuré pour
+1 RPS autorisé) n'expliquent la panne. Les deux endpoints existent (401 sans clé, pas 404). **Cause
+racine toujours indéterminée** : paramètre renommé côté Birdeye, couverture de tokens réduite sur le
+package Standard (les memecoins ne sont pas des actifs majeurs), ou OHLCV retiré du palier avec un
+200-vide en guise de refus. **Le test qui trancherait** : le bac à sable de la doc Birdeye, connecté
+au compte du user — il montre la réponse exacte sans exposer la clé. NE PAS régénérer la clé : elle
+fonctionne.
+
 **Leçon générale** : les deux sources de bougies exigeaient une clé. Toute source unique keyée doit
-avoir un repli sans clé, sinon une panne de facturation arrête le bot sans le dire.
+avoir un repli sans clé, sinon une panne de facturation arrête le bot sans le dire. Et toute source
+facturée doit avoir un **backoff sur réponse vide**, pas seulement sur erreur.
 
 ## 6. Couverture des données
 
