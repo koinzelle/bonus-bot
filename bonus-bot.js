@@ -2298,12 +2298,24 @@ async function fastPositionCheck() {
             // depuis l'évaluation précédente et l'ÂGE de la valeur LP utilisée. Si l'intervalle est
             // ~10 s mais l'âge élevé, la boucle tourne sur du cache périmé ; s'il est grand, elle ne
             // tourne pas. Volume négligeable : seulement les positions armées, donc quelques minutes.
+            // (2026-09-08, suite) VERDICT : la cadence est SAINE. Mesuré sur 245 évaluations —
+            // « éval +10.0s | âge donnée 0.0s » de façon constante. La boucle rapide tourne bien
+            // toutes les 10 s sur des données fraîches. Les 5,6 points rendus par HONTER venaient
+            // donc d'une VRAIE chute du LP à l'intérieur d'une fenêtre de 10 s, pas d'un défaut :
+            // le glissement du trail suit la vitesse du token, comme le backtest du 07/09 l'avait
+            // conclu. Lire plus vite ne récupérerait rien.
+            // On garde la trace mais throttlée : elle ne sort plus qu'à l'APPROCHE du seuil (moins
+            // de 2 points), ou une fois par minute — sinon 17 000 lignes/jour de bruit.
             if (armed) {
                 const now2 = Date.now();
+                const proche = rg <= pos.peakGain - TRAIL + 0.02;
+                if (!proche && pos._armEvalTs && now2 - pos._armEvalTs < 60000) { /* silencieux */ }
+                else {
                 const depuis = pos._armEvalTs ? ((now2 - pos._armEvalTs) / 1000).toFixed(1) : '?';
                 const age = _batchLv && _batchLv.ts ? ((now2 - _batchLv.ts) / 1000).toFixed(1) : '?';
                 pos._armEvalTs = now2;
-                console.log(`  ⏱️ ${pos.symbol} armé | LP ${(rg * 100).toFixed(2)}% | peak ${(pos.peakGain * 100).toFixed(2)}% | seuil ${((pos.peakGain - TRAIL) * 100).toFixed(2)}% | éval +${depuis}s | âge donnée ${age}s`);
+                console.log(`  ⏱️ ${pos.symbol} armé | LP ${(rg * 100).toFixed(2)}% | peak ${(pos.peakGain * 100).toFixed(2)}% | seuil ${((pos.peakGain - TRAIL) * 100).toFixed(2)}% | éval +${depuis}s | âge donnée ${age}s${proche ? ' | ⚠️ PROCHE DU SEUIL' : ''}`);
+                }
             }
             // CUT hors-range -55% PARTOUT (2026-08-19, backtest tenir-vs-couper : -35% coupait trop tôt, delta +121% sur 12 CUT-bas ; -55% tient les rebonds, garde un plancher anti-rug)
             if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId) {
