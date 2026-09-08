@@ -675,6 +675,7 @@ async function birdeyeOhlcv(mint, type, limit, intervalSec) {
     return [];
 }
 const candleCache = new Map(); // (mint+res) -> { cs, ts }
+let _gapWarnTs = 0;
 let birdeyeBackoffUntil = 0, birdeye429Warned = false, birdeyeFails = 0, birdeyeEmpty = 0, gtFallbackWarned = false; // BACKOFF (outage 10/08) : sur 429/échecs, on ARRÊTE de taper
 // Birdeye 60s → l'IP Railway refroidit → Birdeye lève le throttle → 1er appel OK → le cache s'amorce → moins
 // d'appels. Sans ça, le bot re-tape 13×/scan et ENTRETIENT le throttle (jamais de récup).
@@ -729,6 +730,22 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
             }
         } catch (_) {}
     } else { gtFallbackWarned = false; }
+    // ── (2026-09-08) CONTRÔLE DE CONTINUITÉ DE LA SÉRIE ────────────────────────────────────────
+    // La v3 documente « Empty candles are not returned unless padding=true » : sur un memecoin,
+    // beaucoup de bougies n'ont aucune transaction. Une série TROUÉE fausserait RSI et SuperTrend
+    // en silence — ils supposent des intervalles réguliers. On envoie bien `padding=true`, mais
+    // plutôt que de le supposer suffisant, on VÉRIFIE : on compte les écarts entre horodatages
+    // successifs qui dépassent 1,5 × la période attendue. Coût nul (une passe sur un tableau déjà
+    // en mémoire), et une alerte throttlée si la série arrive percée.
+    if (cs.length >= 20) {
+        let trous = 0;
+        for (let i = 1; i < cs.length; i++) if (cs[i][0] - cs[i - 1][0] > intervalSec * 1.5) trous++;
+        const pct = trous / (cs.length - 1) * 100;
+        if (pct > 5 && Date.now() - _gapWarnTs > 10 * 60 * 1000) {
+            _gapWarnTs = Date.now();
+            console.log(`  ⚠️ SÉRIE TROUÉE ${mint.slice(0, 8)} ${gmgnRes} : ${trous} trous sur ${cs.length - 1} intervalles (${pct.toFixed(0)}%) — RSI et SuperTrend faussés, vérifier padding`);
+        }
+    }
     if (cs.length) candleCache.set(key, { cs, ts: Date.now() });
     return cs.length ? cs : (c ? c.cs : []);
 }
