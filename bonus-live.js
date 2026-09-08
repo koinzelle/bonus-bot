@@ -154,7 +154,18 @@ async function findMeteoraPool(tokenAddress, preferredPool) {
     //
     // Quel niveau de fee rapporte le plus n'est PAS tranché : trois découpages donnent trois réponses
     // opposées (cf. ETAT-DU-BOT.md §3). Ne pas modifier ce tri sans un A/B réel.
-    candidates.sort((a, b) => a.baseFeePct - b.baseFeePct || b.reserveSol - a.reserveSol || (b.binStep === 100) - (a.binStep === 100));
+    // (2026-09-08) DÉPARTAGE PAR LE PLUS GRAND BIN STEP, et non plus par bs100.
+    // À ±34 bins (le MAXIMUM d'une position Meteora — on ne peut pas élargir en ajoutant des bins),
+    // le pas détermine seul la protection : bs80 → -24 % · bs100 → -29 % · bs125 → -34 % ·
+    // bs200 → -49 % · bs250 → -57 %. Mesuré sur 217 trades : les 7 sorties LOURDES (CUT + REBOND,
+    // -0,4887 SOL) sont TOUTES sur bs80 ou bs100 — zéro sur bs125 et au-dessus (bs200 : 0 sur 53).
+    // L'ancien départage préférait explicitement bs100, exactement le pas qui porte les pertes, et
+    // cette préférence venait d'une spec EP, pas d'une mesure.
+    // Réserve : 0/53 reste compatible avec un taux de 4,4 % par hasard (~10 % de probabilité). Ce
+    // qui est solide, c'est que la préférence pour bs100 n'avait AUCUNE justification mesurée.
+    // N'intervient qu'en DERNIER : fee puis profondeur décident d'abord, et la pool désignée par le
+    // fee/TVL écrase tout ce tri quand elle existe.
+    candidates.sort((a, b) => a.baseFeePct - b.baseFeePct || b.reserveSol - a.reserveSol || b.binStep - a.binStep);
     // (2026-08-30) POOL DÉSIGNÉE PAR LA DATAPI. Le tri ci-dessus prend la fee la plus BASSE — un choix du
     // 04/08 qui ignore complètement le VOLUME traversant, donc le rendement réel. La datapi a déjà classé
     // les pools du token par fees/TVL 24h et c'est ce chiffre qui qualifie le token à l'entrée : on utilise
