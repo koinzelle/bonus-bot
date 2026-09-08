@@ -568,8 +568,15 @@ function _beParse(d) {
     ]).filter(c => c[0] && isFinite(c[4])).sort((a, b) => a[0] - b[0]);
 }
 async function _beCall(path, mint, type, from, to) {
+    // (2026-09-08) PARAMÈTRES OPTIONNELS EXPLICITES. Les 4 obligatoires (address, type, time_from,
+    // time_to) étaient déjà envoyés — la requête du bot était donc valide. Mais Birdeye a migré sa doc
+    // (docs.birdeye.so/reference/* → data.birdeye.so/docs/data-api/*), marqué `/defi/ohlcv` DEPRECATED,
+    // et son exemple officiel passe désormais `currency`, `chart_type` et `ui_amount_mode`. Si l'une de
+    // ces valeurs par défaut a changé pendant la migration, ça expliquerait les 200-vides du 08/09.
+    // On ne suppose plus aucun défaut : on envoie ce que leur propre exemple envoie.
     const r = await axios.get(`https://public-api.birdeye.so/${path}`, {
-        params: { address: mint, type, time_from: from, time_to: to },
+        params: { address: mint, type, time_from: from, time_to: to,
+                  currency: 'usd', chart_type: 'price', ui_amount_mode: 'raw' },
         headers: { 'X-API-KEY': BIRDEYE_KEY, 'x-chain': 'solana' }, timeout: 12000,
     });
     return _beParse(r.data);
