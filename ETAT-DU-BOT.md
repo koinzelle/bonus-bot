@@ -248,6 +248,26 @@ qu'elle ne sauve. **La question ouverte est donc : existe-t-il un signal, connu 
 qui sépare les 14 des 7 ?** Les champs `outBottomMin` / `outBottomPct` / `outBottomEpisodes`
 déployés le 08/09 sont là pour y répondre.
 
+**RSI2 EN 15 MIN SUR LES VOLATILS — TESTÉ ET REJETÉ (10/09).** Question : sur un token volatil
+(sortie en bougies 5 min), vaudrait-il mieux attendre le RSI2>90 en **15 min** ? Rejoué sur 35 des
+68 sorties RSI2 de volatils (bougies GeckoTerminal 15 min, RSI calculé comme le bot sur les bougies
+CLOSES uniquement), comparaison **prix contre prix** — sans fonction de transfert.
+
+Résultat : écart médian **+0,00 %**, écart moyen **−6,32 %**, seulement **13/35 (37 %)** meilleures,
+délai médian **88 min** après la sortie réelle. **Robuste** : sans les 3 meilleurs cas la moyenne
+tombe à −8,30 %.
+
+Répartition : 31 % pire de +10 % · 31 % équivalent · 23 % mieux de 2-10 % · 9 % mieux de +10 %.
+
+**Le mécanisme est une asymétrie de queue.** Meilleurs cas : AGI +15,2 % (143 min plus tard),
+HeeHaw +14,7 %. Pires cas : HeeHaw **−45,6 % (594 min plus tard)**, MANLET −41,7 % (878 min).
+Un RSI2 en 15 min est lent : si le token continue de descendre, le signal n'arrive qu'après une
+vraie remontée — des heures plus tard, à un prix bien pire. Le gain est plafonné (~+15 %), la perte
+ne l'est pas. Le 5 min sort au premier rebond réel, avant que l'attente ne devienne un pari.
+
+**Ne pas unifier les timeframes de sortie.** La règle actuelle (15 min si `established` = holders
+≥ 5 000 OU MC ≥ 5 M$, sinon 5 min) est validée dans les deux sens.
+
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :
 13 des 16 tokens bloqués sont libérés par l'expiration du compteur glissant (1 h à 130 h), pas
