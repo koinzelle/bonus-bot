@@ -227,6 +227,27 @@ Mesure déployée le 08/09 : lignes `🔻`/`🔺` à chaque franchissement, et c
 `outBottomPct`, `outBottomEpisodes` sur chaque trade. **À exploiter : le temps hors-range bas
 prédit-il le CUT, et à partir de quel seuil ?**
 
+**HORS-RANGE BAS ≠ POSITION MORTE — 67 % REVIENNENT (09/09).** ⚠️ Correction d'une erreur commise
+le 09/09 : j'avais proposé d'armer l'attente du rebond dès la sortie de range, au motif qu'une
+position hors range n'encaisse plus de frais. **C'est faux et ça aurait coupé 14 gagnantes.**
+
+Mesuré sur 21 positions sorties de range par le bas : **14 ont fini POSITIVES (67 %)**, dont
+SOLCAT plongée à −55 % pour finir à **+12,1 %**, CTO à −52 % → +6,3 %, SOLCAT à −51 % → +5,3 %,
+fone à −54 % → +1,1 %, ZCAT à −55 % → +0,6 %. Des positions descendues 25 points sous leur borne
+basse sont revenues en territoire positif.
+
+C'est exactement ce que le seuil de **−55 %** protège, et il avait déjà été validé le 23/08
+(+3,27 %/trade contre −45 % et −35 % qui font moins bien — « les mèches rebondissent »).
+**NE PAS armer plus tôt. NE PAS fermer manuellement une position hors range à −45/−52 %.**
+
+**L'asymétrie réelle, elle, subsiste** : les 14 gagnantes rapportent **+0,1296 SOL**, les 7 perdantes
+coûtent **−0,4887 SOL** — presque 4×. Le problème n'est donc pas de sortir plus tôt (les deux tiers
+reviennent) mais que les 7 qui ne reviennent pas coûtent très cher. Et le backtest du stop de temps
+(07/09) a montré qu'on ne sait pas les distinguer à l'avance : toute coupe anticipée détruit plus
+qu'elle ne sauve. **La question ouverte est donc : existe-t-il un signal, connu AVANT ou PENDANT,
+qui sépare les 14 des 7 ?** Les champs `outBottomMin` / `outBottomPct` / `outBottomEpisodes`
+déployés le 08/09 sont là pour y répondre.
+
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :
 13 des 16 tokens bloqués sont libérés par l'expiration du compteur glissant (1 h à 130 h), pas
