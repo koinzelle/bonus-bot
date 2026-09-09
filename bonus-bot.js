@@ -1001,8 +1001,14 @@ async function gmgnQualityOk(tok, sym) {
         // vivantes. Aucun trade réel ne permet de trancher : le filtre n'en a jamais laissé passer un seul.
         // On enregistre donc mint + prix des rejets où les fees sont le SEUL motif → verdict sur forward réel.
         if (fails.length === 1 && /^fees /.test(fails[0])) {
+            // (2026-09-10) `info.price` et `info.volume_24h` reviennent TOUJOURS vides chez GMGN pour
+            // ces tokens — vérifié sur les 200 records du shadow : 0/200 renseignés. Le rejeu devait donc
+            // retélécharger chaque prix (~31 min pour 116 mints). On enregistre à la place ce que le bot
+            // calcule DÉJÀ et qui marche : `mcUsd` et `established`, ce dernier déterminant le timeframe
+            // de sortie (15 min si établi, 5 min sinon) — indispensable pour rejouer les bonnes règles.
             recordShadow('feesSeuil', { symbol: sym, tok, totalFee: totalFee != null ? +totalFee.toFixed(1) : null,
-                holders, top10: +top10.toFixed(0), price: info.price != null ? parseFloat(info.price) : null,
+                holders, top10: +top10.toFixed(0), mcUsd: Math.round(mcUsd) || null, established,
+                price: info.price != null ? parseFloat(info.price) : null,
                 vol24h: info.volume_24h != null ? Math.round(parseFloat(info.volume_24h)) : null });
         }
         if (fails.length) {
