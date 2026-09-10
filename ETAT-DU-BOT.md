@@ -344,7 +344,28 @@ les transferts d'entrée/sortie sont hors champ. `depositedSol` et `proceedsSol`
 **99 % du PnL affiché vient de tokens taxés.** Sur les 52 trades où la mesure ne peut pas être faussée
 par une taxe invisible, le résultat est **nul**. C'est le fait le plus solide du lot.
 
-**Ce qui N'EST PAS établi.** Le nombre de transferts taxés par aller-retour. J'avais modélisé 4
+**CONCLUSION CHIFFRÉE (rent vérifiée on-chain le 10/09 : 0,052235 SOL, identique sur les 6 positions,
+comptes de 10 828 octets — ce n'est pas une estimation).**
+
+```
+coût d'entrée réel   -0,0101 SOL   (-3,67 % de la mise de 0,2742)
+gain LP moyen        +0,0105 SOL   (+3,82 %)
+net AVANT sortie     +0,0004 SOL/trade  ->  +0,057 SOL sur 140 trades
+```
+
+Distribution du gain LP réel sur 140 trades : 8 sous -10 %, 1 entre -3 et 0, **35 entre 0 et +3 %**,
+44 entre +3 et +6 %, 34 entre +6 et +12 %, 18 au-dessus de +12 %. Moyenne +3,82 %, médiane +5,14 %.
+
+**C'est la réponse à « on fait que win mais je gagne pas de SOL ».** Le bot gagne réellement ses
+trades — 131 sur 140 sont positifs en LP. Mais le coût d'entrée est prélevé sur **les 140**, y compris
+les 35 trades à 0-3 % qui sont perdants nets une fois payé. Le gain brut et le coût d'entrée
+s'annulent à 0,0004 SOL près.
+
+**Ne pas se laisser tromper par les +12 % :** ils existent, mais ne représentent que 18 trades sur
+140 (13 %).
+
+**Ce qui N'EST PAS établi.** Le coût de SORTIE (pas encore mesuré — c'est l'objet de la ligne `💸`) et
+le nombre de transferts taxés par aller-retour. J'avais modélisé 4
 (swap-in, dépôt, retrait, swap-out) → −1,28 SOL ; le user objecte qu'il n'y en a que 2, et le
 `🔁 Token résiduel re-swappé` n'a tiré que **2 fois** sur toute la période, ce qui plaide pour une
 sortie majoritairement en SOL — donc **moins de 4**. Ne pas citer le −1,28 comme un résultat.
