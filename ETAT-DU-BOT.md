@@ -268,6 +268,26 @@ ne l'est pas. Le 5 min sort au premier rebond réel, avant que l'attente ne devi
 **Ne pas unifier les timeframes de sortie.** La règle actuelle (15 min si `established` = holders
 ≥ 5 000 OU MC ≥ 5 M$, sinon 5 min) est validée dans les deux sens.
 
+**FILTRE « fees ≥ 30 SOL » — VALIDÉ, NE PAS ASSOUPLIR (10/09).** C'était le dernier levier ouvert et
+il est fermé. Rejoué sur les **116 occasions distinctes** du shadow `feesSeuil` (200 records → 116
+mints, dédoublonnés), en appliquant les règles de sortie réelles du bot sur bougies GT 15 min :
+
+- **79 sur 116 (68 %) n'ont AUCUNE pool indexée par GeckoTerminal** — ce sont des marchés morts, pas
+  une lacune de données GMGN. Le doute inscrit dans le code est levé.
+- Sur les 36 simulables : LP médian **+1,86 %**, 28/36 gagnants (78 %) — et pourtant **−0,6758 SOL**
+  au total, soit **−0,01877 SOL/trade** contre **+0,00497** pour le bot réel.
+- Décomposition : RSI2 19 trades +0,3304 · TRAIL 10 trades +0,2976 · **CUT 6 trades, LP médian
+  −81,15 %, −1,3020 SOL**. Six catastrophes détruisent vingt-neuf gagnants.
+- **Robuste** : sans les 3 meilleurs trades le total passe de −0,68 à −1,02.
+
+**Conséquence : la piste « augmenter le volume en assouplissant les fees » est MORTE.** Le volume
+bloqué est du mauvais volume. Le bot rejette ~230 tokens/semaine et il a raison.
+
+**Et donc, au 10/09, TOUS les leviers testés sont fermés** — sortir plus tôt, sortir plus tard,
+filtrer à l'entrée (âge ATH, distance ST), le regroupement temporel, le volume. Les 13 pertes
+(−1,0449 SOL, dont 11 REBOND) sont le **prix de la stratégie** : le bot entre délibérément dans des
+dumps, et 2 % ne rebondissent pas. Rien dans les données d'entrée ne les distingue.
+
 **Cap ATH-épuisé.** Simuler les 85 entrées refusées donne −3,39 %/trade contre +3,88 % réel,
 24 % de catastrophes, négatif à tous les niveaux de retrait. **Et ce n'est pas un bannissement** :
 13 des 16 tokens bloqués sont libérés par l'expiration du compteur glissant (1 h à 130 h), pas
