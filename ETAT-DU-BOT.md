@@ -383,6 +383,50 @@ un modèle.
 **Vérifié et écarté :** aucun achat de NFT n'est sorti du wallet du bot (les 5 sorties de −0,1922 SOL
 portent le programme Meteora DLMM `LBUZKhRxPF3X` = ouvertures de position).
 
+## 3quater. FILTRE FRAIS DE TRANSFERT — DÉPLOYÉ le 10/09
+
+**Mesure finale, sur la chaîne, sans déduction** (30 fermetures appariées à leurs TX, tokens à 3 %) :
+
+```
+SOL sorti du wallet par trade   0,2800
+SOL rentré au wallet            0,2811
+résultat réel                  +0,0011 SOL  (+0,41 %)
+IC 95 %                        [-0,0029 ; +0,0052]  <- CONTIENT ZÉRO
+```
+
+| | par trade |
+|---|---:|
+| ce que le bot annonce | +6,7 % |
+| ce que le wallet encaisse | +0,41 % |
+| **écart** | **−6,3 points** |
+
+Les 6,3 points sont la taxe : **4 transferts × 3 %**, chacun sur ~la moitié de la mise. Taux observé
+3,00 % sur **30 fermetures / 30**, dans les deux sens (dépôt comme retrait). Le reswap de sortie tire
+**329 fois** dans les logs — c'est routinier, pas exceptionnel (j'avais dit « 2 fois » sur une fenêtre
+trop courte : faux).
+
+**Deux des quatre transferts ne sont PAS des trades** : déposer ses propres tokens dans sa propre
+position, puis les en ressortir. Un trader ordinaire paie 2 fois, le LP paie 4 fois.
+
+**Déployé** : `MAX_TRANSFER_FEE_BPS` (défaut 300 = 3 %) dans `bonus-live.js` (`transferFeeBps`, cache
+24 h) et gate d'entrée dans `bonus-bot.js`. Lecture RPC impossible = `null` = **on laisse passer**
+(une panne ne doit pas geler les entrées). Compteur `blockCount['frais-transfert']`.
+
+**AVERTISSEMENT AVANT DE ROUVRIR :** ces tokens portaient **tout l'alpha brut** — +6,71 %/trade contre
+**+0,10 %** sur les 52 trades en tokens propres. Le filtre supprime la taxe **et** le gain. Il n'a
+jamais été démontré qu'il rend le bot gagnant ; il arrête de le faire tourner à vide. Critère de
+lecture : si après ~40 trades le capital ne monte toujours pas, le problème n'était pas la taxe.
+
+**Backtest one-sided (entrée 100 % SOL) : NON CONCLUANT.** Le contrôle échoue (erreur médiane
+**8,91 pt** entre simulation double-sided et LP réellement relevé). Rien n'en est utilisable. Fait
+acquis en revanche : le prix descend **toujours** sous l'entrée (0 exception sur 74 épisodes, médiane
+−14,5 %), donc une échelle SOL sous le prix serait toujours remplie. Refaire avec les fees par bin.
+
+**Piège de méthode du jour :** j'ai annoncé deux fois un chiffre dérivé d'un postulat déjà invalidé
+(le « wallet n'a pas bougé »), et une fois un total de flux faux parce que le scan faisait
+`if(!tx) continue` — 6 transactions non lues suffisent à inverser le signe. Toujours compter les
+échecs de lecture et refuser de conclure quand ils sont > 0.
+
 ## 4. En cours de mesure — ne rien conclure avant
 
 | Shadow | Question | Comment lire | Quand |

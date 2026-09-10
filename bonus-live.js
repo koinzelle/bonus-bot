@@ -221,6 +221,37 @@ async function confirmTx(hash) {
 
 async function solBalance() { return await connection.getBalance(keypair.publicKey); }
 
+// ── (2026-09-10) FRAIS DE TRANSFERT TOKEN-2022 ───────────────────────────────────────────
+// Le bot déplace le token QUATRE fois par aller-retour — swap d'entrée, dépôt dans la pool,
+// retrait, reswap du résidu — et Token-2022 prélève sa taxe à CHAQUE transfert, dans les deux
+// sens. Vérifié sur la chaîne le 10/09 : 30 fermetures lues, 3,00 % observés 30 fois sur 30.
+// Coût d'entrée mesuré sur 125 ouvertures : 3,23 % de la mise sur les tokens à 3 %, contre
+// 0,08 % sur les tokens sans frais. Bilan : le bot annonce +6,7 %/trade, le wallet encaisse
+// +0,41 % (IC95 [-1,05 ; +1,86] pt) — la taxe reprend ~94 % du gain brut.
+const MAX_TRANSFER_FEE_BPS = parseInt(process.env.MAX_TRANSFER_FEE_BPS || '300', 10);
+const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+const _feeCache = new Map();                      // mint -> { bps, ts }
+const FEE_CACHE_MS = 24 * 3600 * 1000;            // la config de frais ne bouge quasi jamais
+
+// Frais de transfert du mint en points de base. Retourne null si la lecture ÉCHOUE —
+// null = INCONNU, et l'appelant laisse passer : une panne RPC ne doit pas bloquer le bot.
+async function transferFeeBps(mint) {
+    const c = _feeCache.get(mint);
+    if (c && Date.now() - c.ts < FEE_CACHE_MS) return c.bps;
+    try {
+        const ai = await connection.getParsedAccountInfo(new PublicKey(mint));
+        if (!ai || !ai.value) return null;
+        let bps = 0;
+        if (ai.value.owner.toString() === TOKEN_2022_PROGRAM) {
+            const ex = (ai.value.data && ai.value.data.parsed && ai.value.data.parsed.info && ai.value.data.parsed.info.extensions) || [];
+            const tf = ex.find(e => e.extension === 'transferFeeConfig');
+            bps = (tf && tf.state && tf.state.newerTransferFee && tf.state.newerTransferFee.transferFeeBasisPoints) || 0;
+        }
+        _feeCache.set(mint, { bps, ts: Date.now() });
+        return bps;
+    } catch (_) { return null; }   // inconnu : on ne bloque pas
+}
+
 async function tokenBalanceRaw(mint) {
     const accs = await connection.getParsedTokenAccountsByOwner(keypair.publicKey, { mint: new PublicKey(mint) });
     let total = 0n;
@@ -662,4 +693,4 @@ async function closeVerified(pos) {
     }
 }
 
-module.exports = { enabled: true, findMeteoraPool, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions };
+module.exports = { enabled: true, findMeteoraPool, transferFeeBps, MAX_TRANSFER_FEE_BPS, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions };

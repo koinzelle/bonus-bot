@@ -1896,6 +1896,24 @@ async function scan() {
                     }
                     if (w.meteoraOk === false) { state.blockCount['no-pool-meteora'] = (state.blockCount['no-pool-meteora'] || 0) + 1; continue; }
                 }
+                // ── (2026-09-10) REFUS DES MINTS À FRAIS DE TRANSFERT ────────────────────────────
+                // Le bot touche le token 4 fois par aller-retour et Token-2022 taxe chaque transfert
+                // (3,00 % observés sur 30 fermetures lues on-chain, 30/30). Sur ces tokens le bot
+                // annonce +6,7 %/trade et le wallet n'encaisse que +0,41 % : la taxe reprend ~94 %
+                // du gain brut. Décision du user le 10/09 : on ne les prend plus.
+                // ATTENTION si on revient là-dessus : ces tokens portaient TOUT l'alpha brut
+                // (+6,71 % contre +0,10 % sur les tokens propres). Le filtre supprime la taxe ET
+                // le gain — il ne rend pas le bot gagnant, il arrête de le faire tourner à vide.
+                // Seuil réglable par MAX_TRANSFER_FEE_BPS (défaut 300 = 3 %). Lecture impossible
+                // (RPC KO) = null = on LAISSE PASSER, une panne ne doit pas geler les entrées.
+                if (live.enabled && live.transferFeeBps) {
+                    const fbps = await live.transferFeeBps(tok);
+                    if (fbps != null && fbps >= (live.MAX_TRANSFER_FEE_BPS || 300)) {
+                        state.blockCount['frais-transfert'] = (state.blockCount['frais-transfert'] || 0) + 1;
+                        console.log(`  🚫 ${w.symbol}: frais de transfert ${(fbps / 100).toFixed(2)}% — entrée refusée (4 transferts taxés par aller-retour)`);
+                        continue;
+                    }
+                }
                 const entry = curPrice;
                 w.lastEntryPrice = entry; w.recovered = false;   // anti-mourant : ré-ouvre seulement s'il re-dépasse ce prix
                 const support = `chop${(cr * 100).toFixed(0)}%-dip${(dumpedFromHigh * 100).toFixed(0)}%`;
