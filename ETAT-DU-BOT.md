@@ -316,6 +316,52 @@ n'évite pas les CUT.
 
 ---
 
+## 3ter. LE PnL AFFICHÉ N'EST PAS LE PnL DE CAISSE (10/09) — À LIRE AVANT TOUTE ANALYSE DE PnL
+
+Point de départ : « on fait que win mais j'ai pas l'impression de gagner du sol ».
+
+**Ce que `pnlSolLive` mesure vraiment.** `pnlSolLive = closeValueSol − openValueSol`, or `openValueSol`
+est lu **après** le dépôt (`bonus-live.js:407`) et `closeValueSol` **avant** le retrait
+(`bonus-live.js:610`). La mesure couvre donc uniquement l'intérieur de la pool : les swaps Jupiter et
+les transferts d'entrée/sortie sont hors champ. `depositedSol` et `proceedsSol`
+(`bonus-live.js:404,655`) sont, eux, le mouvement réel du wallet — mais n'étaient pas journalisés.
+
+**Mesuré (pas modélisé).**
+- Ouverture : déposé **0,3323 SOL** → valeur LP **~0,2700 SOL**. En retirant ~0,052 de rent (rendue à
+  la fermeture), le coût d'entrée réel est **~0,010 SOL par trade**.
+- **15 des 28 mints** des 140 derniers trades portent des frais de transfert Token-2022, **11 à 3,00 %**
+  (ZCAT, PURR, UBER, BTC, LEVERCAT, KNOTS, S3, RAYCAT, TREE, MUCHWOW, NEARKAT), 4 à 1 %.
+
+**La répartition qui compte :**
+
+| | trades | PnL annoncé |
+|---|---:|---:|
+| tokens à 3 % de frais | 73 | +1,3277 SOL |
+| tokens à 1 % de frais | 15 | +0,1376 SOL |
+| **tokens SANS frais** | **52** | **+0,0150 SOL** |
+| total | 140 | +1,4803 SOL |
+
+**99 % du PnL affiché vient de tokens taxés.** Sur les 52 trades où la mesure ne peut pas être faussée
+par une taxe invisible, le résultat est **nul**. C'est le fait le plus solide du lot.
+
+**Ce qui N'EST PAS établi.** Le nombre de transferts taxés par aller-retour. J'avais modélisé 4
+(swap-in, dépôt, retrait, swap-out) → −1,28 SOL ; le user objecte qu'il n'y en a que 2, et le
+`🔁 Token résiduel re-swappé` n'a tiré que **2 fois** sur toute la période, ce qui plaide pour une
+sortie majoritairement en SOL — donc **moins de 4**. Ne pas citer le −1,28 comme un résultat.
+
+**Erreur de méthode commise ce jour-là :** j'ai annoncé un écart de −1,6 SOL à partir d'un solde
+historique (0,7215) que le recomptage des flux a contredit (+0,0152), parce que mon premier scan
+faisait `if(!tx) continue` — il avalait en silence les transactions non lues. **Ne jamais sommer des
+deltas on-chain sans compter les échecs de lecture.**
+
+**Instrument déployé :** ligne `💸` à chaque fermeture — PnL pool, PnL caisse, et l'écart ; plus les
+champs `pnlCaisse` / `ecartCaisse` sur le trade. **Critère de lecture :** après ~30 fermetures,
+l'écart moyen par trade, séparé entre tokens taxés et non taxés. C'est ce chiffre qui tranchera, pas
+un modèle.
+
+**Vérifié et écarté :** aucun achat de NFT n'est sorti du wallet du bot (les 5 sorties de −0,1922 SOL
+portent le programme Meteora DLMM `LBUZKhRxPF3X` = ouvertures de position).
+
 ## 4. En cours de mesure — ne rien conclure avant
 
 | Shadow | Question | Comment lire | Quand |

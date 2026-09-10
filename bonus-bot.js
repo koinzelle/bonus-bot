@@ -2030,7 +2030,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
     pos._closing = true; pos._closingAt = Date.now();
     // ── LIVE : fermer la vraie position D'ABORD. Si le close réel échoue → on GARDE le tracking
     // (pattern anti-world de bot 1 : jamais supprimer une position pas vidée on-chain).
-    let pnlSolLive = null;
+    let pnlSolLive = null, trade_ecartCaisse = null, trade_pnlCaisse = null;
     if (pos.live && live.enabled) {
         // anti-spam Telegram : la sortie se re-déclenche à chaque tick tant que la position est GARDÉE
         // (close en échec) → on n'alerte qu'une fois / 15 min par position, mais on RE-TENTE le close à
@@ -2043,6 +2043,27 @@ async function closePaper(tok, pos, exitPrice, reason) {
             // le flat-to-flat seulement si la lecture on-chain a échoué (2026-07-25, fix mesure).
             if (r.closeValueSol != null && pos.live.openValueSol != null) {
                 pnlSolLive = +(r.closeValueSol - pos.live.openValueSol).toFixed(4);
+                // ── (2026-09-10) PnL COMPTABLE vs PnL DE CAISSE ────────────────────────────────
+                // `pnlSolLive` = closeValueSol − openValueSol mesure ce qui se passe DANS la pool.
+                // `openValueSol` est lu APRÈS le dépôt (bonus-live.js:407) et `closeValueSol` AVANT
+                // le retrait : les swaps Jupiter et les transferts d'entrée/sortie sont donc HORS
+                // mesure. `depositedSol`/`proceedsSol` (bonus-live.js:404,655) sont, eux, le vrai
+                // mouvement du wallet.
+                // Mesuré le 10/09 : à l'ouverture, déposé 0,3323 SOL → valeur LP ~0,2700 SOL ; en
+                // retirant ~0,052 de rent (rendue à la fermeture), le coût d'entrée réel est
+                // ~0,010 SOL par trade.
+                // Cause probable : 15 des 28 mints des 140 derniers trades portent des frais de
+                // transfert Token-2022, dont 11 à 3,00 %. Répartition du PnL annoncé : tokens à 3 %
+                // +1,3277 SOL (73 trades), tokens à 1 % +0,1376 (15), tokens SANS frais +0,0150
+                // (52). Autrement dit 99 % du gain affiché vient de tokens taxés, et là où la
+                // mesure ne peut pas mentir (sans frais) le résultat est nul.
+                // On journalise donc les deux et leur écart pour trancher trade par trade.
+                if (r.proceedsSol != null && pos.live.depositedSol != null) {
+                    const caisse = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
+                    const ecart = +(caisse - pnlSolLive).toFixed(4);
+                    console.log(`  💸 ${pos.symbol}: PnL pool ${pnlSolLive >= 0 ? '+' : ''}${pnlSolLive} SOL | PnL caisse ${caisse >= 0 ? '+' : ''}${caisse} SOL | ÉCART ${ecart >= 0 ? '+' : ''}${ecart} SOL (swaps + frais)`);
+                    trade_ecartCaisse = ecart; trade_pnlCaisse = caisse;
+                }
             } else {
                 pnlSolLive = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
                 console.log(`  ⚠️ PnL live via flat-to-flat (lecture on-chain KO) — moins fiable`);
@@ -2087,6 +2108,8 @@ async function closePaper(tok, pos, exitPrice, reason) {
         outBottomMin: pos._obOutMs != null ? Math.round(pos._obOutMs / 60000) : null,
         outBottomPct: pos._obTotalMs > 0 ? +((pos._obOutMs || 0) / pos._obTotalMs * 100).toFixed(1) : null,
         outBottomEpisodes: pos._obEpisodes || 0,
+        // (2026-09-10) PnL de CAISSE (delta wallet réel) et son écart avec le PnL comptable.
+        pnlCaisse: trade_pnlCaisse, ecartCaisse: trade_ecartCaisse,
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);
