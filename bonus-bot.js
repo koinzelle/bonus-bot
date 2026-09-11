@@ -1245,7 +1245,10 @@ async function batchedPositionValues() {
             // On réinjecte la dernière valeur connue des positions écartées pour que la boucle de sortie
             // garde un LP à lire. Elles restent HORS de `checked`/`allKeys` : reconcile les verra
             // « non concluantes » et ne les supprimera pas sur une absence qu'on n'a pas vérifiée.
-            for (const p of skipped) { const k = p.live.positionKeypairPub; const prev = _batchLv.map && _batchLv.map.get ? _batchLv.map.get(k) : null; if (prev) m.set(k, prev); }
+            // (2026-09-11) La valeur réinjectée est PÉRIMÉE : on la marque, sinon le log affiche `src:lot`
+            // comme s'il s'agissait d'une lecture fraîche. C'est ce mensonge qui a rendu les 231 gels
+            // de 5 jours (jusqu'à 53 min sans lecture réelle) indétectables à l'œil.
+            for (const p of skipped) { const k = p.live.positionKeypairPub; const prev = _batchLv.map && _batchLv.map.get ? _batchLv.map.get(k) : null; if (prev) m.set(k, { ...prev, stale: true }); }
             _batchLv = { map: m, ts: now }; _batchErrWarned = false; return { map: m, fresh: true }; } }
         catch (e) { if (!_batchErrWarned) { _batchErrWarned = true; console.log(`  ⚠️ lecture groupée échouée (${String(e.message).slice(0, 70)}) → bascule lecture individuelle`); } }
     }
@@ -1496,7 +1499,7 @@ async function scan() {
                 if (pos.live && live.enabled && pos.live.openValueSol) {
                     const b = await batchedPositionValues();
                     const bv = b.fresh ? b.map.get(pos.live.positionKeypairPub) : null; // lot PÉRIMÉ = on l'ignore (plus de gel)
-                    if (bv) { recordLv(pos, bv.valueSol / pos.live.openValueSol - 1, bv.activeBinId, bv); lvSrc = 'lot'; }
+                    if (bv) { recordLv(pos, bv.valueSol / pos.live.openValueSol - 1, bv.activeBinId, bv); lvSrc = bv.stale ? 'lot-PÉRIMÉ' : 'lot'; }
                     else if ((!pos._lv || Date.now() - pos._lv.ts > 20000) && live.positionValueAndBin) { // lot périmé/absent → individuel FRAIS (throttlé 20s)
                         try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { recordLv(pos, r.valueSol / pos.live.openValueSol - 1, r.activeBinId, r); lvSrc = 'indiv'; } } catch (_) { /* garde l'ancien cache / fallback prix */ }
                     } else if (pos._lv) { lvSrc = `cache${Math.round((Date.now() - pos._lv.ts) / 1000)}s`; }
@@ -2071,7 +2074,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
     pos._closing = true; pos._closingAt = Date.now();
     // ── LIVE : fermer la vraie position D'ABORD. Si le close réel échoue → on GARDE le tracking
     // (pattern anti-world de bot 1 : jamais supprimer une position pas vidée on-chain).
-    let pnlSolLive = null;
+    let pnlSolLive = null, trade_pnlSource = null;
     if (pos.live && live.enabled) {
         // anti-spam Telegram : la sortie se re-déclenche à chaque tick tant que la position est GARDÉE
         // (close en échec) → on n'alerte qu'une fois / 15 min par position, mais on RE-TENTE le close à
@@ -2095,8 +2098,23 @@ async function closePaper(tok, pos, exitPrice, reason) {
                 // La mesure fiable est hors-bot (voir ETAT-DU-BOT.md §3quinquies) : état du wallet à
                 // deux dates, positions valorisées à leur coût, même nombre de positions.
             } else {
-                pnlSolLive = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
-                console.log(`  ⚠️ PnL live via flat-to-flat (lecture on-chain KO) — moins fiable`);
+                // ── (2026-09-11) CLOSE RATÉ → AUCUN PnL PLUTÔT QU'UN FAUX ───────────────────────
+                // `proceedsSol` est mesuré flat-to-flat (solde du wallet avant/après). Avec 7 positions
+                // et un contrôle toutes les 10 s, une autre ouverture ou fermeture tombe au milieu de
+                // la fenêtre : les 20 relevés du 10/09 montrent des écarts de ±0,14 à 0,20 SOL, soit la
+                // taille d'une ouverture. Cas RAYCAT (10/09 23:09) : close en erreur on-chain
+                // (Custom 3007) parce que le user avait déjà fermé à la main, PnL flat-to-flat calculé
+                // sur une position vide → trade enregistré à **-0,0813 SOL / -97,6 % LP** alors qu'il
+                // valait **+15,2 %**. Un seul faux de ce type pollue les 860 trades qui servent à
+                // toutes les analyses.
+                // On n'EFFACE PAS le trade pour autant — filtrer une anomalie pour « nettoyer » les
+                // données est exactement ce qui a masqué 67 trades cassés pendant six semaines. Il est
+                // enregistré avec `pnlSolLive: null` et `pnlSource: 'flat-to-flat'` : visible comme
+                // anomalie, mais son chiffre n'entre dans aucune somme.
+                pnlSolLive = null; trade_pnlSource = 'flat-to-flat';
+                const indic = (r.proceedsSol != null && pos.live.depositedSol != null)
+                    ? +(r.proceedsSol - pos.live.depositedSol).toFixed(4) : null;
+                console.log(`  ⚠️ ${pos.symbol}: lecture on-chain KO au close → PnL NON ENREGISTRÉ (indicatif flat-to-flat ${indic != null ? indic : '?'} SOL, non fiable : pollué par les ouvertures concurrentes)`);
             }
         } catch (e) {
             // timeout OU erreur : on relâche TOUJOURS le verrou (sinon la position n'a plus de sortie) et on
@@ -2138,6 +2156,8 @@ async function closePaper(tok, pos, exitPrice, reason) {
         outBottomMin: pos._obOutMs != null ? Math.round(pos._obOutMs / 60000) : null,
         outBottomPct: pos._obTotalMs > 0 ? +((pos._obOutMs || 0) / pos._obTotalMs * 100).toFixed(1) : null,
         outBottomEpisodes: pos._obEpisodes || 0,
+        // (2026-09-11) 'flat-to-flat' = close raté, pnlSolLive volontairement null (chiffre non fiable).
+        pnlSource: trade_pnlSource,
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);

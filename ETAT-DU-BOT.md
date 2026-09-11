@@ -520,8 +520,25 @@ le calcul ; si `lu:` grandit, c'est la lecture qui ne part pas.
 **⚠️ CE BUG INVALIDE PARTIELLEMENT** toute analyse appuyée sur `peakGainPct`, sur le trail ou sur les
 relevés LP — dont le « trail rend 1,06 pt médian » du 11/09, qui mesurait peut-être surtout des gels.
 
-**Reste à corriger :** ne pas enregistrer de trade quand le close a échoué et que le PnL vient du
-flat-to-flat (cas RAYCAT). Mieux vaut un trou qu'un faux.
+**Corrigé le 11/09 (commit suivant) :**
+- *Close raté → pas de PnL faux.* `pnlSolLive` passe à `null` et le trade porte `pnlSource:
+  'flat-to-flat'`. Le trade n'est PAS effacé — filtrer une anomalie pour « nettoyer » est ce qui avait
+  masqué 67 trades cassés six semaines — il est juste exclu des sommes.
+- *`src:` honnête.* Une valeur réinjectée pour une position écartée s'affichait `src:lot`, comme une
+  lecture fraîche. Elle affiche désormais **`src:lot-PÉRIMÉ`**. C'est ce mensonge qui a rendu les 231
+  gels invisibles à l'œil.
+
+**REFUSÉ par le user (11/09) :** plafond d'ancienneté à 90 s avec lecture individuelle forcée au-delà.
+Raison : consommation Helius. Ne pas le reproposer sans un budget RPC élargi. Conséquence assumée : les
+gels restent possibles, ils sont seulement devenus **visibles** (`src:lot-PÉRIMÉ` + `lu:Ns`).
+
+**Fréquence dans le temps — le bug s'AGGRAVE :** 1,67‰ le 27/08, 0,45‰ le 30/08, 2,06‰ le 02/09,
+2,01‰ le 04/09, 4,84‰ le 06/09, 4,68‰ le 08/09, **12,57‰ le 10/09**. ×28 en onze jours. La rupture date
+du **02/09**, jour de la modif « cadence PAR POSITION », et s'aggrave avec le nombre de positions
+simultanées (passé à 7). Suspect principal : `const place = Math.max(0, READ_BURST_MAX - urgentes.length)`
+— avec `READ_BURST_MAX = 3`, dès que 3 positions sont au palier rapide, `place` vaut **0** et AUCUNE
+position lente n'est servie, contrairement à ce qu'affirme le commentaire du code. **Pièce qui ne colle
+pas encore :** RAYCAT était ARMÉ, donc dans les `urgentes`, jamais différées. À trancher avec `lu:`.
 
 ## 4. En cours de mesure — ne rien conclure avant
 
