@@ -427,6 +427,54 @@ acquis en revanche : le prix descend **toujours** sous l'entrée (0 exception su
 `if(!tx) continue` — 6 transactions non lues suffisent à inverser le signe. Toujours compter les
 échecs de lecture et refuser de conclure quand ils sont > 0.
 
+## 3quinquies. ENTRÉE ONE-SIDED SUR LES MINTS TAXÉS (11/09)
+
+**Mesure de référence — la seule méthode fiable trouvée.** État du wallet à deux dates, positions
+valorisées à leur **coût** (`openValueSol`), **même nombre de positions** aux deux dates :
+`total = SOL liquide + Σ openValueSol + 0,052235 × nb_positions`.
+Blocage des ≥3 % déployé le 10/09 21:50. Avant **2,5384** → 11/09 14:35 **2,5638** = **+0,0254 SOL en 17 h**
+(les logs du bot donnent +0,0300, concordant), contre **−0,420 SOL** les 3 jours précédents. **Le blocage
+marchait.** On le remplace par mieux, pas par l'ancien comportement.
+
+**Le blocage devient un aiguillage.** `ONESIDED_FEE_BPS` (défaut **100**) : tout mint à ≥1 % de frais
+entre désormais **100 % en SOL**, 34 bins sous le prix, sans swap ni dépôt de token. `MAX_TRANSFER_FEE_BPS`
+(défaut 1000) ne refuse plus que les taxes extrêmes. Lecture RPC impossible → double-sided (une panne ne
+change pas la géométrie en silence).
+
+**Pourquoi 34 bins et pas 68.** À capital égal, 34 bins concentrent **deux fois** plus de liquidité par
+bin, et les fees se perçoivent par bin traversé. Plongeons mesurés sur 109 épisodes : médiane **−6,7 %**,
+p25 −17 %, p10 −27 %, pire −54,7 %. Donc −28,7 % (34 bins à bs100) garde **92 %** des épisodes en range ;
+68 bins n'en gagnent que 7 de plus en divisant la densité par deux. **61 %** du mouvement de prix tient
+dans ces 34 bins.
+
+| | brut | taxe | net |
+|---|---:|---:|---:|
+| double-sided actuel (3 %) | 6,57 % | −6,00 % | +0,57 % |
+| one-sided 68 bins | 4,21 % | −0,42 % | +3,79 % |
+| **one-sided 34 bins** | **8,01 %** | **−0,42 %** | **+7,59 %** |
+
+**Le +7,59 % est un MAJORANT**, pas une prévision : il suppose que les fees doublent quand la densité
+double (vrai seulement tant qu'on est petit devant la pool) et que les 100 % du brut se comportent comme
+des fees — or seulement **67 %** du PnL en vient. Fourchette réaliste **+3 % à +7 %**. Tout l'intervalle
+bat le +0,57 % actuel.
+
+**CUT.** Les protections du bas sont **inchangées** : `RANGE_DOWN` (−55 % prix ou LP) et `CUT_HARD` (−75 %)
+sont fondés sur le prix, pas sur les bins. Seul ajout : en one-sided, `upperBinId` **est** le bin d'entrée,
+donc franchir le haut n'est pas une cassure mais la **fin normale et gagnante** du cycle (100 % SOL, zéro
+taxe de sortie). Tampon `ONESIDED_TOP_BUFFER` (défaut 3 bins) pour que le bruit autour du prix d'entrée
+ne ferme pas la position dans la seconde. 18 tests unitaires passés (routage, géométrie, tampon, CUT bas).
+
+**Retour arrière sans redéploiement :** `ONESIDED_FEE_BPS=10000` (tout en double-sided),
+`MAX_TRANSFER_FEE_BPS=300` (restaure le blocage du 10/09).
+
+**Correction d'un chiffre que j'avais donné faux :** « 42 % du mouvement sous l'entrée » était une moyenne
+des ratios par épisode. Pondéré par le mouvement — le bon calcul, les fees suivant le mouvement — c'est
+**64 %**. C'est ce qui faisait conclure à tort « garder le double-sided sur les 1 % ».
+
+**Ligne `💸` RETIRÉE.** Déployée le 10/09, elle reposait sur `proceedsSol` mesuré flat-to-flat : avec
+7 positions concurrentes, écarts de ±0,14 à 0,20 SOL (la taille d'une ouverture), moyenne **+0,0092/trade**,
+un écart positif donc du bruit pur. Un instrument faux est pire que pas d'instrument.
+
 ## 4. En cours de mesure — ne rien conclure avant
 
 | Shadow | Question | Comment lire | Quand |

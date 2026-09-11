@@ -226,6 +226,18 @@ const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener e
 // position allait être fermée de toute façon. Seul le seuil d'armement était faux.
 const RANGE_DOWN = 0.55;   // seuil d'ARMEMENT de l'attente du rebond
 const CUT_HARD = 0.75;     // plancher DUR : on ferme quoi qu'il arrive (anti-rug)
+// ── (2026-09-11) FRAIS DE TRANSFERT TOKEN-2022 ────────────────────────────────────────────────
+// Le bot déplace le token 4 fois par aller-retour (swap d'entrée, dépôt, retrait, reswap) et la
+// taxe tombe à CHAQUE transfert : 3,00 % observés sur 30 fermetures lues on-chain, 30 sur 30.
+// Mesuré : le bot annonce +6,7 %/trade et le wallet n'encaisse que +0,41 %.
+// La parade n'est pas de fuir ces tokens (ils portent +6,57 % de brut contre +0,10 % sur les
+// tokens propres) mais d'entrer ONE-SIDED : 100 % SOL sous le prix, donc AUCUN transfert taxé à
+// l'ouverture, et comme le haut de range est le prix d'entrée, la position est intégralement en
+// SOL dès qu'il repasse au-dessus — 86 % des sorties, donc pas de taxe non plus.
+// Estimé sur 110 trades : +2,34 %/trade contre +0,27 % en double-sided.
+const ONESIDED_FEE_BPS = parseInt(process.env.ONESIDED_FEE_BPS || '100', 10);   // ≥ ce seuil → one-sided (1 % inclus)
+const MAX_TRANSFER_FEE_BPS = parseInt(process.env.MAX_TRANSFER_FEE_BPS || '1000', 10); // ≥ → refus pur (taxe extrême)
+const ONESIDED_TOP_BUFFER = parseInt(process.env.ONESIDED_TOP_BUFFER || '3', 10);      // bins au-dessus de l'entrée avant de banker
 const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
 const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
 // PLANCHER RSI2 ÉLARGI À -3% (2026-08-28, idée user, mesuré sur les trajectoires LP réelles) ────────────
@@ -1496,8 +1508,17 @@ async function scan() {
                 // valeur LP est FIGÉE en SOL (plus de token à vendre) → ni trail ni RSI ne peuvent fermer, et
                 // on rend le gain si le prix redescend. Bin actif > upperBinId → on banke et le cycle ré-ouvre
                 // plus bas (règle EP : cassure hors-range = close, HAUT comme bas). 0 fee hors range de toute façon.
-                if (liveBinId != null && pos.live.upperBinId != null && liveBinId > pos.live.upperBinId) {
-                    await closePaper(tok, pos, px, `CUT hors-range HAUT (banké +${(realGain * 100).toFixed(1)}% LP, bin ${liveBinId}>${pos.live.upperBinId})`);
+                // (2026-09-11) ONE-SIDED : le haut de range EST le prix d'entrée, donc franchir
+                // upperBinId n'est pas une cassure anormale — c'est la FIN NORMALE et gagnante du
+                // cycle : l'échelle a racheté bas puis tout revendu, la position est 100 % SOL et
+                // ne paiera aucune taxe de sortie. On garde la même action (banker) mais on exige
+                // ONESIDED_TOP_BUFFER bins au-dessus, sinon le bruit autour du prix d'entrée
+                // fermerait la position dans la seconde qui suit l'ouverture.
+                const topBuf = pos.live.oneSided ? ONESIDED_TOP_BUFFER : 0;
+                if (liveBinId != null && pos.live.upperBinId != null && liveBinId > pos.live.upperBinId + topBuf) {
+                    await closePaper(tok, pos, px, pos.live.oneSided
+                        ? `CYCLE ONE-SIDED COMPLET (banké +${(realGain * 100).toFixed(1)}% LP, 100% SOL → aucune taxe de sortie, bin ${liveBinId}>${pos.live.upperBinId}+${topBuf})`
+                        : `CUT hors-range HAUT (banké +${(realGain * 100).toFixed(1)}% LP, bin ${liveBinId}>${pos.live.upperBinId})`);
                     continue;
                 }
 
@@ -1896,22 +1917,23 @@ async function scan() {
                     }
                     if (w.meteoraOk === false) { state.blockCount['no-pool-meteora'] = (state.blockCount['no-pool-meteora'] || 0) + 1; continue; }
                 }
-                // ── (2026-09-10) REFUS DES MINTS À FRAIS DE TRANSFERT ────────────────────────────
-                // Le bot touche le token 4 fois par aller-retour et Token-2022 taxe chaque transfert
-                // (3,00 % observés sur 30 fermetures lues on-chain, 30/30). Sur ces tokens le bot
-                // annonce +6,7 %/trade et le wallet n'encaisse que +0,41 % : la taxe reprend ~94 %
-                // du gain brut. Décision du user le 10/09 : on ne les prend plus.
-                // ATTENTION si on revient là-dessus : ces tokens portaient TOUT l'alpha brut
-                // (+6,71 % contre +0,10 % sur les tokens propres). Le filtre supprime la taxe ET
-                // le gain — il ne rend pas le bot gagnant, il arrête de le faire tourner à vide.
-                // Seuil réglable par MAX_TRANSFER_FEE_BPS (défaut 300 = 3 %). Lecture impossible
-                // (RPC KO) = null = on LAISSE PASSER, une panne ne doit pas geler les entrées.
+                // ── (2026-09-11) MINTS TAXÉS → ENTRÉE ONE-SIDED (remplace le refus du 10/09) ─────
+                // Le blocage pur du 10/09 ne faisait pas gagner : il supprimait la taxe ET le gain.
+                // On route désormais ces mints vers une entrée 100 % SOL, qui supprime la taxe SANS
+                // supprimer le trade. Refus conservé uniquement au-delà de MAX_TRANSFER_FEE_BPS.
+                // Lecture RPC impossible (null) = on laisse passer en double-sided : une panne ne
+                // doit ni geler les entrées ni changer silencieusement la géométrie.
+                let oneSided = false;
                 if (live.enabled && live.transferFeeBps) {
                     const fbps = await live.transferFeeBps(tok);
-                    if (fbps != null && fbps >= (live.MAX_TRANSFER_FEE_BPS || 300)) {
+                    if (fbps != null && fbps >= MAX_TRANSFER_FEE_BPS) {
                         state.blockCount['frais-transfert'] = (state.blockCount['frais-transfert'] || 0) + 1;
-                        console.log(`  🚫 ${w.symbol}: frais de transfert ${(fbps / 100).toFixed(2)}% — entrée refusée (4 transferts taxés par aller-retour)`);
+                        console.log(`  🚫 ${w.symbol}: frais de transfert ${(fbps / 100).toFixed(2)}% ≥ ${(MAX_TRANSFER_FEE_BPS / 100).toFixed(0)}% — entrée refusée (taxe extrême)`);
                         continue;
+                    }
+                    if (fbps != null && fbps >= ONESIDED_FEE_BPS) {
+                        oneSided = true;
+                        console.log(`  🪜 ${w.symbol}: frais de transfert ${(fbps / 100).toFixed(2)}% → entrée ONE-SIDED (0 transfert taxé à l'ouverture)`);
                     }
                 }
                 const entry = curPrice;
@@ -1956,7 +1978,7 @@ async function scan() {
                             // se calculait sur le seul cash libre et fondait à chaque ouverture (2,7× d'écart
                             // entre la 1re et la 8e position, pour des setups équivalents).
                             const deployedSol = Object.values(state.positions).reduce((x, q) => x + ((q.live && q.live.openValueSol) || 0), 0);
-                            const lp = await live.openBidAsk(poolAddr, deployedSol);
+                            const lp = await live.openBidAsk(poolAddr, deployedSol, oneSided);
                             if (lp) { state.positions[tok].live = lp; save(); tg(`${msg}\n🟢 RÉEL ouvert: ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); } // notif Telegram = uniquement l'entrée RÉELLE (avec tous les détails)
                         } else { console.log('  ⚠️ LIVE: aucune pool DLMM viable — trade papier seulement'); } // pas de notif Telegram pour le papier
                     } catch (e) { console.log(`  ⚠️ LIVE open échoué: ${String(e.message).slice(0, 80)} — papier seulement`); tg(`⚠️ LIVE ${w.symbol}: open échoué (${String(e.message).slice(0, 50)})`); }
@@ -2048,7 +2070,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
     pos._closing = true; pos._closingAt = Date.now();
     // ── LIVE : fermer la vraie position D'ABORD. Si le close réel échoue → on GARDE le tracking
     // (pattern anti-world de bot 1 : jamais supprimer une position pas vidée on-chain).
-    let pnlSolLive = null, trade_ecartCaisse = null, trade_pnlCaisse = null;
+    let pnlSolLive = null;
     if (pos.live && live.enabled) {
         // anti-spam Telegram : la sortie se re-déclenche à chaque tick tant que la position est GARDÉE
         // (close en échec) → on n'alerte qu'une fois / 15 min par position, mais on RE-TENTE le close à
@@ -2061,27 +2083,16 @@ async function closePaper(tok, pos, exitPrice, reason) {
             // le flat-to-flat seulement si la lecture on-chain a échoué (2026-07-25, fix mesure).
             if (r.closeValueSol != null && pos.live.openValueSol != null) {
                 pnlSolLive = +(r.closeValueSol - pos.live.openValueSol).toFixed(4);
-                // ── (2026-09-10) PnL COMPTABLE vs PnL DE CAISSE ────────────────────────────────
-                // `pnlSolLive` = closeValueSol − openValueSol mesure ce qui se passe DANS la pool.
-                // `openValueSol` est lu APRÈS le dépôt (bonus-live.js:407) et `closeValueSol` AVANT
-                // le retrait : les swaps Jupiter et les transferts d'entrée/sortie sont donc HORS
-                // mesure. `depositedSol`/`proceedsSol` (bonus-live.js:404,655) sont, eux, le vrai
-                // mouvement du wallet.
-                // Mesuré le 10/09 : à l'ouverture, déposé 0,3323 SOL → valeur LP ~0,2700 SOL ; en
-                // retirant ~0,052 de rent (rendue à la fermeture), le coût d'entrée réel est
-                // ~0,010 SOL par trade.
-                // Cause probable : 15 des 28 mints des 140 derniers trades portent des frais de
-                // transfert Token-2022, dont 11 à 3,00 %. Répartition du PnL annoncé : tokens à 3 %
-                // +1,3277 SOL (73 trades), tokens à 1 % +0,1376 (15), tokens SANS frais +0,0150
-                // (52). Autrement dit 99 % du gain affiché vient de tokens taxés, et là où la
-                // mesure ne peut pas mentir (sans frais) le résultat est nul.
-                // On journalise donc les deux et leur écart pour trancher trade par trade.
-                if (r.proceedsSol != null && pos.live.depositedSol != null) {
-                    const caisse = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
-                    const ecart = +(caisse - pnlSolLive).toFixed(4);
-                    console.log(`  💸 ${pos.symbol}: PnL pool ${pnlSolLive >= 0 ? '+' : ''}${pnlSolLive} SOL | PnL caisse ${caisse >= 0 ? '+' : ''}${caisse} SOL | ÉCART ${ecart >= 0 ? '+' : ''}${ecart} SOL (swaps + frais)`);
-                    trade_ecartCaisse = ecart; trade_pnlCaisse = caisse;
-                }
+                // ── (2026-09-11) LIGNE `💸` RETIRÉE — l'instrument était faux ────────────────────
+                // Déployée le 10/09 pour comparer PnL pool et PnL de caisse, elle s'appuyait sur
+                // `proceedsSol`, mesuré flat-to-flat (solde du wallet avant / après le close). Avec
+                // 7 positions et un contrôle toutes les 10 s, une AUTRE ouverture ou fermeture tombe
+                // au milieu de la fenêtre : les 20 relevés montrent des écarts de ±0,14 à 0,20 SOL,
+                // soit exactement la taille d'une ouverture (-0,19) ou d'une fermeture (+0,19). Leur
+                // moyenne donnait +0,0092 SOL/trade — un écart POSITIF, donc du bruit pur. Le code le
+                // disait déjà : « proceedsSol (flat-to-flat) gardé en secours/indicatif ».
+                // La mesure fiable est hors-bot (voir ETAT-DU-BOT.md §3quinquies) : état du wallet à
+                // deux dates, positions valorisées à leur coût, même nombre de positions.
             } else {
                 pnlSolLive = +(r.proceedsSol - pos.live.depositedSol).toFixed(4);
                 console.log(`  ⚠️ PnL live via flat-to-flat (lecture on-chain KO) — moins fiable`);
@@ -2126,8 +2137,6 @@ async function closePaper(tok, pos, exitPrice, reason) {
         outBottomMin: pos._obOutMs != null ? Math.round(pos._obOutMs / 60000) : null,
         outBottomPct: pos._obTotalMs > 0 ? +((pos._obOutMs || 0) / pos._obTotalMs * 100).toFixed(1) : null,
         outBottomEpisodes: pos._obEpisodes || 0,
-        // (2026-09-10) PnL de CAISSE (delta wallet réel) et son écart avec le PnL comptable.
-        pnlCaisse: trade_pnlCaisse, ecartCaisse: trade_ecartCaisse,
         openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
     };
     state.trades.push(trade);

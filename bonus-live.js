@@ -334,7 +334,9 @@ async function sweepOrphans() {
 // Le solde ne remonte que lorsqu'une position se ferme — on mémorise donc le manque pendant 5 minutes,
 // et `closeVerified` lève le verrou immédiatement puisque c'est le seul événement qui rend du SOL.
 let _cashShortUntil = 0;
-async function openBidAsk(poolAddress, deployedSol) {
+// (2026-09-11) `oneSided` : pose la position ENTIÈREMENT EN SOL sous le prix, sans swap ni dépôt
+// de token — réservé aux mints à frais de transfert (voir ONESIDED_FEE_BPS dans bonus-bot.js).
+async function openBidAsk(poolAddress, deployedSol, oneSided = false) {
     if (Date.now() < _cashShortUntil) return null;   // cash insuffisant récemment constaté : on ne retente pas
     const balBefore = await solBalance();
     const balSol = balBefore / LAMPORTS_PER_SOL;
@@ -372,22 +374,39 @@ async function openBidAsk(poolAddress, deployedSol) {
     const yMint = dlmmPool.tokenY.publicKey.toString();
     if (yMint !== SOL_MINT) { console.log('❌ pool non SOL-quote (tokenY ≠ WSOL) — non géré'); return null; }
     const activeBin = await dlmmPool.getActiveBin();
+    // ── GÉOMÉTRIE ────────────────────────────────────────────────────────────────────────────
+    // Double-sided (défaut) : ±34 bins autour du prix, moitié SOL / moitié token.
+    // One-sided (mints taxés) : 68 bins SOUS le prix, 100 % SOL, le haut de range EST le prix
+    // d'entrée. Aucun swap ni dépôt de token à l'ouverture → les DEUX transferts taxés de l'entrée
+    // disparaissent (3,23 % de la mise, mesuré sur 125 ouvertures). Et comme la position est
+    // intégralement en SOL dès que le prix repasse au-dessus de l'entrée, la sortie ne paie rien
+    // non plus dans 86 % des cas (mesuré sur 110 trades).
+    // (2026-09-11) 34 bins SOUS le prix, pas 68. À capital égal, 34 bins concentrent DEUX FOIS
+    // plus de liquidité par bin, et les fees se perçoivent par bin traversé. Mesuré sur 109
+    // épisodes : les plongeons ont une médiane de -6,7 % (p25 -17 %, p10 -27 %), donc -28,7 %
+    // (34 bins à bs100) garde 92 % des épisodes en range ; passer à 68 bins n'en gagne que 7 de
+    // plus mais divise la densité par deux. 61 % du mouvement de prix tient dans ces 34 bins.
     const minBinId = activeBin.binId - BIN_RANGE;
-    const maxBinId = activeBin.binId + BIN_RANGE;
+    const maxBinId = activeBin.binId + (oneSided ? 0 : BIN_RANGE);
 
+    let tokenRaw = 0n, halfLamports;
+    if (oneSided) {
+        halfLamports = Math.floor(amountSol * LAMPORTS_PER_SOL);   // TOUTE la mise en SOL
+        console.log(`  🪜 ONE-SIDED : ${amountSol.toFixed(4)} SOL en échelle sur ${BIN_RANGE} bins SOUS le prix — aucun swap, aucune taxe d'entrée`);
+    } else {
     // ~moitié de la mise en token → côté HAUT du Bid-Ask (base vendue pendant la montée)
-    const halfLamports = Math.floor((amountSol / 2) * LAMPORTS_PER_SOL);
+    halfLamports = Math.floor((amountSol / 2) * LAMPORTS_PER_SOL);
     console.log(`  🔁 Swap ${(halfLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL → token (côté haut)...`);
     await jupSwap(SOL_MINT, xMint, halfLamports);
     // Propagation RPC (2026-07-22) : le solde token n'est PAS visible instantanément après le confirm
     // → lecture immédiate = 0 → abandon à tort (alors que le swap a réussi = tokens orphelins). Bot 1
     // attend 2s ; ici on poll jusqu'à ~12s pour être robuste avant d'abandonner.
-    let tokenRaw = 0n;
     for (let attempt = 0; attempt < 6 && tokenRaw <= 0n; attempt++) {
         await new Promise(r => setTimeout(r, 2000));
         tokenRaw = await tokenBalanceRaw(xMint);
     }
     if (tokenRaw <= 0n) { console.log('❌ swap confirmé mais 0 token reçu après 12s — abandon'); return null; }
+    }
 
     const positionKeypair = Keypair.generate();
     try {
@@ -443,7 +462,7 @@ async function openBidAsk(poolAddress, deployedSol) {
         try { openValueSol = await positionValueSol(posRef, dlmmPool); } catch (_) {}
     }
     console.log(`  💰 Déposé: ${depositedSol.toFixed(4)} SOL (rent+gas inclus) | valeur LP: ${openValueSol != null ? openValueSol.toFixed(4) : '?'} SOL | bins [${minBinId}→${maxBinId}] (±${BIN_RANGE})`);
-    return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, openValueSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint };
+    return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, openValueSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint, oneSided };
 }
 
 // ── Valeur de position en SOL (X + Y + fees) — LECTURE ON-CHAIN DIRECTE ──────────────────────────
