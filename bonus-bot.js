@@ -498,6 +498,18 @@ async function dexInfo(token) {
         price, mc,
         supply: price > 0 && mc > 0 ? mc / price : null,
         vol24h: Math.max(...pairs.map(q => parseFloat((q.volume || {}).h24 || 0)), 0),
+        // (2026-09-12) RENDEMENT PAR POOL. Cette réponse contient DÉJÀ la liquidité et le volume de
+        // chaque pool ; on ne gardait que l'agrégat `vol24h` et on jetait le reste. `findMeteoraPool`
+        // retombait alors sur « la fee la plus BASSE », critère dont le commentaire de bonus-live.js
+        // dit lui-même qu'il « ignore complètement le volume traversant, donc le rendement réel ».
+        // Mesuré sur 566 décisions de pool (shadow rendement, 6 jours) : 77 se font sur une pool qui
+        // rend moitié moins que la meilleure du même token — 10,7 %/j contre 18,4 %/j en moyenne.
+        // Aucun appel HTTP ni crédit RPC supplémentaire : la donnée est déjà là.
+        metPools: pairs.filter(q => /meteora/i.test(q.dexId || '')).map(q => ({
+            addr: q.pairAddress,
+            tvl: (q.liquidity || {}).usd || 0,
+            vol24h: parseFloat((q.volume || {}).h24 || 0),
+        })),
         // Règle EP n°5 : "main supplier LEGIT" = profil DexScreener payé (image) + X (any pair)
         hasTwitter: pairs.some(q => (q.info?.socials || []).some(s => s.type === 'twitter')),
         hasImage: pairs.some(q => !!q.info?.imageUrl),
@@ -1327,7 +1339,7 @@ async function scan() {
                     state.purgedAt[oldest] = now; delete state.watch[oldest]; replaceBudget--;
                 }
                 const mm = state.mourantMints[tok];   // restaure le verrou anti-mourant (survit purge/re-add)
-                state.watch[tok] = { symbol: d.symbol, pool: d.poolAnalysis || gtPool || d.pool, poolAlt: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now, nextCheckAt: now + Math.floor(Math.random() * 30e3),
+                state.watch[tok] = { symbol: d.symbol, metPools: d.metPools || null, pool: d.poolAnalysis || gtPool || d.pool, poolAlt: gtPool || d.pool, birthMs: d.birthMs, supply: d.supply, profilOk, athGmgn: gmgnAthPrice.get(tok) || null, addedAt: now, nextCheckAt: now + Math.floor(Math.random() * 30e3),
                     vol: d.vol24h,   // (2026-08-27) w.vol n'était JAMAIS écrit → vol24hK: null sur les 441 trades
                     lastEntryPrice: mm ? mm.px : undefined, lastExitTs: mm ? mm.exitTs : undefined,
                     patternValidated: !!(state.patternOkMints[tok] && now - state.patternOkMints[tok] < PATTERN_TTL) || undefined }; // restaure la qualif pattern acquise (survit purge/re-add)
@@ -1915,7 +1927,7 @@ async function scan() {
                         // meteoraOk=false et bloquait l'entrée — y compris PAPIER — pendant 30 min. Désormais
                         // on ne mémorise que les vraies réponses ; sur erreur on laisse passer (l'ouverture
                         // live échouera proprement en "papier seulement" si la pool manque vraiment).
-                        try { w.meteoraOk = !!(await live.findMeteoraPool(tok, (feeTvlMap.get(tok) || {}).pool)); w.meteoraCheckedAt = now; }
+                        try { w.meteoraOk = !!(await live.findMeteoraPool(tok, (feeTvlMap.get(tok) || {}).pool, w.metPools)); w.meteoraCheckedAt = now; }
                         catch (e) { w.meteoraOk = null; w.meteoraCheckedAt = 0; console.log(`  ⚠️ findMeteoraPool ${w.symbol} KO (${String(e.message).slice(0, 50)}) — non mémorisé`); }
                     }
                     if (w.meteoraOk === false) { state.blockCount['no-pool-meteora'] = (state.blockCount['no-pool-meteora'] || 0) + 1; continue; }
@@ -1975,7 +1987,7 @@ async function scan() {
                     console.log(`  ⏸️ LIVE: ${liveOpenCount}/${MAX_LIVE_POSITIONS} position(s) réelle(s) déjà ouverte(s) — ${w.symbol} en papier seulement`);
                 } else if (live.enabled) {
                     try {
-                        const poolAddr = await live.findMeteoraPool(tok, (feeTvlMap.get(tok) || {}).pool);   // (2026-08-30) préfère la pool que la datapi a désignée comme la plus rémunératrice
+                        const poolAddr = await live.findMeteoraPool(tok, (feeTvlMap.get(tok) || {}).pool, w.metPools);   // (2026-08-30) préfère la pool que la datapi a désignée comme la plus rémunératrice
                         if (poolAddr) {
                             // (2026-08-31) capital = cash libre + valeur déjà déployée en LP. Sans ça la mise
                             // se calculait sur le seul cash libre et fondait à chaque ouverture (2,7× d'écart

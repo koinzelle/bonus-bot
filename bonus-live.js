@@ -106,7 +106,7 @@ const OK_BIN_STEPS = [80, 100, 125, 160, 200, 250]; // canonique EP = 100 (préf
 // Trouve la meilleure pool DLMM token/SOL : bin step 100 d'abord, puis base fee la plus haute,
 // puis réserve SOL la plus profonde. Retourne l'adresse (string) ou null.
 const _poolCache = new Map(); // (2026-08-26) tokenAddress -> { addr, ts } : évite de refaire 2× getProgramAccounts (gros drain RPC Helius) pour un même mint
-async function findMeteoraPool(tokenAddress, preferredPool) {
+async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
     const _pc = _poolCache.get(tokenAddress);
     if (_pc && Date.now() - _pc.ts < 30 * 60 * 1000) return _pc.addr;
     const programId = new PublicKey(DLMM_PROGRAM_ID);
@@ -172,8 +172,37 @@ async function findMeteoraPool(tokenAddress, preferredPool) {
     // donc la même pool pour y déposer. Cas fone : pool choisie 4,3 de volume/TVL contre 13,6 disponible.
     // Sécurité : on ne la retient QUE si elle a passé tous les contrôles de viabilité ci-dessus (SOL en Y,
     // bin step admis, fee ≥ 0,5%, réserve ≥ 20 SOL). Sinon on retombe sur le tri historique.
+    // ── (2026-09-12) REPLI PAR RENDEMENT RÉEL, PLANCHER bs100 ────────────────────────────────────
+    // Le tri ci-dessus prend la fee la plus BASSE, critère sans rapport avec le rendement. Quand la
+    // datapi n'a désigné aucune pool, on classe désormais par fee/TVL réel — `vol24h × fee ÷ TVL` —
+    // calculé depuis les données que `dexInfo` a DÉJÀ récupérées (aucun appel HTTP, aucun crédit RPC,
+    // aucune latence à l'ouverture).
+    // Mesuré sur 566 décisions (shadow rendement, 6 jours) : 77 ratent la meilleure pool du token,
+    // avec 10,7 %/j pris contre 18,4 %/j disponible. PLANCHER bs100 : 70 des 77 meilleures pools sont
+    // des bs100, donc le plancher récupère 97 % du rendement manqué (74 cas sur 77) SANS jamais
+    // descendre sous la protection actuelle (-29 % à ±34 bins). Les 3 cas écartés sont des bs80, dont
+    // la range -24 % porte les sorties lourdes mesurées le 08/09.
+    // Repli intégral sur le tri historique si `metPools` est absent, vide, ou sans TVL exploitable.
+    let parRendement = null;
+    if (Array.isArray(metPools) && metPools.length) {
+        const eligibles = candidates
+            .filter(c => c.binStep >= 100)
+            .map(c => {
+                const m = metPools.find(p => p.addr === c.addr);
+                const tvl = m ? m.tvl : 0, vol = m ? m.vol24h : 0;
+                return { c, ftv: tvl > 0 ? (vol * (c.baseFeePct / 100)) / tvl * 100 : null };
+            })
+            .filter(x => x.ftv != null);
+        if (eligibles.length) {
+            eligibles.sort((a, b) => b.ftv - a.ftv);
+            parRendement = eligibles[0];
+        }
+    }
     const wanted = preferredPool ? candidates.find(c => c.addr === preferredPool) : null;
-    const best = wanted || candidates[0];
+    const best = wanted || (parRendement ? parRendement.c : candidates[0]);
+    if (!wanted && parRendement && parRendement.c.addr !== candidates[0].addr) {
+        console.log(`  📈 Pool choisie au RENDEMENT: ${parRendement.c.addr.slice(0, 8)} bs${parRendement.c.binStep} fee${parRendement.c.baseFeePct}% ${parRendement.ftv.toFixed(1)}%/j — au lieu de ${candidates[0].addr.slice(0, 8)} bs${candidates[0].binStep} fee${candidates[0].baseFeePct}% (tri fee)`);
+    }
     if (preferredPool && !wanted) console.log(`  · pool datapi ${String(preferredPool).slice(0, 8)} non viable (filtrée) — repli sur le tri fee`);
     // SHADOW (2026-08-30) : on logge TOUTES les pools viables pour pouvoir comparer, dans quelques semaines,
     // « la pool choisie » à « la meilleure disponible ». Les candidates sont déjà toutes évaluées : coût nul.

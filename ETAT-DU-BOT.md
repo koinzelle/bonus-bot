@@ -577,6 +577,52 @@ l'entrée). Les « gels » de bin observés sur UBER (`-549→-549`) corresponda
 n'avait pas franchi de bin, alors que le champ `prix` (issu des bougies) bougeait de 5 points. Les deux
 sources divergent réellement — ne pas confondre avec le bug de LP figé du §3sexies.
 
+## 3octies. SÉLECTION DE POOL PAR RENDEMENT RÉEL (12/09)
+
+**Déclencheur :** le user demande pourquoi le bot a ouvert MET sur une pool à ~0 % de fees. Réponse :
+le `feeTvl` enregistré (22,3) est celui du **TOKEN** agrégé sur toutes ses pools, pas de la pool où le
+bot dépose. `FEE_TVL_FLOOR` filtre donc le token, jamais la pool.
+
+**Mesure sur le shadow rendement (566 décisions distinctes, 6 jours) :**
+
+```
+491 (87%)  déjà la meilleure pool
+ 77 (13%)  meilleure MANQUÉE — 10,7 %/j pris contre 18,4 %/j disponible
+```
+
+Taux d'échec par pas : **bs80 47 %** (7/15) · **bs200 28 %** (46/165) · bs125 7 % · bs100 5,6 %.
+Et **70 des 77 meilleures pools sont des bs100** — d'où le plancher.
+
+```
+plancher bin step   décisions récupérées   rendement récupéré
+  aucun                  77/77                  100%
+  bs >= 100              74/77                   97%
+```
+
+**Déployé.** `dexInfo` renvoie désormais `metPools: [{addr, tvl, vol24h}]` — la réponse DexScreener
+contenait déjà ces champs et les jetait (seul `vol24h` agrégé était conservé). Stocké sur
+`state.watch[tok]`, passé à `findMeteoraPool(tokenAddress, preferredPool, metPools)` aux deux appels.
+La sélection classe les candidates de `binStep >= 100` par `vol24h × fee ÷ TVL` et prend la meilleure.
+Log `📈 Pool choisie au RENDEMENT` quand ça diffère du tri historique.
+
+**Coût : nul.** Aucun appel HTTP supplémentaire, aucune latence à l'ouverture, aucun crédit RPC — la
+donnée était déjà en mémoire. C'est la remarque du user qui a permis ça : ma première proposition
+prévoyait un appel DexScreener bloquant avec timeout 2 s, inutile puisque le token est déjà en watch.
+
+**Priorités préservées :** la pool désignée par la datapi (`preferredPool`) écrase tout, comme avant.
+Tous les filtres de viabilité restent (SOL en Y, bin step admis, fee ≥ 0,5 %, réserve ≥ 20 SOL). Repli
+intégral sur le tri historique si `metPools` est absent, vide, ou sans TVL exploitable. Le départage
+par plus grand bin step du 08/09 reste en dernier critère.
+
+**Ce qui N'EST PAS touché :** le tri `a.baseFeePct - b.baseFeePct` reste en place comme repli. La note
+« quel niveau de fee rapporte le plus n'est PAS tranché, ne pas modifier sans A/B » porte sur le niveau
+de fee comme heuristique — ici on ne devine plus, on classe par un rendement mesuré.
+
+**Impact attendu, modeste :** ~7,7 points de rendement journalier en plus sur les cas concernés, soit
+~0,0009 SOL par trade et **~0,07 SOL sur 6 jours**. Gratuit et sans risque, mais ne pas en attendre un
+redressement. **Critère de lecture :** compter les lignes `📈 Pool choisie au RENDEMENT` et vérifier
+que le shadow `⚠️RANG` se raréfie.
+
 ## 4. En cours de mesure — ne rien conclure avant
 
 | Shadow | Question | Comment lire | Quand |
