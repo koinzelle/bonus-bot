@@ -1496,9 +1496,9 @@ async function scan() {
                 if (pos.live && live.enabled && pos.live.openValueSol) {
                     const b = await batchedPositionValues();
                     const bv = b.fresh ? b.map.get(pos.live.positionKeypairPub) : null; // lot PÉRIMÉ = on l'ignore (plus de gel)
-                    if (bv) { recordLv(pos, bv.valueSol / pos.live.openValueSol - 1, bv.activeBinId); lvSrc = 'lot'; }
+                    if (bv) { recordLv(pos, bv.valueSol / pos.live.openValueSol - 1, bv.activeBinId, bv); lvSrc = 'lot'; }
                     else if ((!pos._lv || Date.now() - pos._lv.ts > 20000) && live.positionValueAndBin) { // lot périmé/absent → individuel FRAIS (throttlé 20s)
-                        try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { recordLv(pos, r.valueSol / pos.live.openValueSol - 1, r.activeBinId); lvSrc = 'indiv'; } } catch (_) { /* garde l'ancien cache / fallback prix */ }
+                        try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { recordLv(pos, r.valueSol / pos.live.openValueSol - 1, r.activeBinId, r); lvSrc = 'indiv'; } } catch (_) { /* garde l'ancien cache / fallback prix */ }
                     } else if (pos._lv) { lvSrc = `cache${Math.round((Date.now() - pos._lv.ts) / 1000)}s`; }
                     // Garde anti-cache-figé : on ne trust le cache LP que <90s. Sinon on retombe sur le PRIX.
                     if (pos._lv && Date.now() - pos._lv.ts < 90000) { realGain = pos._lv.rg; liveBinId = pos._lv.bin; }
@@ -1559,7 +1559,7 @@ async function scan() {
                 const realSource = lvSrc; // diagnostic gel valeur (2026-08-11) : lot / lot-FIGÉ / indiv / cacheXs / prix
                 const rsi2v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
                 const rsi14v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 14);
-                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource} | ${pos.established ? '15m' : '5m'}`);
+                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource}${pos._raw ? ` px:${pos._raw.px != null ? pos._raw.px.toPrecision(6) : '?'} X:${pos._raw.x != null ? pos._raw.x.toPrecision(6) : '?'} Y:${pos._raw.y != null ? pos._raw.y.toFixed(4) : '?'} lu:${pos._raw.readTs ? ((Date.now() - pos._raw.readTs) / 1000).toFixed(0) : '?'}s` : ''} | ${pos.established ? '15m' : '5m'}`);
 
                 // TRAILING TEMPS RÉEL (2026-08-09, cas STONK sorti à la main) : le trail est un STOP de
                 // protection → il agit sur la valeur LP live à CHAQUE scan, PLUS derrière candleAfterEntry
@@ -2015,8 +2015,9 @@ async function scan() {
 // TRAJECTOIRE LP (2026-08-19) : pose _lv ET historise (valeur%, bin, ts) → au close on l'attache au trade →
 // consultable via /trades?all=1 (jamais perdue). Un trou de temps entre 2 points = lecture gelée (429) ;
 // une décroissance lisse = mécanique LP. Tranche « 429 vs LP non-linéaire » sur les sorties trail tardives.
-function recordLv(pos, rg, bin) {
+function recordLv(pos, rg, bin, raw) {
     const now = Date.now();
+    if (raw) pos._raw = { px: raw.px, x: raw.x, y: raw.y, readTs: raw.readTs };   // (2026-09-11) termes bruts pour diagnostic
     // ── (2026-09-08) TEMPS PASSÉ HORS RANGE PAR LE BAS ──────────────────────────────────────────
     // Mesuré le 08/09 sur 192 trades : une position sortie par le bas rend **-0,00898 SOL/trade**
     // contre **+0,01072** pour une qui tient, LP médian 1,06 % contre 4,61 %, et elle dure 6,3 h au
@@ -2407,7 +2408,9 @@ async function fastPositionCheck() {
                 const depuis = pos._armEvalTs ? ((now2 - pos._armEvalTs) / 1000).toFixed(1) : '?';
                 const age = _batchLv && _batchLv.ts ? ((now2 - _batchLv.ts) / 1000).toFixed(1) : '?';
                 pos._armEvalTs = now2;
-                console.log(`  ⏱️ ${pos.symbol} armé | LP ${(rg * 100).toFixed(2)}% | peak ${(pos.peakGain * 100).toFixed(2)}% | seuil ${((pos.peakGain - TRAIL) * 100).toFixed(2)}% | éval +${depuis}s | âge donnée ${age}s${proche ? ' | ⚠️ PROCHE DU SEUIL' : ''}`);
+                const _r = pos._raw;
+                const _diag = _r ? ` | px ${_r.px != null ? _r.px.toPrecision(6) : '?'} | X ${_r.x != null ? _r.x.toPrecision(6) : '?'} | Y ${_r.y != null ? _r.y.toFixed(4) : '?'} | chaîne lue il y a ${_r.readTs ? ((Date.now() - _r.readTs) / 1000).toFixed(1) : '?'}s` : '';
+                console.log(`  ⏱️ ${pos.symbol} armé | LP ${(rg * 100).toFixed(2)}% | peak ${(pos.peakGain * 100).toFixed(2)}% | seuil ${((pos.peakGain - TRAIL) * 100).toFixed(2)}% | éval +${depuis}s | âge donnée ${age}s${_diag}${proche ? ' | ⚠️ PROCHE DU SEUIL' : ''}`);
                 }
             }
             // CUT hors-range -55% PARTOUT (2026-08-19, backtest tenir-vs-couper : -35% coupait trop tôt, delta +121% sur 12 CUT-bas ; -55% tient les rebonds, garde un plancher anti-rug)

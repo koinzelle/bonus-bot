@@ -475,6 +475,54 @@ des ratios par épisode. Pondéré par le mouvement — le bon calcul, les fees 
 7 positions concurrentes, écarts de ±0,14 à 0,20 SOL (la taille d'une ouverture), moyenne **+0,0092/trade**,
 un écart positif donc du bruit pur. Un instrument faux est pire que pas d'instrument.
 
+## 3sexies. LP FIGÉ — BUG SYSTÉMIQUE NON RÉSOLU (11/09) — instrumentation déployée
+
+**Découvert via RAYCAT (10/09 23:09).** Le user a vu sur Meteora le LP tomber de +15 % à +10 % ; les
+logs du bot affichaient 15,21 % au même instant, seuil de trail à 14,21 %. Le trail n'est donc jamais
+parti. Le user a fermé à la main, le bot a ensuite lu une position vide (**-97,55 %**), a tenté un close
+sur une position déjà fermée (erreur on-chain `Custom 3007`), et a **enregistré le trade à -0,0813 SOL
+pour une position qui valait +15,2 %**.
+
+**Le balayage 5 jours (27 014 relevés) montre que ce n'est pas un incident :**
+
+```
+231 cas — bin actif FIGÉ ≥5 relevés pendant que le prix bouge ≥5 points
+137 sur tokens à 3%   ·   37 à 1%   ·   57 SANS taxe   ·   24 avec le trail ARMÉ
+```
+
+Pires cas : **NEARKAT 53 min / 39 relevés / 15,1 pts de prix / LP inchangé au centième**,
+RAYCAT 43 min / 29 relevés / 21,9 pts, MUCHWOW 5 min / 24,2 pts.
+
+**CINQ hypothèses formulées et TOUTES réfutées** — ne pas les reproposer sans élément neuf :
+1. *Lot périmé / cadence* — réfuté : RAYCAT était au palier 8 s et lu à chaque cycle.
+2. *Cache `_dlmmCache` 30 min* — réfuté deux fois : `getActiveBin()` relit la chaîne
+   (`node_modules/@meteora-ag/dlmm/dist/index.js:17883` : `await this.program.account.lbPair.fetch`),
+   et deux gels dépassent 30 min (43 et 53 min).
+3. *Divergence bougies↔pool par la taxe Token-2022* — réfuté : 57 cas sur des tokens SANS taxe.
+4. *LP réellement plat* — réfuté par le user, témoin direct de l'écran Meteora.
+5. *Close cassé* — réfuté : le close n'a échoué QUE parce que la position était déjà fermée à la main.
+
+**Signature à retenir :** pendant un gel, la valeur ne bouge que par **accumulation de fees**
+(15,10 → 15,21, strictement croissant), jamais par le prix. Une valeur qui bouge par les fees mais
+jamais par le prix = valorisée à un prix mort.
+
+**Instrumentation déployée (11/09)** — aucun changement de comportement : `positionValuesByKeys` et
+`allPositionValues` exposent désormais `px` (prix de pool), `x` (token + fees), `y` (SOL + fees) et
+`readTs`. **`readTs` n'est posé QUE lorsque la chaîne est réellement interrogée** — l'ancien
+`âge donnée` mesurait l'âge du dernier *enregistrement*, pas de la *lecture*, et affichait donc
+`0.0s` sur une valeur figée depuis 50 minutes. Les quatre termes apparaissent sur `⏱️` (armées) ET sur
+`📊` (toutes, car 207 des 231 gels concernent des positions NON armées).
+
+**Critère de lecture :** à la prochaine occurrence (231 en 5 jours → quelques heures), comparer `px`
+avec le prix réel de la pool. Si `px` est figé alors que `lu:` est récent, le défaut est dans le SDK ou
+le calcul ; si `lu:` grandit, c'est la lecture qui ne part pas.
+
+**⚠️ CE BUG INVALIDE PARTIELLEMENT** toute analyse appuyée sur `peakGainPct`, sur le trail ou sur les
+relevés LP — dont le « trail rend 1,06 pt médian » du 11/09, qui mesurait peut-être surtout des gels.
+
+**Reste à corriger :** ne pas enregistrer de trade quand le close a échoué et que le PnL vient du
+flat-to-flat (cas RAYCAT). Mieux vaut un trou qu'un faux.
+
 ## 4. En cours de mesure — ne rien conclure avant
 
 | Shadow | Question | Comment lire | Quand |

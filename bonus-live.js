@@ -549,7 +549,15 @@ async function positionValuesByKeys(list) {
             const yHuman = Number(d.totalYAmount?.toString() ?? 0) / 10 ** yDec;
             const feeX = Number(d.feeX?.toString() ?? 0) / 10 ** xDec;
             const feeY = Number(d.feeY?.toString() ?? 0) / 10 ** yDec;
-            out.set(p.positionKeypairPub, { valueSol: yHuman + feeY + (xHuman + feeX) * priceYperX, activeBinId: ab.binId });
+            // (2026-09-11) On expose les TERMES du calcul, pas seulement son résultat. Mesuré sur 5
+            // jours : 231 épisodes où le bin actif reste figé ≥5 relevés pendant que le prix bouge
+            // ≥5 points (jusqu'à 53 min et 39 lectures pour NEARKAT, LP inchangé au centième), dont
+            // 24 avec le trail ARMÉ. Impossible de dire lequel de px / x / y mentait : seule la somme
+            // était journalisée. `readTs` n'est posé QUE quand la chaîne est réellement interrogée —
+            // il distingue « donnée vieille » de « donnée fraîche mais fausse », ce que l'ancien
+            // `âge donnée` (âge du dernier enregistrement) ne savait pas faire.
+            out.set(p.positionKeypairPub, { valueSol: yHuman + feeY + (xHuman + feeX) * priceYperX, activeBinId: ab.binId,
+                px: priceYperX, x: xHuman + feeX, y: yHuman + feeY, readTs: Date.now() });
         }
     }
     return out;
@@ -619,7 +627,8 @@ async function allPositionValues(list) {
             const yHuman = Number(d.totalYAmount?.toString() ?? 0) / 10 ** yDec;
             const feeX = Number(d.feeX?.toString() ?? 0) / 10 ** xDec;
             const feeY = Number(d.feeY?.toString() ?? 0) / 10 ** yDec;
-            out.set(lp.publicKey.toString(), { valueSol: yHuman + feeY + (xHuman + feeX) * priceYperX, activeBinId });
+            out.set(lp.publicKey.toString(), { valueSol: yHuman + feeY + (xHuman + feeX) * priceYperX, activeBinId,
+                px: priceYperX, x: xHuman + feeX, y: yHuman + feeY, readTs: Date.now() });
         }
     }
     return out;
