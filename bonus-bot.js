@@ -1388,7 +1388,7 @@ async function scan() {
                                 const armedO = posO.peakGain >= TP_PCT;
                                 console.log(`📊 ${posO.symbol} | LP ${(rg * 100).toFixed(1)}% | peak ${(posO.peakGain * 100).toFixed(1)}% | ${armedO ? 'armé✓' : 'pas-armé'} | trail≤${((posO.peakGain - TRAIL) * 100).toFixed(1)}% | src:live | bougies-KO`);
                                 const exitPx = posO.lastPx || posO.entry;
-                                if (r.activeBinId != null && posO.live.upperBinId != null && r.activeBinId > posO.live.upperBinId) { await closePaper(tok, posO, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, bougies KO)`); continue; }
+                                if (r.activeBinId != null && posO.live.upperBinId != null && r.activeBinId > posO.live.upperBinId + (posO.live.oneSided ? ONESIDED_TOP_BUFFER : 0)) { await closePaper(tok, posO, exitPx, posO.live.oneSided ? `CYCLE ONE-SIDED COMPLET (banké +${(rg * 100).toFixed(1)}% LP, 100% SOL, bougies KO)` : `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, bougies KO)`); continue; }
                                 if (armedO && rg <= posO.peakGain - TRAIL) { await closePaper(tok, posO, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(posO.peakGain * 100).toFixed(1)}%, bougies KO)`); continue; }
                                 // (2026-08-27) était -0.35 en dur ici alors que tout le reste est à -55% depuis le 19/08
                                 if (rg <= -RANGE_DOWN && !posO._awaitBounce) { posO._awaitBounce = true; console.log(`  ⏳ ${posO.symbol}: -${(RANGE_DOWN * 100).toFixed(0)}% franchi (bougies KO) → attente du rebond`); }
@@ -2434,8 +2434,16 @@ async function fastPositionCheck() {
                 }
             }
             // CUT hors-range -55% PARTOUT (2026-08-19, backtest tenir-vs-couper : -35% coupait trop tôt, delta +121% sur 12 CUT-bas ; -55% tient les rebonds, garde un plancher anti-rug)
-            if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId) {
-                await closePaper(tok, pos, exitPx, `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, rapide)`);
+            // (2026-09-11) MÊME TAMPON ONE-SIDED QU'AU SCAN. Le 11/09 la position UBER one-sided a été
+            // fermée ICI à 0,0 % de LP après 15 min, alors que le prix était à -5,3 % — sous l'entrée.
+            // En one-sided `upperBinId` EST le bin d'entrée : le moindre tick au-dessus déclenche. Le
+            // tampon n'avait été posé que sur le chemin du scan, pas sur celui-ci ni sur le repli
+            // « bougies KO » : trois chemins appliquent cette règle, ils doivent la partager.
+            const topBufF = pos.live.oneSided ? ONESIDED_TOP_BUFFER : 0;
+            if (bv.activeBinId != null && pos.live.upperBinId != null && bv.activeBinId > pos.live.upperBinId + topBufF) {
+                await closePaper(tok, pos, exitPx, pos.live.oneSided
+                    ? `CYCLE ONE-SIDED COMPLET (banké +${(rg * 100).toFixed(1)}% LP, 100% SOL → aucune taxe de sortie, rapide)`
+                    : `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, rapide)`);
             } else if (armed && rg <= pos.peakGain - TRAIL) {
                 await closePaper(tok, pos, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(pos.peakGain * 100).toFixed(1)}%, rapide)`);
             } else if (rg <= -CUT_HARD) {

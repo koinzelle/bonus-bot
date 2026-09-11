@@ -540,6 +540,43 @@ simultanées (passé à 7). Suspect principal : `const place = Math.max(0, READ_
 position lente n'est servie, contrairement à ce qu'affirme le commentaire du code. **Pièce qui ne colle
 pas encore :** RAYCAT était ARMÉ, donc dans les `urgentes`, jamais différées. À trancher avec `lu:`.
 
+## 3septies. ONE-SIDED — PREMIERS TRADES RÉELS ET BUG CORRIGÉ (11/09 21h)
+
+**Le mécanisme d'entrée fonctionne, mesuré sur 2 ouvertures réelles :**
+
+```
+double-sided   Déposé 0.3323 SOL → valeur LP 0.2700   = -0.0100 SOL de taxe d'entrée
+ONE-SIDED      Déposé 0.3219 SOL → valeur LP 0.2800   =  0.0000 SOL
+```
+
+**Taxe d'entrée exactement nulle.** Bins `[-583→-549]` = 34 de large, échelle posée comme prévu.
+Gain acquis : **+0,0100 SOL par trade**, avant toute considération de fees.
+
+**BUG INTRODUIT ET CORRIGÉ LE MÊME JOUR.** La règle « CUT hors-range HAUT » existe à **TROIS**
+endroits — scan (~1524), boucle rapide (~2438), repli « bougies KO » (~1391) — et le tampon
+`ONESIDED_TOP_BUFFER` n'avait été posé que sur le premier. Conséquence : UBER, première position
+one-sided de l'histoire du bot, fermée par la boucle rapide **à 0,0 % de LP après 15 minutes**, avec
+le prix à **-5,3 %** (donc SOUS l'entrée). En one-sided `upperBinId` EST le bin d'entrée : sans tampon,
+le moindre tick au-dessus ferme la position. **Leçon : chercher TOUTES les occurrences d'une règle
+avant de la modifier — celle-ci en avait trois.**
+
+**RISQUE DE CHURN À SURVEILLER.** Une position one-sided dont le prix monte juste après l'entrée est
+100 % SOL, n'encaisse aucune fee, et sera fermée à ~0 %. Elle aura consommé un slot, la rent et le gas
+pour rien. UBER en est l'exemple : 15 min, 0,0 %. Le tampon de 3 bins limite le déclenchement sur le
+bruit mais ne règle pas le cas où le prix part franchement à la hausse. **Critère : si plusieurs
+`CYCLE ONE-SIDED COMPLET` tombent à 0,0 % de LP en moins de 20 min, il faut une condition d'âge
+minimum ou exiger `rg > 0` pour banker.**
+
+**Arbitrage de fond, à garder en tête :** prix qui monte juste après l'entrée → le double-sided gagne
+(il détient des tokens qui montent), le one-sided ne gagne rien mais ne perd rien. Prix qui descend
+d'abord → le one-sided écrase le double-sided. Le bot entrant sur un dump, le second cas devrait
+dominer, mais ce n'est PAS encore démontré sur trades réels.
+
+**Observation annexe :** le bin actif bouge bien (LEVERCAT -340 → -341 quand le prix repasse sous
+l'entrée). Les « gels » de bin observés sur UBER (`-549→-549`) correspondaient à un prix de pool qui
+n'avait pas franchi de bin, alors que le champ `prix` (issu des bougies) bougeait de 5 points. Les deux
+sources divergent réellement — ne pas confondre avec le bug de LP figé du §3sexies.
+
 ## 4. En cours de mesure — ne rien conclure avant
 
 | Shadow | Question | Comment lire | Quand |
