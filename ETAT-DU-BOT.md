@@ -704,6 +704,43 @@ de fee comme heuristique — ici on ne devine plus, on classe par un rendement m
 redressement. **Critère de lecture :** compter les lignes `📈 Pool choisie au RENDEMENT` et vérifier
 que le shadow `⚠️RANG` se raréfie.
 
+## 3duodecies. TRI DES CANDIDATS À L'ENTRÉE — REJETÉ HORS ÉCHANTILLON (12/09)
+
+**Le constat est réel :** le bot ouvre sur le **premier** candidat de la rotation
+(`bonus-bot.js:1357-1360`), alors qu'il a le choix entre 2 et 14 candidats dans **79 %** des scans
+(74 % en ont ≥3). Sur 162 ouvertures réelles avec alternatives connues, **69 %** avaient une
+alternative plus performante.
+
+**Ce qui semblait marcher — et qui était CIRCULAIRE.** Trier par la plus petite market cap donnait
++0,0135 SOL/h contre +0,0080 pour la rotation, soit **+1,587 SOL** sur la période, robuste au retrait
+des six meilleurs contributeurs (+1,148), avec 60 décisions améliorées contre 40 dégradées.
+
+**Trois contrôles passaient, et ils étaient tous insuffisants :**
+- contre le hasard : 400 tirages aléatoires donnent 0,0080 (= la rotation), max 0,0102, le tri MC les
+  dépasse tous ;
+- stabilité de la performance par token : **r = 0,728** entre 1re et 2e moitié des trades (46 tokens) ;
+- gros gagnants préservés : **0 des 5 meilleurs tokens** n'est abandonné par le tri.
+
+**Le test HORS ÉCHANTILLON le tue :**
+
+```
+coupe au 04/09  (15 décisions)   tri MC  -0,0006
+coupe au 06/09  (51 décisions)   tri MC  -0,0004
+coupe au 08/09  (42 décisions)   tri MC  +0,0013
+```
+
+Deux coupes sur trois sont négatives. Le gain venait de ce que j'évaluais chaque token avec sa
+performance mesurée sur **la période même des décisions** : son « taux » incluait les trades censés
+être prédits.
+
+**LEÇON DE MÉTHODE — la plus importante de la session.** Les trois premiers contrôles testaient la
+**description**, pas la **prédiction**. Un critère peut battre le hasard, être stable et épargner les
+gagnants, et ne rien prédire. **Tester hors échantillon AVANT de présenter un chiffre, jamais après.**
+
+**Note :** le tri par profondeur de dump s'en sort marginalement mieux (+0,0013 · +0,0017 · -0,0001)
+mais sur 15 à 51 décisions et des effets au dix-millième de SOL/h — indiscernable du bruit. Ne pas le
+déployer sans un échantillon bien plus large.
+
 ## 3undecies. SEIZE RÈGLES DE SORTIE TESTÉES ET REJETÉES (11-12/09) — NE PAS LES REPROPOSER
 
 **Déclencheur :** les trades de plus de 5 h occupent **1161 h de slot sur 1609 (72 %)** pour **-0,842 SOL**,
