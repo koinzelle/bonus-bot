@@ -786,6 +786,52 @@ les lignes `📊` des logs, **exclure les fenêtres qui se chevauchent** pour un
 un contrôle** — dernier LP relevé contre `pnlSolLive` enregistré. Contrôle obtenu le 12/09 : erreur
 médiane **0,06 pt**, p90 2,07 pt sur 324 trades. Sans ce contrôle, ne rien publier.
 
+## 3terdecies. RÉOUVERTURE DES MINTS TAXÉS AVEC PLANCHER RSI2 INDEXÉ (13/09)
+
+**Le diagnostic complet.** Sur 385 trades depuis le 20/08, Meteora affiche **+3,66 SOL** ; mon compte
+indépendant du brut donne **+3,616** (concordance à 1,2 %). Mais après coûts réels :
+
+| classe | n | brut | taxe | NET |
+|---|---:|---:|---:|---:|
+| 3 % | 124 | +1,804 | **-1,852** | **-0,048** |
+| 1 % | 38 | +0,445 | -0,211 | +0,235 |
+| propres | 223 | +1,367 | -0,060 | +1,307 |
+| **total** | **385** | **+3,616** | **-2,122** | **+1,494** |
+
+Plus **-0,235 SOL** sortis du wallet hors trading (achat NFT Magic Eden 0,135 le 08/09, transfert
+0,100 le 10/09 — vérifiés on-chain sur 1006 transactions, 0 non lue au second passage) et -0,027 de
+frais réseau. **Net réel depuis le 20/08 : +1,232 SOL.**
+
+**COÛTS MESURÉS ON-CHAIN (et non plus déduits) :**
+- entrée : 2 transferts × taxe × 50 % de la mise → **3,23 % mesuré sur 125 ouvertures** pour un 3 %
+- sortie : la position est encore **48,0 % en token** sur une sortie TRAIL, **53,9 % sur une sortie RSI2**
+  (mesuré sur 15 fermetures : SOL du close + SOL du reswap). Donc 2,88 % et 3,23 % respectivement.
+- **seuil de rentabilité ≈ taxe × 2,078** : 6,23 % à 3 %, 2,08 % à 1 %, 0,12 % sur un token propre.
+
+**LA CAUSE DE LA NON-RENTABILITÉ DES 3 % :** le trail sortait à 7,69 % de LP (+0,330 SOL sur 75 trades),
+les **42 sorties RSI2 sortaient à 2,58 %** — sous le seuil de 6,23 % — pour **-0,393 SOL**. Le plancher
+`RSI2_FLOOR_LP` valant 0, le bot vendait dès que le LP était positif, donc systématiquement à perte.
+
+**DÉPLOYÉ :** `rsi2FloorFor(pos)` = `taxe × 2,078 × 1,05`. **Un token sans taxe retourne
+`RSI2_FLOOR_LP` (0) — comportement strictement inchangé sur les 223 trades propres qui portent le gain.**
+`MAX_TRANSFER_FEE_BPS` repasse à 1000 (rouvre les 3 %), et **`MAX_TAXED_POSITIONS = 2`** borne
+l'exposition (demande user : « si cela foire on en a pas trop »). Log `🧮` quand le plafond reporte une
+entrée, compteur `blockCount['plafond-taxes']`.
+
+**Effet simulé : +0,456 SOL** sur les 124 trades à 3 % (de -0,048 à +0,456).
+
+**RÉSERVES ASSUMÉES — à relire avant de juger :**
+- 31 trades modifiés seulement ; **2e moitié de période à -0,12** (1re à +0,59).
+- Le prix post-sortie est **estimé** via l'entrée/sortie des positions suivantes du même token, pas mesuré.
+- Sur les tokens à **1 %**, l'effet est **négatif** (-0,033 sur 12 trades) : leurs sorties RSI2 se font
+  déjà au-dessus du seuil. Le plancher ne les aide pas, il ne les tue pas non plus.
+- Les 24 sorties RSI2 qui n'atteignent PAS le seuil d'armement voient le prix tomber à **-15,2 % médian**
+  (p10 -23,6 %). C'est chiffré et inclus dans le +0,456 via la courbe prix→LP mesurée par tranche
+  (ratio 0,408 à -5 %, 0,442 à -20 %, 0,725 au-delà de -30 % quand la position sort de range).
+
+**CRITÈRE DE LECTURE, ~20 trades :** si les sorties RSI2 sur mints taxés disparaissent au profit du TRAIL,
+ça marche. Si les positions taxées s'accumulent sans sortir, refermer (`MAX_TRANSFER_FEE_BPS=101`).
+
 ## 4. En cours de mesure — ne rien conclure avant
 
 | Shadow | Question | Comment lire | Quand |

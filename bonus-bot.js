@@ -257,7 +257,17 @@ const ONESIDED_FEE_BPS = parseInt(process.env.ONESIDED_FEE_BPS || '10000', 10); 
 // Rappel du coût : à 1 % la taxe prend ~0,7 % de la mise par aller-retour (4 transferts × 1 % × la
 // moitié de la mise), contre ~6,3 % à 3 %. Et les tokens à 1 % sont la classe la plus rentable
 // mesurée : +3,30 % brut, +2,60 % net, contre +0,10 % brut sur les tokens sans frais.
-const MAX_TRANSFER_FEE_BPS = parseInt(process.env.MAX_TRANSFER_FEE_BPS || '101', 10); // ≥ → refus pur
+// (2026-09-13) RÉOUVERTURE DES MINTS TAXÉS, sous deux garde-fous.
+// Mesuré : les 124 trades sur tokens à 3 % faisaient -0,048 SOL net — le trail gagnait +0,330 et les
+// 42 sorties RSI2 perdaient -0,393, parce qu'elles vendaient SOUS le prix de revient (2,58 % de LP
+// pour un seuil à 6,23 %). Avec un plancher RSI2 indexé sur la taxe, la même population rapporte
+// +0,456 SOL sur la période. Réserve assumée : 31 trades modifiés, 2e moitié de période à -0,12.
+// Garde-fous : MAX_TAXED_POSITIONS limite l'exposition, et le plancher rend la vente à perte impossible.
+const MAX_TRANSFER_FEE_BPS = parseInt(process.env.MAX_TRANSFER_FEE_BPS || '1000', 10); // ≥ → refus pur (taxe extrême)
+// (2026-09-13, demande user) Pas plus de N positions taxées en même temps : si la réouverture tourne
+// mal, l'exposition reste bornée. Un mint est « taxé » au-delà de TAXED_MIN_BPS.
+const MAX_TAXED_POSITIONS = parseInt(process.env.MAX_TAXED_POSITIONS || '2', 10);
+const TAXED_MIN_BPS = parseInt(process.env.TAXED_MIN_BPS || '200', 10);
 const ONESIDED_TOP_BUFFER = parseInt(process.env.ONESIDED_TOP_BUFFER || '3', 10);      // bins au-dessus de l'entrée avant de banker
 const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
 const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
@@ -280,6 +290,19 @@ const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
 // à 1 cas de chaque côté (cc sauvée / BULLSHIT coupée trop tôt) : pas de quoi maintenir un élargissement
 // du plancher contre l'observation directe du user. Repasser à -0.03 exige de nouvelles données.
 const RSI2_FLOOR_LP = 0;
+// ── (2026-09-13) PLANCHER RSI2 INDEXÉ SUR LA TAXE DU TOKEN ────────────────────────────────────
+// Le plancher à 0 autorisait la vente dès que le LP est positif — juste sur un token propre (seuil de
+// rentabilité 0,12 %), ruineux sur un token à 3 % (seuil 6,23 %). Coûts MESURÉS on-chain :
+//   entrée = 2 transferts × taxe × 50 % de la mise       (43,7 à 48 % mesurés au retrait)
+//   sortie = 2 transferts × taxe × 53,9 % (sortie RSI2)  (la position est encore à moitié en token)
+// Soit un seuil de rentabilité ≈ taxe × 2,078. Vérifié : 6,23 % à 3 %, 2,08 % à 1 %.
+// On ajoute 5 % de marge. Les tokens propres gardent le comportement actuel.
+const RSI2_FLOOR_MULT = parseFloat(process.env.RSI2_FLOOR_MULT || '2.078');
+function rsi2FloorFor(pos) {
+    const bps = (pos && pos.live && pos.live.transferFeeBps) || 0;
+    if (!bps) return RSI2_FLOOR_LP;
+    return (bps / 10000) * RSI2_FLOOR_MULT * 1.05;
+}
 // ── DIVERGENCE PRIX ↔ LP (2026-08-29, cas BULLSHIT) ────────────────────────────────────────────────
 // Le prix vient des bougies Birdeye : GRATUIT et rafraîchi à chaque scan. La valeur LP vient d'Helius et
 // coûte des crédits, d'où les paliers de cadence (8s / 10s / 45s selon la proximité d'un trigger).
@@ -1629,7 +1652,7 @@ async function scan() {
                         recordShadow('planchrRsi2', { symbol: pos.symbol, tok, lp: +(realGain * 100).toFixed(2),
                             price: px, peakPct: +((pos.peakGain || 0) * 100).toFixed(1), ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
                     }
-                    if (rsi2 != null && rsi2 > 90 && (pos._awaitBounce || realGain > RSI2_FLOOR_LP)) {
+                    if (rsi2 != null && rsi2 > 90 && (pos._awaitBounce || realGain > rsi2FloorFor(pos))) {
                         // (2026-08-24) RSI2 = PLANCHER quand pas armé (< +6% LP). Sort les positions molles DANS LE
                         // VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue (cc
                         // aurait fermé +1.2%, s'est retrouvé -11.5% live). Au-dessus de l'arm, le trail ride les runners.
@@ -1959,9 +1982,21 @@ async function scan() {
                 // supprimer le trade. Refus conservé uniquement au-delà de MAX_TRANSFER_FEE_BPS.
                 // Lecture RPC impossible (null) = on laisse passer en double-sided : une panne ne
                 // doit ni geler les entrées ni changer silencieusement la géométrie.
-                let oneSided = false;
+                let oneSided = false, feeBpsEntree = 0;
                 if (live.enabled && live.transferFeeBps) {
                     const fbps = await live.transferFeeBps(tok);
+                    feeBpsEntree = fbps || 0;
+                    // (2026-09-13) PLAFOND D'EXPOSITION AUX MINTS TAXÉS. Réouverture prudente : on n'en
+                    // tient jamais plus de MAX_TAXED_POSITIONS à la fois, pour que l'expérience reste
+                    // bornée si elle tourne mal.
+                    if (fbps != null && fbps >= TAXED_MIN_BPS) {
+                        const dejaTaxees = Object.values(state.positions).filter(p => p.live && (p.live.transferFeeBps || 0) >= TAXED_MIN_BPS).length;
+                        if (dejaTaxees >= MAX_TAXED_POSITIONS) {
+                            state.blockCount['plafond-taxes'] = (state.blockCount['plafond-taxes'] || 0) + 1;
+                            console.log(`  🧮 ${w.symbol}: déjà ${dejaTaxees}/${MAX_TAXED_POSITIONS} position(s) taxée(s) ouverte(s) — entrée reportée`);
+                            continue;
+                        }
+                    }
                     if (fbps != null && fbps >= MAX_TRANSFER_FEE_BPS) {
                         state.blockCount['frais-transfert'] = (state.blockCount['frais-transfert'] || 0) + 1;
                         console.log(`  🚫 ${w.symbol}: frais de transfert ${(fbps / 100).toFixed(2)}% ≥ ${(MAX_TRANSFER_FEE_BPS / 100).toFixed(0)}% — entrée refusée (taxe extrême)`);
@@ -2015,7 +2050,7 @@ async function scan() {
                             // entre la 1re et la 8e position, pour des setups équivalents).
                             const deployedSol = Object.values(state.positions).reduce((x, q) => x + ((q.live && q.live.openValueSol) || 0), 0);
                             const lp = await live.openBidAsk(poolAddr, deployedSol, oneSided);
-                            if (lp) { state.positions[tok].live = lp; save(); tg(`${msg}\n🟢 RÉEL ouvert: ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); } // notif Telegram = uniquement l'entrée RÉELLE (avec tous les détails)
+                            if (lp) { lp.transferFeeBps = feeBpsEntree; state.positions[tok].live = lp; save(); tg(`${msg}\n🟢 RÉEL ouvert: ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); } // notif Telegram = uniquement l'entrée RÉELLE (avec tous les détails)
                         } else { console.log('  ⚠️ LIVE: aucune pool DLMM viable — trade papier seulement'); } // pas de notif Telegram pour le papier
                     } catch (e) { console.log(`  ⚠️ LIVE open échoué: ${String(e.message).slice(0, 80)} — papier seulement`); tg(`⚠️ LIVE ${w.symbol}: open échoué (${String(e.message).slice(0, 50)})`); }
                 }
