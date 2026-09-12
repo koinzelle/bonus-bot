@@ -117,7 +117,7 @@ async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
     ]);
     const addrs = [...p1, ...p2].map(p => p.pubkey);
     console.log(`  ${addrs.length} pool(s) Meteora trouvée(s) pour ${tokenAddress.slice(0, 8)}`);
-    const candidates = [];
+    let candidates = [];
     for (const addr of addrs) {
         try {
             const pool = await DLMM.create(connection, addr);
@@ -137,6 +137,29 @@ async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
         } catch (_) {}
     }
     if (!candidates.length) { _poolCache.set(tokenAddress, { addr: null, ts: Date.now() }); return null; }
+    // ── (2026-09-12) PLANCHER bs100 SUR TOUS LES CHEMINS ─────────────────────────────────────────
+    // On filtre ICI, avant que quiconque pioche dans `candidates` : le plancher couvre donc d'un coup
+    // la pool désignée par la datapi, le tri par rendement ET le tri historique de repli. La veille,
+    // le tampon one-sided n'avait été posé que sur UN des trois chemins de CUT et la position UBER en
+    // est morte — on ne refait pas l'erreur.
+    // POURQUOI bs80 : à ±34 bins le pas détermine seul la protection, bs80 ne couvre que -23,7 % de
+    // baisse contre -29 % pour bs100. Mesuré : 19 % des positions bs80 sortent de range par le bas
+    // contre 6 % des bs200 — et la sortie par le bas précède toutes les catastrophes (§outBottom).
+    // Résultat par palier sur les trades appariés à leur pool : bs80 -0,0001 SOL/trade (29 trades,
+    // SEUL palier négatif) · bs100 +0,0092 (176) · bs125 +0,0094 (21) · bs200 +0,0140 (92).
+    // ⚠️ La perte de bs80 tient en grande partie à EMBER (-0,1957) : sans lui le palier est à +0,0069.
+    // L'argument retenu n'est donc PAS le PnL passé mais la MÉCANIQUE — moins de protection, plus de
+    // sorties par le bas — et le fait que ça ne coûte presque rien : sur 987 décisions avec inventaire
+    // complet, 168 contenaient une pool bs<100, et 155 (92 %) avaient une alternative bs>=100.
+    // REPLI : si aucune pool bs>=100 n'existe, on garde les bs<100 plutôt que de rater l'entrée —
+    // 13 cas sur 987, soit 1,3 %.
+    const largeEnough = candidates.filter(c => c.binStep >= 100);
+    if (largeEnough.length) {
+        if (largeEnough.length < candidates.length) console.log(`  🧱 ${candidates.length - largeEnough.length} pool(s) bs<100 écartée(s) (protection -24% insuffisante) — ${largeEnough.length} candidate(s) restante(s)`);
+        candidates = largeEnough;
+    } else {
+        console.log(`  ⚠️ ${tokenAddress.slice(0, 8)} : aucune pool bs>=100 — on garde le bs${Math.max(...candidates.map(c => c.binStep))} faute de mieux`);
+    }
     // Priorité SCALP (2026-08-04) : fee la plus BASSE (viable ≥0.5%), puis la plus PROFONDE, puis bin
     // step 100. ⚠️ ATTENTION À LA JUSTIFICATION D'ORIGINE — CORRIGÉE LE 08/09/2026.
     // Le commentaire d'origine disait « notre 5% = 0% car le swap round-trip du scalp mange la grosse

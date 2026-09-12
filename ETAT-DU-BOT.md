@@ -540,6 +540,37 @@ simultanées (passé à 7). Suspect principal : `const place = Math.max(0, READ_
 position lente n'est servie, contrairement à ce qu'affirme le commentaire du code. **Pièce qui ne colle
 pas encore :** RAYCAT était ARMÉ, donc dans les `urgentes`, jamais différées. À trancher avec `lu:`.
 
+## 3decies. PLANCHER bs100 SUR LA SÉLECTION DE POOL (12/09)
+
+**Constat :** bs80 représentait encore **12 % des sélections** et **3 des 6 positions ouvertes** au
+12/09 (MET, baton, TripleT). Le plancher posé la veille ne s'appliquait qu'au tri par rendement ; la
+pool désignée par la datapi et le tri historique de repli l'ignoraient.
+
+**Résultat par palier (trades appariés à leur pool via les lignes 🏆) :**
+
+| bin step | trades | PnL total | PnL moyen | pire |
+|---|---:|---:|---:|---:|
+| **bs80** | 29 | **-0,0016** | **-0,0001** | -0,1957 |
+| bs100 | 176 | +1,6263 | +0,0092 | -0,1684 |
+| bs125 | 21 | +0,1973 | +0,0094 | -0,0813 |
+| bs200 | 92 | +1,2854 | **+0,0140** | -0,0792 |
+
+bs80 est le **seul palier à moyenne négative**. ⚠️ **MAIS sa perte tient à EMBER (-0,1957) : sans lui il
+remonte à +0,0069/trade.** L'argument retenu n'est donc PAS le PnL passé — ce serait refaire l'erreur de
+sur-ajustement des règles de coupe (§3decies précédent) — mais la **mécanique** : à ±34 bins, bs80 ne
+couvre que **-23,7 %** contre -29 % pour bs100, et **19 % des bs80 sortent de range par le bas contre 6 %
+des bs200**, or la sortie par le bas précède toutes les catastrophes.
+
+**Coût quasi nul :** sur 987 décisions avec inventaire complet, 168 contenaient une pool bs<100 et **155
+(92 %) avaient une alternative bs>=100**. Seuls **13 cas (1,3 %)** n'avaient que du bs<100.
+
+**Implémentation :** filtre posé sur `candidates` **avant** que quiconque y pioche, dans
+`findMeteoraPool`. Un seul endroit, donc les trois chemins sont couverts d'un coup — datapi, tri par
+rendement, tri historique. C'est la leçon du bug one-sided de la veille, où le tampon n'avait été posé
+que sur un des trois chemins de CUT et où la position UBER en est morte.
+**Repli explicite :** si aucune bs>=100 n'existe, on garde la bs<100 plutôt que de rater l'entrée.
+Log `🧱 N pool(s) bs<100 écartée(s)` à chaque filtrage, `⚠️ aucune pool bs>=100` sur le repli.
+
 ## 3nonies. ONE-SIDED — DÉSACTIVÉ LE 12/09, NE PAS LE ROUVRIR SANS CHANGER LE TIMING D'ENTRÉE
 
 **Verdict après une nuit de production : +0,001 SOL sur trois cycles. Désactivé.**
