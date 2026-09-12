@@ -704,6 +704,51 @@ de fee comme heuristique — ici on ne devine plus, on classe par un rendement m
 redressement. **Critère de lecture :** compter les lignes `📈 Pool choisie au RENDEMENT` et vérifier
 que le shadow `⚠️RANG` se raréfie.
 
+## 3undecies. SEIZE RÈGLES DE SORTIE TESTÉES ET REJETÉES (11-12/09) — NE PAS LES REPROPOSER
+
+**Déclencheur :** les trades de plus de 5 h occupent **1161 h de slot sur 1609 (72 %)** pour **-0,842 SOL**,
+quand ceux de moins de 2 h font **+3,687 SOL sur 224 h**. Constat solide — il n'utilise que `durMin` et
+`pnlSolLive`. **Mais AUCUNE règle de sortie ne sait le convertir en gain.**
+
+| règle | vs réel | robustesse |
+|---|---:|---|
+| couper au 1er hors-range bas | +0,009 | 143 h libérées, gain nul |
+| couper au 2e hors-range bas | +0,142 | **-0,022 sans EMBER** |
+| couper au 3e hors-range bas | +0,322 | **-0,077 sans les 3 meilleurs**, 4 dégradés sur 9 |
+| armer le rebond au 1er hors-range | -0,061 | — |
+| armer le rebond au 2e hors-range | -0,009 | — |
+| couper à 2 h | -1,082 | — |
+| couper à 3 h | -0,632 | — |
+| couper à 4 h | -0,526 | — |
+| couper à 6 h | -0,172 | dégrade 38 trades sur 46 |
+| couper à 8 h | +0,128 | **+0,008 sans le meilleur**, dégrade 23 sur 29 |
+| couper à 10 h | +0,042 | dégrade 19 sur 26 |
+| couper à 12 h | -0,015 | — |
+| armer le rebond à 1 h | -0,299 | -0,645 sans les 3 meilleurs |
+| armer le rebond à 2 h | -0,364 | -0,692 |
+| armer le rebond à 4 h | -0,212 | -0,539 |
+| armer le rebond à 6 h | +0,090 | -0,188 |
+
+**Motif commun :** une poignée de trades (EMBER +0,17, PURPS +0,14, OTC +0,09) fabrique le gain apparent,
+et la majorité des trades touchés est **dégradée**. Le seuil de -55 % gagne contre tout parce qu'une
+position en perte finit presque toujours par rebondir un peu — sortir avant fige la perte.
+
+## ⚠️ PIÈGE MAJEUR : `lvHist` EST TRONQUÉ — NE JAMAIS S'EN SERVIR POUR DATER
+
+`lvHist` est **plafonné à 40 relevés**. Son premier élément n'est donc PAS l'ouverture du trade :
+**93 % des trades** ont `lvHist[0].t` plus de 10 min après `openedAt`, décalage médian **71 min**, et sur
+les trades de plus de 4 h le décalage médian atteint **490 min (8 heures)**.
+
+Le 12/09 j'ai produit une série entière de résultats faux avec `lvHist[0].t` comme heure d'ouverture —
+time stop annoncé à +1,63/+2,5 SOL, armement à 2 h annoncé à +0,866 SOL, balayage de 24 configurations,
+tests de robustesse. Tout était invalide : le « marqueur à 4 h » tombait après la fin réelle du trade, et
+les relevés trouvés appartenaient à d'AUTRES trades du même token.
+
+**MÉTHODE CORRECTE :** fenêtrer chaque trade par `openedAt`/`closedAt` réels, reconstruire le LP depuis
+les lignes `📊` des logs, **exclure les fenêtres qui se chevauchent** pour un même token, et **valider par
+un contrôle** — dernier LP relevé contre `pnlSolLive` enregistré. Contrôle obtenu le 12/09 : erreur
+médiane **0,06 pt**, p90 2,07 pt sur 324 trades. Sans ce contrôle, ne rien publier.
+
 ## 4. En cours de mesure — ne rien conclure avant
 
 | Shadow | Question | Comment lire | Quand |
