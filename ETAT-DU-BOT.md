@@ -540,6 +540,49 @@ simultanées (passé à 7). Suspect principal : `const place = Math.max(0, READ_
 position lente n'est servie, contrairement à ce qu'affirme le commentaire du code. **Pièce qui ne colle
 pas encore :** RAYCAT était ARMÉ, donc dans les `urgentes`, jamais différées. À trancher avec `lu:`.
 
+## 3nonies. ONE-SIDED — DÉSACTIVÉ LE 12/09, NE PAS LE ROUVRIR SANS CHANGER LE TIMING D'ENTRÉE
+
+**Verdict après une nuit de production : +0,001 SOL sur trois cycles. Désactivé.**
+
+```
+UBER      +0,0 % LP    0 SOL         14 min
+ZCAT      +0,4 % LP   +0,001 SOL    119 min
+NEARKAT   +0,0 % LP    0 SOL          2 min
+```
+
+Deux des trois ferment à **0,0 % en moins de 20 minutes** — le critère de churn posé la veille (§3septies)
+est atteint en une seule nuit. Pendant la même fenêtre, les positions double-sided produisaient EMBER
++0,03 SOL (trail +10,8 %), OTC +0,0059, KETCHUP +0,0012.
+
+**CAUSE — diagnostic du user, confirmé par les données.** L'échelle est posée **sous** le prix d'entrée,
+or le bot entre quand le dump est **fini**, juste avant le rebond. Le prix ne redescend donc pas, l'échelle
+ne se remplit jamais, et la position ne perçoit **aucune** fee. UBER : −5,1 % de prix affiché pour 0,0 %
+de LP. NEARKAT : fermé au bout de 2 minutes.
+
+**Un APR de pool élevé n'y changerait rien** (question du user) : une échelle qui ne se remplit pas ne
+perçoit rien, quel que soit le rendement de la pool. Le blocage n'est pas le rendement, c'est le **sens du
+prix après l'entrée**.
+
+**Ce qui reste VRAI et vérifié :** le mécanisme fonctionne parfaitement. Taxe d'entrée mesurée sur deux
+ouvertures réelles à **0,0000 SOL** (`Déposé 0,3219 → LP 0,2800`) contre **−0,0100 SOL** en double-sided
+(`0,3323 → 0,2700`). Le one-sided n'est pas cassé, il est **incompatible avec ce timing d'entrée**.
+
+**Configuration de retour (défauts dans le code, aucune variable Railway nécessaire) :**
+- `ONESIDED_FEE_BPS = 10000` → désactivé. Remettre `100` pour réactiver.
+- `MAX_TRANSFER_FEE_BPS = 300` → les mints ≥3 % sont de nouveau refusés.
+
+**Pourquoi rebloquer les 3 % :** c'est la seule modif de toute la session dont l'effet positif soit
+**mesuré** — +0,0254 SOL en 17 h (wallet, positions au coût, même nombre de positions) contre −0,420 SOL
+sur les trois jours précédents. Le one-sided devait les réhabiliter sans la taxe ; il n'a rien rapporté.
+
+**À quelle condition rouvrir le sujet :** uniquement si le timing d'entrée change — c'est-à-dire si le bot
+entre **pendant** le dump plutôt qu'après. Tant qu'il entre au creux, une échelle placée dessous restera
+vide. Ne pas le réactiver sur une intuition de rendement.
+
+**Bilan de la nuit, pour contexte :** wallet 2,5638 → 2,5032 = **−0,0606 SOL en 17 h**. Mais EMBER seul
+coûte −0,1957 : **sans lui la nuit est à +0,135 SOL**. Et quatre règles de coupe ont été testées sur EMBER
+ce soir-là, toutes rejetées (§3decies). Les gros perdants restent le coût de la stratégie.
+
 ## 3septies. ONE-SIDED — PREMIERS TRADES RÉELS ET BUG CORRIGÉ (11/09 21h)
 
 **Le mécanisme d'entrée fonctionne, mesuré sur 2 ouvertures réelles :**

@@ -235,8 +235,23 @@ const CUT_HARD = 0.75;     // plancher DUR : on ferme quoi qu'il arrive (anti-ru
 // l'ouverture, et comme le haut de range est le prix d'entrée, la position est intégralement en
 // SOL dès qu'il repasse au-dessus — 86 % des sorties, donc pas de taxe non plus.
 // Estimé sur 110 trades : +2,34 %/trade contre +0,27 % en double-sided.
-const ONESIDED_FEE_BPS = parseInt(process.env.ONESIDED_FEE_BPS || '100', 10);   // ≥ ce seuil → one-sided (1 % inclus)
-const MAX_TRANSFER_FEE_BPS = parseInt(process.env.MAX_TRANSFER_FEE_BPS || '1000', 10); // ≥ → refus pur (taxe extrême)
+// ── (2026-09-12) ONE-SIDED DÉSACTIVÉ — mesuré, ne rapporte rien ───────────────────────────────
+// Trois cycles terminés dans la nuit du 11 au 12/09 : UBER +0,0 % LP (14 min), ZCAT +0,4 % (119 min),
+// NEARKAT +0,0 % (2 min). Total **+0,001 SOL**. Deux des trois ferment à 0,0 % en moins de 20 min —
+// c'est exactement le critère de churn posé la veille dans ETAT-DU-BOT.md §3septies, atteint en une nuit.
+// CAUSE (diagnostic du user, confirmé) : l'échelle est posée SOUS le prix d'entrée, or le bot entre
+// quand le dump est FINI, juste avant le rebond. Le prix ne redescend donc pas, l'échelle ne se remplit
+// jamais, et la position ne touche aucune fee. UBER affiche -5,1 % de prix pour 0,0 % de LP.
+// Un APR de pool élevé n'y changerait rien : une échelle qui ne se remplit pas ne perçoit rien, quel
+// que soit le rendement de la pool. Le blocage n'est pas le rendement, c'est le sens du prix.
+// Le mécanisme lui-même FONCTIONNE (taxe d'entrée mesurée à 0,0000 SOL contre 0,0100 en double-sided),
+// il est juste incompatible avec ce timing d'entrée. Code conservé, inerte : remettre 100 pour réactiver.
+const ONESIDED_FEE_BPS = parseInt(process.env.ONESIDED_FEE_BPS || '10000', 10);   // 10000 = DÉSACTIVÉ
+// (2026-09-12) RETOUR AU BLOCAGE DES ≥3 %. C'est la seule modif de la session dont l'effet positif est
+// MESURÉ : +0,0254 SOL en 17 h (wallet, positions au coût, même nombre de positions) contre -0,420 SOL
+// sur les trois jours précédents avec ces tokens. Le one-sided devait les réhabiliter sans la taxe ; il
+// n'a rien rapporté, donc on revient à ce qui marchait.
+const MAX_TRANSFER_FEE_BPS = parseInt(process.env.MAX_TRANSFER_FEE_BPS || '300', 10); // ≥ → refus pur
 const ONESIDED_TOP_BUFFER = parseInt(process.env.ONESIDED_TOP_BUFFER || '3', 10);      // bins au-dessus de l'entrée avant de banker
 const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
 const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
