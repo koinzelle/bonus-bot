@@ -569,7 +569,14 @@ ouvertures réelles à **0,0000 SOL** (`Déposé 0,3219 → LP 0,2800`) contre *
 
 **Configuration de retour (défauts dans le code, aucune variable Railway nécessaire) :**
 - `ONESIDED_FEE_BPS = 10000` → désactivé. Remettre `100` pour réactiver.
-- `MAX_TRANSFER_FEE_BPS = 300` → les mints ≥3 % sont de nouveau refusés.
+- `MAX_TRANSFER_FEE_BPS = 101` → **plafond à 1 % de taxe** (demande user du 12/09). 300 ne bloquait que
+  les ≥3 % et aurait laissé passer un mint à 2 %. À 101, tout ce qui dépasse strictement 1,00 % est
+  refusé ; les 1 % (tip, AGI, 🎒, USEFUL) et les tokens propres passent.
+
+**Univers de trading résultant :** que du bid-ask double-sided, sur des tokens taxés à **1 % maximum**.
+Rappel du coût : à 1 % la taxe prend ~0,7 % de la mise par aller-retour (4 transferts × 1 % × la moitié
+de la mise) contre ~6,3 % à 3 %. Et c'est la classe la plus rentable mesurée — **+3,30 % brut / +2,60 %
+net**, contre +0,10 % brut sur les tokens SANS frais, qui ne rapportent rien.
 
 **Pourquoi rebloquer les 3 % :** c'est la seule modif de toute la session dont l'effet positif soit
 **mesuré** — +0,0254 SOL en 17 h (wallet, positions au coût, même nombre de positions) contre −0,420 SOL

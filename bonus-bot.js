@@ -251,7 +251,13 @@ const ONESIDED_FEE_BPS = parseInt(process.env.ONESIDED_FEE_BPS || '10000', 10); 
 // MESURÉ : +0,0254 SOL en 17 h (wallet, positions au coût, même nombre de positions) contre -0,420 SOL
 // sur les trois jours précédents avec ces tokens. Le one-sided devait les réhabiliter sans la taxe ; il
 // n'a rien rapporté, donc on revient à ce qui marchait.
-const MAX_TRANSFER_FEE_BPS = parseInt(process.env.MAX_TRANSFER_FEE_BPS || '300', 10); // ≥ → refus pur
+// (2026-09-12, demande user) PLAFOND À 1 % DE TAXE. 300 ne bloquait que les ≥3 % et aurait laissé
+// passer un mint à 2 %, jamais rencontré jusqu'ici mais rien ne l'empêche. 101 refuse tout ce qui
+// dépasse strictement 1,00 %, et laisse passer les 1 % (tip, AGI, 🎒, USEFUL) et les tokens propres.
+// Rappel du coût : à 1 % la taxe prend ~0,7 % de la mise par aller-retour (4 transferts × 1 % × la
+// moitié de la mise), contre ~6,3 % à 3 %. Et les tokens à 1 % sont la classe la plus rentable
+// mesurée : +3,30 % brut, +2,60 % net, contre +0,10 % brut sur les tokens sans frais.
+const MAX_TRANSFER_FEE_BPS = parseInt(process.env.MAX_TRANSFER_FEE_BPS || '101', 10); // ≥ → refus pur
 const ONESIDED_TOP_BUFFER = parseInt(process.env.ONESIDED_TOP_BUFFER || '3', 10);      // bins au-dessus de l'entrée avant de banker
 const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
 const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
