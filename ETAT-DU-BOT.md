@@ -475,6 +475,47 @@ des ratios par épisode. Pondéré par le mouvement — le bon calcul, les fees 
 7 positions concurrentes, écarts de ±0,14 à 0,20 SOL (la taille d'une ouverture), moyenne **+0,0092/trade**,
 un écart positif donc du bruit pur. Un instrument faux est pire que pas d'instrument.
 
+## 3quaterdecies. LP FIGÉ — CAUSE TROUVÉE ET CORRIGÉE (13/09) — clôt le §3sexies
+
+**L'instrumentation du 12/09 a capturé le bug en flagrant délit. Cas baton, 12/09 23:44→23:49 :**
+
+```
+23:42:49   LP 6,21%   px 0.000128765   chaîne lue il y a   4,2s   ← pic, armement
+23:44:05   LP 5,26%   px 0.000126228   lu 2s                      ← dernière lecture fraîche
+23:45:13   LP 5,26%   px 0.000126228   chaîne lue il y a  70,0s
+23:46:13   LP 5,26%   px 0.000126228   chaîne lue il y a 130,0s
+23:49:03   LP 5,54%   px 0.000126228   chaîne lue il y a  90,2s
+23:49:13   LP 0,40%   ← première lecture fraîche
+23:49:22   SORTIE TRAIL à +0,4% (peak +6,2%)
+```
+
+**Le prix de pool `px` est resté IDENTIQUE pendant 5 minutes** pendant que le prix des bougies passait
+de +7,0 % à −2,5 %. Le LP était bloqué à **5,26 % pour un seuil de trail à 5,21 %** — cinq centièmes
+au-dessus. À la première lecture fraîche, chute de 5,27 % à 0,40 % et déclenchement immédiat du trail.
+**4,8 points de LP perdus, ~0,013 SOL sur ce seul trade.**
+
+**CAUSE (bonus-bot.js ~1558).** Le repli « lecture individuelle fraîche » ne se déclenchait que si le
+lot ne contenait **RIEN** :
+```js
+const bv = b.fresh ? b.map.get(clé) : null;
+if (bv) { recordLv(...); }          // utilise le lot, même vieux de 130 s
+else if (...) { /* individuelle */ }
+```
+Un lot contenant une valeur vieille de deux minutes était donc préféré à une lecture fraîche.
+
+**Pourquoi ça a résisté deux jours :** `âge donnée` affichait **0,0 s** tout du long — il mesure l'âge du
+dernier *enregistrement*, pas de la dernière *lecture*. C'est `readTs` (posé le 12/09) qui a permis de
+voir les 130 s. Sans lui, cinq hypothèses ont été formulées et réfutées à tort (§3sexies).
+
+**CORRECTIF.** Une position **ARMÉE** dont la lecture chaîne dépasse `ARMED_MAX_AGE_MS` (défaut 20 s)
+ignore le lot et force une lecture individuelle. Log `🕓`. Restreint aux positions armées — **24
+armements en 5 jours**, donc coût RPC négligeable, et c'est le seul état où la fraîcheur décide d'une
+sortie. Les positions non armées gardent le comportement actuel (le user avait refusé un plafond
+d'ancienneté généralisé le 12/09 pour raison de consommation Helius : celui-ci est 30× plus étroit).
+
+**Critère de lecture :** la ligne `🕓 … lecture individuelle forcée` doit apparaître quelques fois par
+jour. Si elle apparaît en continu, le lot ne rafraîchit plus du tout et le problème est en amont.
+
 ## 3sexies. LP FIGÉ — BUG SYSTÉMIQUE NON RÉSOLU (11/09) — instrumentation déployée
 
 **Découvert via RAYCAT (10/09 23:09).** Le user a vu sur Meteora le LP tomber de +15 % à +10 % ; les

@@ -298,6 +298,9 @@ const RSI2_FLOOR_LP = 0;
 // Soit un seuil de rentabilité ≈ taxe × 2,078. Vérifié : 6,23 % à 3 %, 2,08 % à 1 %.
 // On ajoute 5 % de marge. Les tokens propres gardent le comportement actuel.
 const RSI2_FLOOR_MULT = parseFloat(process.env.RSI2_FLOOR_MULT || '2.078');
+// (2026-09-13) Âge maximal d'une lecture chaîne pour une position ARMÉE. Au-delà, lecture individuelle
+// forcée : c'est le seul état où la fraîcheur décide d'une sortie.
+const ARMED_MAX_AGE_MS = parseInt(process.env.ARMED_MAX_AGE_MS || '20000', 10);
 function rsi2FloorFor(pos) {
     const bps = (pos && pos.live && pos.live.transferFeeBps) || 0;
     if (!bps) return RSI2_FLOOR_LP;
@@ -1554,7 +1557,24 @@ async function scan() {
                 let realGain = gain, liveBinId = null, lvSrc = 'prix';
                 if (pos.live && live.enabled && pos.live.openValueSol) {
                     const b = await batchedPositionValues();
-                    const bv = b.fresh ? b.map.get(pos.live.positionKeypairPub) : null; // lot PÉRIMÉ = on l'ignore (plus de gel)
+                    let bv = b.fresh ? b.map.get(pos.live.positionKeypairPub) : null; // lot PÉRIMÉ = on l'ignore (plus de gel)
+                    // ── (2026-09-13) UNE POSITION ARMÉE N'EST JAMAIS PILOTÉE SUR UNE LECTURE VIEILLE ──
+                    // Cas baton du 12/09 23:44→23:49 : position armée à 6,21 %, seuil de trail à 5,21 %,
+                    // LP bloqué à 5,26 % — cinq centièmes au-dessus du seuil — pendant CINQ MINUTES.
+                    // Le champ `px` (prix de pool) est resté identique à 0.000126228 tout du long et
+                    // `chaîne lue il y a` est monté à 130 s, alors que le prix des bougies passait de
+                    // +7,0 % à -2,5 %. À la première lecture fraîche le LP est tombé de 5,27 % à 0,40 %
+                    // et le trail a tiré — 4,8 points trop bas, soit ~0,013 SOL perdus sur ce seul trade.
+                    // Le lot fournissait bien une valeur, donc le repli « lecture individuelle » ne se
+                    // déclenchait pas : il n'agissait que si le lot ne contenait RIEN.
+                    // Ici on n'ignore le lot que pour les positions ARMÉES — c'est le seul état où la
+                    // fraîcheur décide d'une sortie. 24 armements en 5 jours, donc coût RPC négligeable.
+                    // `readTs` (posé le 12/09) est ce qui rend ce test possible : `âge donnée` mesurait
+                    // l'âge du dernier ENREGISTREMENT et affichait 0,0 s sur une valeur figée depuis 2 min.
+                    if (bv && (pos.peakGain || 0) >= TP_PCT && bv.readTs && (Date.now() - bv.readTs) > ARMED_MAX_AGE_MS) {
+                        console.log(`  🕓 ${pos.symbol} armé : lecture du lot vieille de ${((Date.now() - bv.readTs) / 1000).toFixed(0)}s — lecture individuelle forcée`);
+                        bv = null;
+                    }
                     if (bv) { recordLv(pos, bv.valueSol / pos.live.openValueSol - 1, bv.activeBinId, bv); lvSrc = bv.stale ? 'lot-PÉRIMÉ' : 'lot'; }
                     else if ((!pos._lv || Date.now() - pos._lv.ts > 20000) && live.positionValueAndBin) { // lot périmé/absent → individuel FRAIS (throttlé 20s)
                         try { const r = await live.positionValueAndBin(pos.live); if (r && r.valueSol != null) { recordLv(pos, r.valueSol / pos.live.openValueSol - 1, r.activeBinId, r); lvSrc = 'indiv'; } } catch (_) { /* garde l'ancien cache / fallback prix */ }
