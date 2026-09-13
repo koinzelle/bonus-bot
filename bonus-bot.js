@@ -300,7 +300,10 @@ const RSI2_FLOOR_LP = 0;
 const RSI2_FLOOR_MULT = parseFloat(process.env.RSI2_FLOOR_MULT || '2.078');
 // (2026-09-13) Âge maximal d'une lecture chaîne pour une position ARMÉE. Au-delà, lecture individuelle
 // forcée : c'est le seul état où la fraîcheur décide d'une sortie.
-const ARMED_MAX_AGE_MS = parseInt(process.env.ARMED_MAX_AGE_MS || '20000', 10);
+// 10 s = la cadence de `fastPositionCheck` elle-même : descendre plus bas n'apporterait rien puisque
+// le contrôle n'a lieu que toutes les 10 s. Le palier interne visait 8 s, jamais atteint en pratique
+// (cas baton : 130 s sur une position armée). Ce plafond garantit ce que le palier promettait.
+const ARMED_MAX_AGE_MS = parseInt(process.env.ARMED_MAX_AGE_MS || '10000', 10);
 function rsi2FloorFor(pos) {
     const bps = (pos && pos.live && pos.live.transferFeeBps) || 0;
     if (!bps) return RSI2_FLOOR_LP;

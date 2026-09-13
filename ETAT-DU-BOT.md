@@ -507,7 +507,9 @@ Un lot contenant une valeur vieille de deux minutes était donc préféré à un
 dernier *enregistrement*, pas de la dernière *lecture*. C'est `readTs` (posé le 12/09) qui a permis de
 voir les 130 s. Sans lui, cinq hypothèses ont été formulées et réfutées à tort (§3sexies).
 
-**CORRECTIF.** Une position **ARMÉE** dont la lecture chaîne dépasse `ARMED_MAX_AGE_MS` (défaut 20 s)
+**CORRECTIF.** Une position **ARMÉE** dont la lecture chaîne dépasse `ARMED_MAX_AGE_MS` (défaut **10 s**,
+= la cadence de `fastPositionCheck` ; descendre plus bas n'apporterait rien puisque le contrôle n'a lieu
+que toutes les 10 s)
 ignore le lot et force une lecture individuelle. Log `🕓`. Restreint aux positions armées — **24
 armements en 5 jours**, donc coût RPC négligeable, et c'est le seul état où la fraîcheur décide d'une
 sortie. Les positions non armées gardent le comportement actuel (le user avait refusé un plafond
