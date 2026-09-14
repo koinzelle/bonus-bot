@@ -131,6 +131,7 @@ rotateLogs();
 // pires pertes identiques) : une fois le high-water ≥ +5% depuis l'entrée, plus de plafond — on suit le
 // pump et on sort quand le prix retombe de 1.5% sous le plus-haut. Avant l'armement : SL flip ST inchangé.
 const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
+const MOU_LOCK_MS = parseInt(process.env.MOU_LOCK_H || "48", 10) * 3600 * 1000; // (2026-09-14) verrou après une sortie MOLLE (RSI2 > 3 h à < 3 % de LP) — réglable sans redéploiement
 // ── VERROU ANTI-COIN-MOURANT — TTL DÉSACTIVÉ PAR DÉFAUT (2026-08-27) ────────────────────────────────
 // J'avais proposé un TTL 48h pour débloquer les cycleurs verrouillés à vie (CYBERLEEK et ses 65 creux
 // refusés en 9h). Le backtest complet dit NON, et la remarque du user était la bonne :
@@ -2336,7 +2337,35 @@ async function closePaper(tok, pos, exitPrice, reason) {
     state.trades.push(trade);
     delete state.positions[tok];
     if (state.watch[tok]) {
-        state.watch[tok].cooldownUntil = Date.now() + REENTRY_COOLDOWN_MS; // anti-boucle : pas de ré-entrée immédiate sur le même mouvement
+        // ── (2026-09-14) VERROU 48 H APRÈS UNE SORTIE MOLLE ─────────────────────────────────────
+        // C'est la seconde moitié de la phrase d'EP, celle qui manquait : « a position that is not
+        // earning its keep in fees after a fair trial closes at the first small profit AND IS NOT
+        // REOPENED ». Le bot fermait bien sur l'ennui — sortie RSI2 en petit profit — mais remettait
+        // le token dans la file 30 minutes plus tard.
+        // Mesuré sur 412 trades : une ré-entrée après une sortie molle (RSI2, > 3 h, < 3 % de LP)
+        // rend -0,0018 SOL frais compris, contre +0,0050 pour une ré-entrée quelconque. Sept fois
+        // sur dix elle ressort de la même façon, et 30 % redeviennent elles-mêmes un token mou.
+        // Allonger le délai ne répare RIEN (35 min-2 h : +3,38 % · 2-6 h : -2,84 %) : le problème
+        // n'est pas quand on rentre, c'est que le token ne produit pas.
+        // 48 h a été retenu plutôt qu'un verrou définitif : sur 12 jours il bloque exactement les
+        // mêmes 54 cas (aucun ne revient au-delà), donc c'est le « not reopened » d'EP en pratique,
+        // mais il se purge tout seul — un verrou à vie rétrécirait un univers déjà étroit (~40 tokens
+        // au watch). Si le débit de trades chute, baisser à 6 h capte encore 89 % du bénéfice.
+        // Effet attendu : 54 entrées bloquées sur 12 j, 390 h de slot rendues = +19 % de capacité.
+        // Et cette capacité est le VRAI goulot : ~25 candidats pleinement qualifiés refusés par jour
+        // (lignes « ⏸️ LIVE: 7/7 »), le bot en refuse autant qu'il en prend. Le plafond de 7 n'est
+        // pas négociable — à 8 positions les 429 Helius reviennent.
+        // Coût : 14 sorties TRAIL à +5,91 % qu'on n'aura pas sur ces tokens — mais qu'on aura
+        // ailleurs, les candidats refusés valant les retenus (+13,8 % de plus-haut médian en 6 h
+        // contre +10,3 % réalisés sur les pris).
+        const sortieMolle = /RSI/i.test(reason || '') && !/REBOND/i.test(reason || '')
+            && trade.lpPct != null && trade.lpPct < 3 && trade.durMin > 180;
+        const verrou = sortieMolle ? MOU_LOCK_MS : REENTRY_COOLDOWN_MS;
+        state.watch[tok].cooldownUntil = Date.now() + verrou;               // anti-boucle : pas de ré-entrée immédiate sur le même mouvement
+        if (sortieMolle) {
+            state.watch[tok].mouUntil = Date.now() + verrou;
+            console.log(`  🔒 ${pos.symbol}: sortie MOLLE (${trade.durMin} min pour ${trade.lpPct >= 0 ? '+' : ''}${trade.lpPct}% de LP) → verrouillé ${MOU_LOCK_MS / 3600000} h au lieu de ${REENTRY_COOLDOWN_MS / 60000} min`);
+        }
         state.watch[tok].lastExitTs = Date.now();                          // (2026-08-27) départ du TTL 48h anti-mourant
         state.mourantMints = state.mourantMints || {};
         state.mourantMints[tok] = { px: state.watch[tok].lastEntryPrice ?? pos.entry, exitTs: Date.now() };

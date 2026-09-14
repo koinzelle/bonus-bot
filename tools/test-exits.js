@@ -34,13 +34,38 @@ const med = x => { const c = x.filter(v => v != null).sort((p, q) => p - q); ret
     if (process.argv.includes('--horsrange')) S = S.filter(d => d.t.outBottomMin > 0);
     const P = S.filter(d => d.t.lpPct <= 0), G = S.filter(d => d.t.lpPct > 0);
     const g = (d, i) => i >= 0 && i < d.iS ? ((d.cl[i] / d.pS - 1) * 100) : null;
-    const first = (d, f) => { for (let i = d.iE + 2; i < d.iS; i++) if (f(d, i)) return i; return -1; };
+    // (2026-09-14) PORTE « HORS RANGE » RECONSTRUITE DEPUIS LES BOUGIES, sans dépendre du champ
+    // outBottomMin (qui n'existe que depuis le 08/09 et limitait l'échantillon à 27 trades).
+    // Une range ±34 bins sort par le bas quand le prix a baissé de la couverture du bin step :
+    // bs80 -23,7 % · bs100 -28,7 % · bs125 -34,5 % · bs200 -49,0 %. On exige donc que le signal
+    // se produise PENDANT que le prix est sous le seuil, et on vérifie la robustesse aux trois valeurs.
+    //   --sous=29   (défaut : pas de porte)
+    const argSous = (process.argv.find(a => a.startsWith('--sous=')) || '').split('=')[1];
+    const SOUS = argSous ? parseFloat(argSous) / 100 : null;
+    const porte = (d, i) => SOUS == null || d.cl[i] <= d.cl[d.iE] * (1 - SOUS);
+    const first = (d, f) => { for (let i = d.iE + 2; i < d.iS; i++) if (porte(d, i) && f(d, i)) return i; return -1; };
+    // Contrôle indispensable : la coupe SÈCHE dès la sortie de range, sans aucun indicateur.
+    // Si une règle à indicateur ne la bat pas, l'indicateur ne sert à rien.
+    // -28 % approxime le bord bas d'une range ±34 bins en bin step 100 (le plus fréquent).
+    const sortieRange = d => { const pE = d.cl[d.iE]; for (let i = d.iE + 2; i < d.iS; i++) if (d.cl[i] <= pE * 0.72) return i; return -1; };
     const R = [
+        ['COUPE SÈCHE sortie de range', sortieRange],
+        ['sortie de range + 1 h', d => { const i = sortieRange(d); if (i < 0) return -1; const j = i + 4; return j < d.iS ? j : -1; }],
+        ['sortie de range + 3 h', d => { const i = sortieRange(d); if (i < 0) return -1; const j = i + 12; return j < d.iS ? j : -1; }],
+        ['Bollinger — clôture sous la bande basse', d => first(d, (d, i) => { const n = 20; if (i < n) return false; const w = d.cl.slice(i - n, i); const m = w.reduce((a, b) => a + b, 0) / n; const sd = Math.sqrt(w.reduce((a, b) => a + (b - m) ** 2, 0) / n); return d.cl[i] < m - 2 * sd; })],
+        ['Bollinger — largeur qui s effondre (chop mort)', d => first(d, (d, i) => { const n = 20; if (i < n * 2) return false; const lw = k => { const w = d.cl.slice(k - n, k); const m = w.reduce((a, b) => a + b, 0) / n; return Math.sqrt(w.reduce((a, b) => a + (b - m) ** 2, 0) / n) / m; }; return lw(i) < lw(i - n) * 0.5; })],
+        ['3 sommets consécutifs plus bas', d => { const hi = []; for (let i = d.iE + 2; i < d.iS - 2; i++) { if (d.bars[i][2] > d.bars[i - 1][2] && d.bars[i][2] > d.bars[i - 2][2] && d.bars[i][2] > d.bars[i + 1][2] && d.bars[i][2] > d.bars[i + 2][2]) hi.push(i); } for (let k = 2; k < hi.length; k++) if (d.bars[hi[k]][2] < d.bars[hi[k - 1]][2] && d.bars[hi[k - 1]][2] < d.bars[hi[k - 2]][2] && porte(d, hi[k])) return hi[k]; return -1; }],
+        ['6 h sans nouveau plus-haut', d => { let max = -Infinity, dep = d.iE; for (let i = d.iE + 2; i < d.iS; i++) { if (d.bars[i][2] > max) { max = d.bars[i][2]; dep = i; } else if (i - dep >= 24 && porte(d, i)) return i; } return -1; }],
+        ['12 h sans nouveau plus-haut', d => { let max = -Infinity, dep = d.iE; for (let i = d.iE + 2; i < d.iS; i++) { if (d.bars[i][2] > max) { max = d.bars[i][2]; dep = i; } else if (i - dep >= 48 && porte(d, i)) return i; } return -1; }],
+        ['recul de 25 % sous le plus-haut de la position', d => { let max = -Infinity; for (let i = d.iE; i < d.iS; i++) { max = Math.max(max, d.bars[i][2]); if (i > d.iE + 2 && d.cl[i] < max * 0.75 && porte(d, i)) return i; } return -1; }],
+        ['ATR qui se contracte de moitié', d => first(d, (d, i) => { const n = 14; if (i < n * 2) return false; const tr = k => Math.max(d.bars[k][2] - d.bars[k][3], Math.abs(d.bars[k][2] - d.cl[k - 1]), Math.abs(d.bars[k][3] - d.cl[k - 1])); const a = k => { let s = 0; for (let j = k - n; j < k; j++) s += tr(j); return s / n / d.cl[k]; }; return a(i) < a(i - n) * 0.5; })],
+        ['Stochastique %K sous 20', d => first(d, (d, i) => { const n = 14; if (i < n) return false; const w = d.bars.slice(i - n, i + 1); const h = Math.max(...w.map(b => b[2])), l = Math.min(...w.map(b => b[3])); return h > l && (d.cl[i] - l) / (h - l) * 100 < 20; })],
+        ['Donchian — casse le plus-bas de 24 bougies', d => first(d, (d, i) => { if (i < 24) return false; const l = Math.min(...d.bars.slice(i - 24, i).map(b => b[3])); return d.cl[i] < l; })],
         ['RSI14 sous 45', d => first(d, (d, i) => d.R[i] < 45 && d.R[i - 1] >= 45)],
         ['RSI14 sous 35', d => first(d, (d, i) => d.R[i] < 35 && d.R[i - 1] >= 35)],
         ['clôture sous EMA50', d => first(d, (d, i) => d.cl[i] < d.E50[i] && d.cl[i - 1] >= d.E50[i - 1])],
         ['EMA20 sous EMA50', d => first(d, (d, i) => d.E20[i] < d.E50[i] && d.E20[i - 1] >= d.E50[i - 1])],
-        ['MACD histo rebond avorté', d => { let rec = 0; for (let i = d.iE + 1; i < d.iS; i++) { const h = d.M.h; if (h[i] < 0 && h[i] > h[i - 1]) rec++; else if (h[i] < 0 && h[i] < h[i - 1] && h[i - 1] < h[i - 2] && rec >= 2) return i; else if (h[i] >= 0) rec = 0; } return -1; }],
+        ['MACD histo rebond avorté', d => { let rec = 0; for (let i = d.iE + 1; i < d.iS; i++) { const h = d.M.h; if (h[i] < 0 && h[i] > h[i - 1]) rec++; else if (h[i] < 0 && h[i] < h[i - 1] && h[i - 1] < h[i - 2] && rec >= 2 && porte(d, i)) return i; else if (h[i] >= 0) rec = 0; } return -1; }],
         ['MACD croisement baissier', d => first(d, (d, i) => d.M.m[i] < d.M.s[i] && d.M.m[i - 1] >= d.M.s[i - 1])],
         ['MACD croisement sous zéro', d => first(d, (d, i) => d.M.m[i] < d.M.s[i] && d.M.m[i - 1] >= d.M.s[i - 1] && d.M.m[i] < 0)],
     ];
