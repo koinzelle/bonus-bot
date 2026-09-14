@@ -1349,3 +1349,44 @@ les trades pris — donc un slot rendu est un trade moyen gagné, pas un trade p
 
 **À surveiller :** la ligne `🔒 … sortie MOLLE (… min pour …% de LP) → verrouillé 48 h`.
 Si le nombre de trades par jour chute nettement, baisser `MOU_LOCK_H` à 6.
+
+---
+
+## 14. 14/09 — Un chop NON MESURABLE ne passe plus (déployé)
+
+**Le trou.** `chopOk = cr == null || cr >= 0.40` laissait entrer tout token dont le chop-rate est
+**incalculable**. `chopRate` rend `null` faute de trois creux résolus (+8 % / −30 %) — ce qui
+n'arrive jamais sur un gros établi qui bouge doucement, ses seuils étant calibrés pour des small
+caps volatils. Le message d'entrée affichait « chop 0 % » (`(null * 100).toFixed(0)`), indiscernable
+d'un vrai dumper. C'est désormais journalisé comme **`chop-NON-MESURABLE`**.
+
+**Le profil de ces entrées**, mesuré sur 42 cas :
+
+| | non mesurable | mesuré |
+|---|---|---|
+| LP moyen | **+1,43 %** | +3,98 % |
+| durée médiane | **212 min** | 75 min |
+| fee/TVL à l'entrée | 6,7 % | 17,7 % |
+| MC à l'entrée | 10 616 K | 2 421 K |
+| âge du token | 626 h | 151 h |
+
+Leur LP moyen est **sous le coût d'un aller-retour** (0,0046 SOL ≈ 1,6 % de la position) : ces
+trades perdent de l'argent en sortant gagnants.
+
+**Contre-tests, tous positifs :** le portefeuille gardé s'améliore partout — global +3,98 vs +3,72 ·
+1re moitié +4,83 vs +4,63 · hors échantillon +3,14 vs +2,81 · sans les 3 meilleurs bloqués
++3,98 vs +3,67. Sur la seconde moitié les bloqués sont carrément négatifs (−0,45 %).
+
+**Ce qui a fait basculer la décision.** Le 14/09 au matin je l'avais écarté : son effet direct en SOL
+(+0,198/mois) basculait à −0,151 sans un seul perdant évité. Mais c'était avant la section 12 — la
+capacité est le goulot, ~25 candidats qualifiés refusés par jour, plafond de 7 non négociable
+(429 Helius à 8). Les **579 h de slot** rendues valent ≈ **+1,3 SOL/mois**, ce qui domine largement
+l'effet direct.
+
+**Cas d'école, le jour même :** BTC entrée à 18:53 avec « chop 0 % », 348,9 h d'âge, MC 7,26 M,
+taxe 3 %. Après 44 min : LP 0,00 %, pic 0,00 %, et **0,01 mSOL/h de fees** — il lui faudrait 460 h
+pour payer son aller-retour, contre 3 h pour KNOTS. Cinq fois plus lente que ZCAT, le pire cas
+mesuré jusque-là.
+
+**Réversible sans redéploiement :** `CHOP_INCONNU_OK=1` rétablit l'ancien comportement.
+**À surveiller :** le compteur `chop-NON-MESURABLE` dans `/status`, et le nombre d'entrées par jour.

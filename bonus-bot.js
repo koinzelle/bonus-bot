@@ -1849,7 +1849,23 @@ async function scan() {
             // revient via le trending. 72h = 3× le seuil d'entrée, marge pour les cyclers.
             // ── CHOP-RATE + AU CREUX (2026-08-03, refonte EP chop-cycle) — REMPLACE les gates ATH ──
             const cr = chopRate(cs);                                 // fraction des dumps qui rebondissent
-            const chopOk = cr == null || cr >= 0.40;                 // filtre ANTI-DUMPER (2026-08-09) : bloque SEULEMENT les dumpers connus (<40%), laisse passer les inconnus (pas de gate obligatoire — EP choisit au jugement, pas de chop-rate formel)
+            // (2026-09-14) UN CHOP NON MESURABLE NE PASSE PLUS. Avant : `cr == null || cr >= 0.40`,
+            // qui laissait entrer tout token dont le chop-rate est incalculable — `chopRate` rend null
+            // faute de trois creux résolus (+8 % / -30 %), ce qui n'arrive jamais sur un gros établi
+            // qui bouge doucement : ses seuils sont calibrés pour des small caps volatils.
+            // Mesuré sur 42 entrées de ce type : LP moyen +1,43 % contre +3,98 % pour les autres,
+            // durée médiane 212 min contre 75, fee/TVL 6,7 % contre 17,7 %, MC 10,6 M contre 2,4 M,
+            // âge 626 h contre 151. Leur LP moyen est SOUS le coût d'un aller-retour (1,6 % de la
+            // position) : ces trades perdent de l'argent en sortant gagnants.
+            // Contre-tests : le portefeuille gardé s'améliore dans TOUS les découpages (+3,98 vs +3,72
+            // global, +4,83 vs +4,63 sur la 1re moitié, +3,14 vs +2,81 hors échantillon, +3,98 vs +3,67
+            // sans les 3 meilleurs bloqués), et sur la seconde moitié les bloqués sont négatifs (-0,45 %).
+            // Ce qui a fait basculer la décision : la capacité est le VRAI goulot — ~25 candidats
+            // pleinement qualifiés refusés par jour, plafond de 7 non négociable (429 Helius à 8).
+            // Les 579 h de slot rendues valent ≈ +1,3 SOL/mois, bien plus que les ~0,08 SOL d'effet direct.
+            // Toujours réversible : CHOP_INCONNU_OK=1 rétablit l'ancien comportement sans redéploiement.
+            const chopInconnu = cr == null;
+            const chopOk = (chopInconnu && process.env.CHOP_INCONNU_OK === '1') || (cr != null && cr >= 0.40);
             // ENTRÉE ADAPTATIVE AU RÉGIME (2026-08-08, mesure ANSEM/CATE) : un ÉTABLI (MC≥5M) chope DOUX
             // (dips médiane ~11% sur ANSEM, sur des jours) ; un volatil dumpe -40% en 6h. On adapte seuil +
             // fenêtre → sinon l'entrée -40%/6h ne se déclenche JAMAIS sur les établis (KINS/ANSEM = 0 trade).
@@ -1951,7 +1967,7 @@ async function scan() {
             else if (!mcOk) block = 'MC<250k';
             else if (ageH < AGE_MIN_H) block = 'coin<10h';
             else if (!patOk) block = 'pattern-KO';
-            else if (!chopOk) block = `dumper(chop${(cr * 100).toFixed(0)}%)`; // cr==null ne bloque plus (2026-08-09) → on tombe sur le vrai blocage suivant
+            else if (!chopOk) block = chopInconnu ? 'chop-NON-MESURABLE' : `dumper(chop${(cr * 100).toFixed(0)}%)`;   // (2026-09-14) on distingue enfin les deux : `null` affichait '0%' et se confondait avec un vrai dumper
             else if (!atDip) block = `pas-au-creux(<${(dumpThr * 100).toFixed(0)}%${established ? '·établi' : ''})`;
             else if (!rsiLow) block = `pas-survendu(RSI>${RSI_ENTRY_MAX}=pompe)`;
             else if ((w.athBreaks || 0) >= 4 && curMc < 1_500_000) block = 'ATH-épuisé(4x·<1.5M)'; // cap ATH conditionnel MC (2026-08-17) : le 4e top qui rug = un PETIT coin (WOFL $92k → -35%). Un coin ≥1.5M qui multiplie les ATH TREND (LAYOOO $2.75M → +17.7%) → pas de cap. Validé sur la journée.
