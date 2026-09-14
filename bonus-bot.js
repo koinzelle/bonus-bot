@@ -1537,8 +1537,23 @@ async function scan() {
                 // TF de sortie ADAPTATIF (2026-08-08, cas STONK/CATE LP 0%) : un ÉTABLI (MC≥5M) chope DOUX sur
                 // des heures → RSI(2) 5m explose sur un micro-wiggle → sort à LP ~0% avant le vrai bounce. On
                 // le monitore en 15m. NEW/VOLATIL = 5m INCHANGÉ (verrouillé sur pos.established, défaut 5m).
+                // (2026-09-14) 15m POUR TOUS — mesuré. Le raisonnement ci-dessus valait déjà pour les
+                // établis ; il vaut aussi pour les nouveaux, et le chiffre est net. Sur 56 sorties RSI2
+                // de tokens NON établis, rejouer la même règle en 15m au lieu de 5m sort à un prix
+                // MÉDIAN +4,9 % plus haut (moyenne +7,2 %), 38 fois sur 56.
+                // Groupe TÉMOIN indispensable : sur les établis, déjà en 15m, l'écart simulé est de
+                // +0,4 % — c'est-à-dire zéro. La simulation reproduit donc bien l'existant, et l'effet
+                // n'apparaît que là où le timeframe change.
+                // Et ce n'est PAS « sortir plus tard » : attendre le même délai médian (1 bougie) sans
+                // indicateur donne -0,6 %, un délai tiré au hasard donne 0,0 %. C'est le signal qui
+                // choisit le moment, pas l'attente.
+                // Contre-tests tous positifs : 1re moitié +6,0 % · 2e moitié hors échantillon +4,9 % ·
+                // sans les 3 meilleurs +4,6 % · sans les 5 meilleurs +4,0 % · 22 tokens distincts.
+                // Coût de l'ancien réglage : ~0,37 SOL sur 12 jours, soit environ 1 SOL par mois.
+                // Cas typiques : EMBERCAT sorti à +3,6 % après 60 min (15m : +31 % plus haut),
+                // MARKET à 0,0 % après 25 min (+28 %), SOLCAT à +0,7 % après 41 min (+27 %).
                 let pcs = cs;
-                try { const c = pos.established ? await candles15(tok, 200) : await candles5(tok, 200); if (c && c.length >= 5) pcs = c; } catch (_) { /* fallback */ }
+                try { const c = await candles15(tok, 200); if (c && c.length >= 5) pcs = c; } catch (_) { /* fallback */ }
                 const plast = pcs[pcs.length - 1];
                 const px = plast[4];
                 pos.lastPx = px;   // mémorisé pour le PnL papier du stop résilient (si les bougies tombent ensuite)
@@ -1679,7 +1694,7 @@ async function scan() {
                 const realSource = lvSrc; // diagnostic gel valeur (2026-08-11) : lot / lot-FIGÉ / indiv / cacheXs / prix
                 const rsi2v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
                 const rsi14v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 14);
-                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource}${pos._raw ? ` px:${pos._raw.px != null ? pos._raw.px.toPrecision(6) : '?'} X:${pos._raw.x != null ? pos._raw.x.toPrecision(6) : '?'} Y:${pos._raw.y != null ? pos._raw.y.toFixed(4) : '?'} lu:${pos._raw.readTs ? ((Date.now() - pos._raw.readTs) / 1000).toFixed(0) : '?'}s${pos._feeVel != null ? ` 💰${(pos._fees * 1000).toFixed(2)}m (${(pos._feeVel * 1000).toFixed(2)}m/h${pos._feeHours != null && isFinite(pos._feeHours) ? `, paie en ${pos._feeHours.toFixed(0)}h` : ''})` : ''}` : ''} | ${pos.established ? '15m' : '5m'}`);
+                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource}${pos._raw ? ` px:${pos._raw.px != null ? pos._raw.px.toPrecision(6) : '?'} X:${pos._raw.x != null ? pos._raw.x.toPrecision(6) : '?'} Y:${pos._raw.y != null ? pos._raw.y.toFixed(4) : '?'} lu:${pos._raw.readTs ? ((Date.now() - pos._raw.readTs) / 1000).toFixed(0) : '?'}s${pos._feeVel != null ? ` 💰${(pos._fees * 1000).toFixed(2)}m (${(pos._feeVel * 1000).toFixed(2)}m/h${pos._feeHours != null && isFinite(pos._feeHours) ? `, paie en ${pos._feeHours.toFixed(0)}h` : ''})` : ''}` : ''} | 15m`);
 
                 // TRAILING TEMPS RÉEL (2026-08-09, cas STONK sorti à la main) : le trail est un STOP de
                 // protection → il agit sur la valeur LP live à CHAQUE scan, PLUS derrière candleAfterEntry

@@ -1184,3 +1184,67 @@ En bougies 1 h les EMA gagnent un peu de pouvoir (AUC 0,60-0,64) mais l'échanti
 Ne pas rouvrir ces pistes sans 60+ perdants : MACD (toutes variantes), EMA (16 variantes),
 SuperTrend en sortie (0 déclenchement), chopRate en continu (0 déclenchement), RSI14/RSI2 en
 sortie de range, bougie close, trail sur rebond, plancher RSI2, coupe temporelle.
+
+---
+
+## 11. 14/09 — Sortie en 15 min pour TOUS les tokens (déployé)
+
+**Ce qui change.** `pcs` — la série de bougies qui sert à la sortie (prix, RSI2, RSI14) — passait en
+5 min pour les tokens non établis et en 15 min pour les établis. Désormais **15 min pour tous**.
+
+**Pourquoi.** Le raisonnement du 08/08 pour les établis (*« RSI(2) 5m explose sur un micro-wiggle →
+sort à LP ~0 % avant le vrai bounce »*) vaut aussi pour les nouveaux. Mesuré sur le cache de
+bougies, 56 sorties RSI2 de tokens **non établis** :
+
+| | médian | moyen | mieux |
+|---|---|---|---|
+| rejouer la règle en 15 min | **+4,9 %** | +7,2 % | 38/56 |
+
+**Le groupe témoin valide la méthode.** Sur les 80 sorties de tokens **établis**, déjà en 15 min,
+l'écart simulé est de **+0,4 %** — zéro. La simulation reproduit donc l'existant, et l'effet
+n'apparaît que là où le timeframe change réellement.
+
+**Et ce n'est pas « sortir plus tard ».** Placebos :
+
+| | médian |
+|---|---|
+| signal RSI2 15 min | **+4,9 %** |
+| attendre le même délai médian (1 bougie) sans indicateur | **−0,6 %** |
+| délai tiré au hasard (50 tirages) | **0,0 %** |
+
+Le décalage médian n'est que d'**une bougie**. Ce n'est donc pas l'attente qui paie, c'est le
+signal qui choisit le moment.
+
+**Contre-tests, tous positifs :** 1re moitié +6,0 % · 2e moitié hors échantillon +4,9 % ·
+sans les 3 meilleurs +4,6 % · sans les 5 meilleurs +4,0 % · 22 tokens distincts pour 56 cas.
+
+**Ce que coûtait l'ancien réglage :** 0,367 SOL sur 12 jours, soit **≈ 1 SOL par mois**.
+Cas typiques — EMBERCAT sorti à +3,6 % après 60 min (15 min : +31 % plus haut) · MARKET à 0,0 %
+après 25 min (+28 %) · SOLCAT à +0,7 % après 41 min (+27 %).
+
+**Coût technique : nul, voire négatif.** `cs` venait déjà de `candles15` et `candlesTF` met en
+cache par timeframe — la modification supprime des appels 5 min au lieu d'en ajouter. `candles5`
+devient du code mort, laissé en place volontairement.
+
+### Autres pistes mesurées ce jour et NON retenues
+
+**Bloquer la ré-entrée après une sortie « ennui »** (RSI2 < 3 % de LP et > 3 h) — la seconde moitié
+de la phrase d'EP, *« and is not reopened »*. Passe tous les contre-tests en points de LP
+(hors échantillon +0,38 pt, robuste aux outliers), mais **l'effet direct en SOL est négatif** :
+−0,370 SOL de gagnants bloqués (50 trades) contre +0,225 SOL de perdants évités (3 trades),
+soit **−0,145 SOL**. Tout le bénéfice reposerait sur les 389 h de slot libérées (≈ 275 trades
+supplémentaires, +2,4 SOL) — une hypothèse de remplissage non mesurée. À reprendre si la capacité
+devient démontrablement le goulot.
+
+**Allonger le délai de ré-entrée ou exiger un prix supérieur** — réfuté, et l'inverse est vrai :
+ré-entrée en moins de 35 min +5,21 % contre +2,46 % au-delà de 12 h ; ré-entrée à plus de 10 %
+*au-dessus* de la sortie précédente : +2,96 % et 7 % de perdants, le pire segment.
+
+**Première entrée contre ré-entrée** — les **premières** entrées sont 3× plus risquées :
+9,3 % de perdants et +1,29 % de LP moyen, contre 2,8 % et ~+4 % pour les ré-entrées. Un token
+déjà tradé plusieurs fois est un choppeur prouvé. Même population que le filtre `cr == null`.
+
+**Filtre d'amplitude des rebonds à l'entrée** (porte BOREDOM d'EP) — identifie bien la population
+ennuyeuse (trades > 3 h à < 3 % de LP : rebonds de 25,0 % contre 41,9 % pour les gagnants rapides)
+mais **inutilisable comme filtre** : à un seuil de 25 % il bloque 1 perdant, 32 trades ennuyeux et
+**19 gagnants rapides**, et il s'inverse entre les deux moitiés chronologiques (+4,55 % puis +0,13 %).
