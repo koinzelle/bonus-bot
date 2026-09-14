@@ -609,7 +609,7 @@ async function positionValuesByKeys(list) {
             // il distingue « donnée vieille » de « donnée fraîche mais fausse », ce que l'ancien
             // `âge donnée` (âge du dernier enregistrement) ne savait pas faire.
             out.set(p.positionKeypairPub, { valueSol: yHuman + feeY + (xHuman + feeX) * priceYperX, activeBinId: ab.binId,
-                px: priceYperX, x: xHuman + feeX, y: yHuman + feeY, readTs: Date.now() });
+                px: priceYperX, x: xHuman + feeX, y: yHuman + feeY, fees: feeY + feeX * priceYperX, readTs: Date.now() });
         }
     }
     return out;
@@ -680,7 +680,7 @@ async function allPositionValues(list) {
             const feeX = Number(d.feeX?.toString() ?? 0) / 10 ** xDec;
             const feeY = Number(d.feeY?.toString() ?? 0) / 10 ** yDec;
             out.set(lp.publicKey.toString(), { valueSol: yHuman + feeY + (xHuman + feeX) * priceYperX, activeBinId,
-                px: priceYperX, x: xHuman + feeX, y: yHuman + feeY, readTs: Date.now() });
+                px: priceYperX, x: xHuman + feeX, y: yHuman + feeY, fees: feeY + feeX * priceYperX, readTs: Date.now() });
         }
     }
     return out;

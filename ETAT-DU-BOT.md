@@ -1060,3 +1060,59 @@ s'élargit 2 bougies) **+** rebonds d'amplitude décroissante, la première qui 
 18 perdants attrapés sur 21, 2 gagnants touchés sur 45. Hors échantillon sur les trois sorties
 REBOND de la nuit du 13 au 14 : MINI +57,2 % / 56,5 h, OTC +169,0 % / 35,3 h, baton +64,1 % / 13,5 h.
 **Backtest en cours sur les 328 gagnants restants** — c'est lui qui décide.
+
+---
+
+## 9. 14/09 — Vélocité de fees journalisée (instrumentation, aucune règle)
+
+**Pourquoi.** Les fees accumulées étaient lues à chaque cycle depuis toujours — mais **repliées
+dans `x` et `y`** par `positionValuesByKeys`, donc invisibles. Impossible de savoir si une position
+paie son loyer. C'est la porte **BOREDOM** d'Evil Panda, la seule des trois qui manque au bot :
+*« a position that is not earning its keep in fees after a fair trial closes at the first small
+profit and is not reopened. Dead liquidity is the most expensive thing on the book, because it
+looks like nothing is wrong. »*
+
+**Mesuré le 14/09** sur les 7 positions ouvertes, un aller-retour coûtant ~0,0046 SOL :
+
+| position | fees/h | paie son aller-retour en |
+|---|---|---|
+| KNOTS | 0,00144 | 3 h |
+| baton | 0,00075 | 6 h |
+| MINI | 0,00053 | 9 h |
+| OTC | 0,00048 | 10 h |
+| TripleT | 0,00029 | 16 h |
+| **ZCAT** | **0,00005** | **92 h** |
+
+**Ce qui est déployé.** `fees` exposé séparément dans `bonus-live.js`, accumulé dans `recordLv`
+(`pos._fees`, `pos._feeVel`, `pos._feeHours`), affiché dans la ligne `📊` sous la forme
+`💰31.41m (1.44m/h, paie en 3h)` — en milli-SOL. Coût nul : la donnée était déjà en mémoire.
+
+**Ce qui n'est PAS déployé.** Aucune règle de coupe. On regarde d'abord dans le temps si le signal
+est exploitable. Attention au piège : 5 des 7 positions du 14/09 n'ont **jamais** été positives, or
+la règle d'EP ferme « au premier petit profit » — elle ne se déclencherait donc jamais sur elles.
+
+### La sortie « rebond avorté » — état de la mesure
+
+Règle testée : histogramme MACD 15 min négatif qui se résorbe ≥2 bougies puis s'élargit 2 bougies
+(**bougies closes**), couplée aux rebonds d'amplitude décroissante, la première qui parle.
+
+| variante | perdants attrapés | gagnants touchés | net (pts de LP) |
+|---|---|---|---|
+| MACD seul | 12/18 (+464) | 27/200 (−139) | +326 |
+| MACD + prix < −35 % | 4/18 (+45) | **0**/200 | +45 |
+| **MACD + position HORS RANGE** | **12/18 (+464)** | **7/200 (−27)** | **+438** |
+
+**Le couplage hors-range domine.** Il attrape les mêmes 12 perdants que le MACD seul en ne touchant
+que 7 gagnants au lieu de 27 — et sur ces 7, deux sortiraient *plus haut* (CATE +3,0 %, AGI +2,2 %).
+
+La raison est arithmétique : « hors range par le bas » **est** la vélocité de fees nulle (100 % token,
+plus aucun frais encaissé), et c'est un test exact que le bot fait déjà. Un seuil de prix fixe n'en est
+qu'un proxy : la couverture basse d'une range ±34 bins vaut −23,7 % en bs80, −28,7 % en bs100,
+−34,5 % en bs125, −49,0 % en bs200, −56,8 % en bs250.
+
+Validation hors échantillon sur les trois sorties REBOND de la nuit du 13 au 14 :
+MINI +57,2 % / 56,5 h · OTC +169,0 % / 35,3 h · baton +64,1 % / 13,5 h.
+
+**Réserves.** 18 perdants seulement. Les gains sont en **prix** — la conversion en LP utilise un
+coefficient de 0,65 pour les positions hors range (100 % token) et 0,41 pour celles dans la range.
+Rien n'est déployé.

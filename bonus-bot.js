@@ -1658,7 +1658,7 @@ async function scan() {
                 const realSource = lvSrc; // diagnostic gel valeur (2026-08-11) : lot / lot-FIGÉ / indiv / cacheXs / prix
                 const rsi2v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
                 const rsi14v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 14);
-                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource}${pos._raw ? ` px:${pos._raw.px != null ? pos._raw.px.toPrecision(6) : '?'} X:${pos._raw.x != null ? pos._raw.x.toPrecision(6) : '?'} Y:${pos._raw.y != null ? pos._raw.y.toFixed(4) : '?'} lu:${pos._raw.readTs ? ((Date.now() - pos._raw.readTs) / 1000).toFixed(0) : '?'}s` : ''} | ${pos.established ? '15m' : '5m'}`);
+                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource}${pos._raw ? ` px:${pos._raw.px != null ? pos._raw.px.toPrecision(6) : '?'} X:${pos._raw.x != null ? pos._raw.x.toPrecision(6) : '?'} Y:${pos._raw.y != null ? pos._raw.y.toFixed(4) : '?'} lu:${pos._raw.readTs ? ((Date.now() - pos._raw.readTs) / 1000).toFixed(0) : '?'}s${pos._feeVel != null ? ` 💰${(pos._fees * 1000).toFixed(2)}m (${(pos._feeVel * 1000).toFixed(2)}m/h${pos._feeHours != null && isFinite(pos._feeHours) ? `, paie en ${pos._feeHours.toFixed(0)}h` : ''})` : ''}` : ''} | ${pos.established ? '15m' : '5m'}`);
 
                 // TRAILING TEMPS RÉEL (2026-08-09, cas STONK sorti à la main) : le trail est un STOP de
                 // protection → il agit sur la valeur LP live à CHAQUE scan, PLUS derrière candleAfterEntry
@@ -2128,7 +2128,23 @@ async function scan() {
 // une décroissance lisse = mécanique LP. Tranche « 429 vs LP non-linéaire » sur les sorties trail tardives.
 function recordLv(pos, rg, bin, raw) {
     const now = Date.now();
-    if (raw) pos._raw = { px: raw.px, x: raw.x, y: raw.y, readTs: raw.readTs };   // (2026-09-11) termes bruts pour diagnostic
+    if (raw) pos._raw = { px: raw.px, x: raw.x, y: raw.y, fees: raw.fees, readTs: raw.readTs };   // (2026-09-11) termes bruts pour diagnostic
+    // ── (2026-09-14) VÉLOCITÉ DE FEES ───────────────────────────────────────────────────────────
+    // Les fees accumulées sont déjà lues à CHAQUE cycle (repliées dans x et y depuis toujours) mais
+    // n'étaient journalisées nulle part : impossible de savoir si une position paie son loyer.
+    // Mesuré le 14/09 sur les 7 positions ouvertes : KNOTS 0,00144 SOL/h (elle paie son aller-retour
+    // en 3 h) contre ZCAT 0,00005 SOL/h (92 h). Un aller-retour coûte ~0,0046 SOL, soit 1,6 % de la
+    // position. C'est la porte « BOREDOM » d'Evil Panda — la seule des trois qui manque au bot :
+    // « a position that is not earning its keep in fees after a fair trial closes ».
+    // On journalise d'abord, sans aucune règle : une décision de coupe se prendra sur des données
+    // réelles, pas sur cette intuition. Coût nul, la donnée est déjà en mémoire.
+    if (raw && raw.fees != null) {
+        const ouvert = typeof pos.openedAt === 'string' ? Date.parse(pos.openedAt) : pos.openedAt;
+        const h = Math.max(0.05, (now - ouvert) / 3600000);
+        pos._fees = raw.fees;
+        pos._feeVel = raw.fees / h;                       // SOL de fees par heure
+        pos._feeHours = raw.fees > 0 ? 0.0046 / pos._feeVel : null;   // heures pour payer un aller-retour
+    }
     // ── (2026-09-08) TEMPS PASSÉ HORS RANGE PAR LE BAS ──────────────────────────────────────────
     // Mesuré le 08/09 sur 192 trades : une position sortie par le bas rend **-0,00898 SOL/trade**
     // contre **+0,01072** pour une qui tient, LP médian 1,06 % contre 4,61 %, et elle dure 6,3 h au
