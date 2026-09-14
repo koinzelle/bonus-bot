@@ -1,3 +1,4 @@
 node_modules/
 bonus_paper.json
 .env
+data/
