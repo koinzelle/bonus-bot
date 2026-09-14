@@ -1116,3 +1116,71 @@ MINI +57,2 % / 56,5 h · OTC +169,0 % / 35,3 h · baton +64,1 % / 13,5 h.
 **Réserves.** 18 perdants seulement. Les gains sont en **prix** — la conversion en LP utilise un
 coefficient de 0,65 pour les positions hors range (100 % token) et 0,41 pour celles dans la range.
 Rien n'est déployé.
+
+---
+
+## 10. 14/09 — Ombre « prise de profit sur objectif de prix »
+
+**L'origine.** EP place son edge sur la sortie : *« fee income, EARLY profit-taking and small,
+decided losses »*, et sa porte HAUT prend le profit *« when a move looks stretched, BEFORE it
+gives the gains back »*. Toute la session avait porté sur les 20 perdants ; la puissance
+statistique est en réalité sur les **254 gagnants**.
+
+**Ce qui a été mesuré** (cache de bougies 15 min, `tools/test-exits.js`) :
+
+| règle | déclenche | LP total avant → après | améliorés / dégradés |
+|---|---|---|---|
+| objectif +10 % de prix | 105/254 | 1236 → 1339 | 64 / 41 |
+| objectif +15 % | 71/254 | 1236 → 1326 | 45 / 26 |
+| **objectif +25 %** | 27/254 | 1236 → 1303 | **21 / 6** |
+
+Et **sortir sur la faiblesse est mauvais** : 1re bougie rouge après un plus-haut −6,5 %,
+2 bougies rouges −9,5 %, RSI2 > 95 −1,3 %. Le trail fait mieux que ces signaux. Ce n'est donc
+pas « sortir plus tôt » — c'est « ne pas attendre le retracement » une fois le mouvement étiré.
+
+**Contre-tests — c'est la SEULE règle de la session qui les passe tous.**
+
+| test | +15 % |
+|---|---|
+| référence | +3,4 % méd · 45/71 |
+| 1re moitié chronologique | +3,9 % |
+| 2e moitié (hors échantillon) | +2,6 % |
+| en retirant les 3 meilleurs | +3,1 % |
+| tokens nouveaux / établis | +2,4 % / +3,8 % |
+| concentration | 28 tokens pour 71 déclenchements |
+
+**Pourquoi une OMBRE et pas un déploiement.** Le backtest convertit des prix en LP par un
+coefficient moyen de 0,41 — une mesure, pas une constante. Le gain annoncé (+5 à +8 % du PnL des
+gagnants, soit ~0,26 pt de LP par trade) est du même ordre que l'incertitude de ce coefficient.
+Et la règle touche le TRAIL, qui produit **93 %** du PnL : baton passerait de +15,8 % à +2,6 %.
+L'ombre enregistre le **LP réel** au moment où l'objectif est touché, puis compare à la sortie
+réelle. Deux LP mesurés au lieu d'un prix converti.
+
+**À lire dans les logs** : `🎯 [OMBRE]` à l'armement, `🎯 [OMBRE +25%]` au bilan de fermeture.
+Juger vers 30-40 déclenchements.
+
+### Ce que la session du 13-14/09 a DÉFINITIVEMENT écarté
+
+Vingt et une règles de sortie testées sur les perdants. **Aucune ne survit.** La cause est mesurée :
+
+| variable, au moment où la position sort de la range | perdants | gagnants | AUC |
+|---|---|---|---|
+| heures depuis l'ouverture | 5,0 | 2,5 | 0,67 |
+| heures sans nouveau plus-haut | 4,3 | 2,3 | 0,65 |
+| largeur de Bollinger | 9,4 % | 11,3 % | 0,37 |
+| **MACD histo / ligne** | −2,5 | −2,9 | **0,52** |
+| **écart EMA9 / 21 / 34 / 50** | — | — | **0,51** |
+| **pente EMA34** | — | — | **0,46** |
+
+**Le MACD et toutes les EMA ont un pouvoir discriminant NUL** (AUC ≈ 0,50). Au moment où une
+position sort de sa range, perdants et gagnants ont le même profil technique — logique, puisque
+la tendance était déjà cassée à l'entrée : c'est le signal d'achat. Seules des variables
+**temporelles** et la **volatilité** séparent, et faiblement (AUC 0,65-0,67).
+
+En bougies 1 h les EMA gagnent un peu de pouvoir (AUC 0,60-0,64) mais l'échantillon tombe à
+9 perdants : une position du bot dure 73 min en médiane, un MACD(12,26,9) demande 35 bougies.
+**EP tient des jours, le bot des heures** — son indicateur HTF n'a pas la place d'exister ici.
+
+Ne pas rouvrir ces pistes sans 60+ perdants : MACD (toutes variantes), EMA (16 variantes),
+SuperTrend en sortie (0 déclenchement), chopRate en continu (0 déclenchement), RSI14/RSI2 en
+sortie de range, bougie close, trail sur rebond, plancher RSI2, coupe temporelle.

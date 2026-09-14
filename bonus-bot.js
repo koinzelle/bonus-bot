@@ -1544,6 +1544,27 @@ async function scan() {
                 pos.lastPx = px;   // mémorisé pour le PnL papier du stop résilient (si les bougies tombent ensuite)
                 const dropFromEntry = 1 - px / pos.entry;
                 const gain = px / pos.entry - 1;
+                // ── (2026-09-14) OMBRE : PRISE DE PROFIT SUR OBJECTIF DE PRIX ───────────────────────
+                // EP place son edge sur la sortie : « fee income, EARLY profit-taking and small, decided
+                // losses ». Sa porte HAUT prend le profit « when a move looks stretched, BEFORE it gives
+                // the gains back ». Testé le 14/09 sur 254 gagnants, un objectif de prix bat le trail —
+                // et c'est la SEULE règle de la session à survivre à tous les contre-tests (découpage
+                // chronologique, retrait des 3 meilleurs, tokens nouveaux ET établis, concentration).
+                //   +15 % : 71 trades, +90 pts de LP au total, 45 améliorés / 26 dégradés
+                //   +25 % : 27 trades, +67 pts,                21 améliorés /  6 dégradés  ← meilleur ratio
+                // Sortir sur la FAIBLESSE est au contraire mauvais (1re bougie rouge -6,5 %, RSI2>95
+                // -1,3 %) : le trail fait mieux que ça. Ce n'est donc pas « sortir plus tôt », c'est
+                // « ne pas attendre le retracement » une fois le mouvement étiré.
+                // On N'AGIT PAS : le backtest convertit des prix en LP via un coefficient moyen (0,41)
+                // qui est une mesure, pas une constante. L'ombre enregistre le LP RÉEL au moment où
+                // l'objectif est touché ; à la fermeture on compare les deux vrais LP. Coût nul.
+                for (const cible of [0.15, 0.25]) {
+                    const cle = '_shadowTP' + (cible * 100);
+                    if (!pos[cle] && gain >= cible) {
+                        pos[cle] = { lp: +(realGain * 100).toFixed(2), px, t: Date.now() };
+                        console.log(`  🎯 [OMBRE] ${pos.symbol}: prix +${(gain * 100).toFixed(1)}% (objectif +${(cible * 100).toFixed(0)}%) — on aurait fermé ICI à LP ${(realGain * 100).toFixed(1)}%`);
+                    }
+                }
                 // CUT hors-range ADAPTATIF (2026-08-11, cas Jimothy coupé puis pump +30min) : gros coin établi
                 // (MC≥3M) rug rarement + rebondit (cf Remus) → -50% de marge ; petit volatil peut rug → -35%.
                 // (seuils RANGE_DOWN/TP_PCT/TRAIL = constantes de module, source unique)
@@ -2187,6 +2208,19 @@ function withTimeout(promise, ms, label) {
 }
 const CLOSE_TIMEOUT_MS = 90 * 1000;   // au-delà, on relâche le verrou et on RE-TENTE au tick suivant
 async function closePaper(tok, pos, exitPrice, reason) {
+    // (2026-09-14) Bilan de l'ombre « objectif de prix » : on compare le LP qu'on AURAIT eu en fermant
+    // sur l'objectif au LP réellement obtenu. Les deux sont des LP mesurés, pas des prix convertis —
+    // c'est précisément ce que le backtest ne pouvait pas faire.
+    try {
+        for (const cible of [15, 25]) {
+            const s = pos['_shadowTP' + cible];
+            if (!s) continue;
+            const reel = pos._lv ? pos._lv.rg * 100 : null;
+            if (reel == null) continue;
+            const d = s.lp - reel;
+            console.log(`  🎯 [OMBRE +${cible}%] ${pos.symbol}: objectif → LP ${s.lp.toFixed(1)}%  ·  réel → LP ${reel.toFixed(1)}%  ·  ${d >= 0 ? 'l\'objectif aurait fait MIEUX' : 'le trail a fait mieux'} de ${Math.abs(d).toFixed(1)} pt  (${((Date.now() - s.t) / 3600000).toFixed(1)} h avant la sortie)`);
+        }
+    } catch (_) { /* l'ombre ne doit jamais empêcher une fermeture */ }
     // ANTI-VERROU MORT (2026-08-27, cas Zoe 26/08) : `_closing` restait à true pour toujours quand
     // `closeVerified` ne résolvait jamais (429 Helius) → tous les closes suivants sortaient ICI, en
     // silence : trail armé à +7,2%, condition de sortie vraie 3h11, position finie à -25%, zéro alerte.
