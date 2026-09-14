@@ -1299,3 +1299,53 @@ déployé. Plus de slots impose des positions plus petites, et l'aller-retour à
 moins bons que ceux retenus (le bot prend le PREMIER qualifié, pas le meilleur — cf. la note du
 12/09 sur la sélection par rotation). Si les refusés valent les retenus, les trois leviers sont
 additifs.
+
+---
+
+## 13. 14/09 — Verrou 48 h après une sortie molle (déployé)
+
+**Le manque.** Le bot avait bien la porte BOREDOM d'EP — la sortie RSI2 en petit profit *est*
+« closes at the first small profit ». Ce qui manquait, c'est la fin de la phrase : **« and is not
+reopened »**. Il rouvrait le même token 30 minutes plus tard.
+
+**Mesuré sur 412 trades.** Une ré-entrée dont la sortie précédente était molle — RSI2, plus de 3 h,
+moins de 3 % de LP :
+
+| | SOL net / trade | LP moyen | durée médiane |
+|---|---|---|---|
+| ré-entrée après sortie molle | **−0,0018** | +1,42 % | 136 min |
+| ré-entrée quelconque | **+0,0050** | +4,08 % | 83 min |
+
+Et 69 % de ces ré-entrées ressortent elles aussi en RSI2 (+1,68 % de LP moyen), 30 % redeviennent
+elles-mêmes un token mou.
+
+**Un cooldown plus long ne répare rien** — mesuré : < 35 min +3,23 % · 35 min-2 h +3,38 % ·
+**2-6 h −2,84 %** · 6-24 h +2,37 %. Le problème n'est pas *quand* on rentre, c'est que le token ne
+produit pas. D'où un verrou, pas un délai.
+
+**48 h plutôt que définitif.** Sur 12 jours les deux bloquent exactement les mêmes 54 cas — aucun
+ne revient au-delà de 48 h — donc c'est le « not reopened » d'EP en pratique. Mais il se purge
+seul : un verrou à vie retirerait ~50 tokens par mois d'un univers qui n'en compte que ~40 au watch.
+Réglable par **`MOU_LOCK_H`** sans redéploiement ; à 6 h on capte encore 89 % du bénéfice
+(348 h de slot sur 390) avec un TRAIL de moins sacrifié.
+
+| verrou | bloqués | slot libéré | SOL direct | TRAIL sacrifiés |
+|---|---|---|---|---|
+| 6 h | 45 | 348 h | +0,1021 | 13 |
+| 12 h | 49 | 381 h | +0,0956 | 13 |
+| **48 h** | **54** | **390 h** | **+0,0987** | **14** |
+| définitif | 54 | 390 h | +0,0987 | 14 |
+
+**Pourquoi ça vaut le coup — la capacité est le goulot** (cf. section 12) : ~25 candidats
+pleinement qualifiés refusés par jour, et le plafond de 7 **n'est pas négociable** — à 8 positions
+les 429 Helius reviennent (contrainte RPC, pas capitalistique). La seule façon d'augmenter le débit
+est donc de raccourcir les positions improductives.
+
+390 h sur 12 jours = **+19 % de capacité**, soit ≈ +0,86 SOL/mois, plus +0,25 en direct.
+
+**Le coût :** 14 sorties TRAIL à +5,91 % qu'on n'aura pas sur ces tokens. Mais les candidats
+refusés valent les retenus — plus-haut médian **+13,8 % en 6 h** contre **+10,3 %** réalisés sur
+les trades pris — donc un slot rendu est un trade moyen gagné, pas un trade perdu.
+
+**À surveiller :** la ligne `🔒 … sortie MOLLE (… min pour …% de LP) → verrouillé 48 h`.
+Si le nombre de trades par jour chute nettement, baisser `MOU_LOCK_H` à 6.
