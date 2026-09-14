@@ -1248,3 +1248,54 @@ déjà tradé plusieurs fois est un choppeur prouvé. Même population que le fi
 ennuyeuse (trades > 3 h à < 3 % de LP : rebonds de 25,0 % contre 41,9 % pour les gagnants rapides)
 mais **inutilisable comme filtre** : à un seuil de 25 % il bloque 1 perdant, 32 trades ennuyeux et
 **19 gagnants rapides**, et il s'inverse entre les deux moitiés chronologiques (+4,55 % puis +0,13 %).
+
+---
+
+## 12. 14/09 — LA CAPACITÉ EST LE GOULOT (correction de la section 11)
+
+**Ce que j'avais écrit une heure plus tôt est FAUX.** La section 11 écarte le blocage de ré-entrée
+au motif que le bénéfice « reposerait sur une hypothèse de remplissage non mesurée ». Elle l'est
+maintenant, et le résultat est l'inverse.
+
+**L'erreur.** Le compteur `blockCount['max-pos']` surveille `MAX_POSITIONS = 10`, le plafond
+**papier**. Le vrai plafond est `MAX_LIVE_POSITIONS = Math.min(7, …)`, appliqué ligne 2118, et il
+**n'a aucun compteur** — seulement une ligne de log :
+
+```
+⏸️ LIVE: 7/7 position(s) réelle(s) déjà ouverte(s) — X en papier seulement
+```
+
+Lire `max-pos` (200 cumulés contre 195 000 « pas-au-creux ») donnait donc « la capacité n'est pas
+le goulot ». C'était une mesure du mauvais plafond.
+
+**La vraie mesure**, en comptant ces lignes dans les logs persistés :
+
+| jour | occurrences | tokens distincts refusés | heures saturées |
+|---|---|---|---|
+| 2026-09-11 | 1471 | 28 | 13 / 24 |
+| 2026-09-12 | 1688 | 28 | 17 / 24 |
+| 2026-09-13 | 1402 | 20 | **22 / 24** |
+
+**≈ 25 opportunités pleinement qualifiées refusées par jour**, pour 19 à 40 entrées réalisées.
+**Le bot en refuse à peu près autant qu'il en prend.**
+
+Ces candidats ont passé les quinze filtres d'entrée. Ce ne sont pas des rejets sur critère, ce sont
+des entrées validées que le bot ouvre en papier et ne peut pas exécuter au réel.
+
+**Conséquence : tout raisonnement en « heures de slot libérées » redevient valide**, et les deux
+règles écartées en section 11 changent de statut :
+
+| règle | effet direct | slot libéré | valeur si les slots se remplissent |
+|---|---|---|---|
+| blocage de ré-entrée après sortie « ennui » | −0,145 SOL | 389 h | ≈ +2,4 SOL |
+| filtre `cr == null` | −0,08 SOL | 579 h | ≈ +3,6 SOL |
+
+**Troisième levier, le plus direct : `MAX_LIVE_POSITIONS`**, codé en dur à 7 par un `Math.min(7, …)`.
+Contrepartie : les positions font ~0,28 SOL sur un wallet d'environ 2,7 SOL, soit ~72 % déjà
+déployé. Plus de slots impose des positions plus petites, et l'aller-retour à 0,0046 SOL passe de
+1,6 % à 2,1 % de la position si elle tombe à 0,22 SOL.
+
+**À faire avant toute décision :** vérifier que les candidats refusés ne sont pas systématiquement
+moins bons que ceux retenus (le bot prend le PREMIER qualifié, pas le meilleur — cf. la note du
+12/09 sur la sélection par rotation). Si les refusés valent les retenus, les trois leviers sont
+additifs.
