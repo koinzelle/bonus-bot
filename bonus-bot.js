@@ -1608,6 +1608,23 @@ async function scan() {
                 // ATTENTE DU REBOND (2026-08-30) : à -55% on n'ferme plus, on arme ; la sortie se fera au
                 // premier RSI2>90 quel que soit le signe (plus bas dans cette même fonction).
                 const deepDown = dropFromEntry >= RANGE_DOWN || realGain <= -RANGE_DOWN;
+                // (2026-09-14) DÉSARMEMENT DE L'ATTENTE DE REBOND — le drapeau était COLLANT : posé une
+                // fois, jamais retiré. Trois endroits le mettaient à true, aucun ne le remettait à false.
+                // Cas YOYO du 14/09 : sortie de range par le bas, armement, puis RETOUR dans la range
+                // (bin -265 pour une borne basse à -266), LP remonté de -34,5 % à -27,3 %, fees de nouveau
+                // encaissées — et le bot allait quand même la vider au premier RSI2>90, SANS plancher.
+                // Mesuré sur les 21 positions sorties par le bas : celles qui REVIENNENT dans la range
+                // finissent à +0,4 à +12,7 % (CATE, AGI, KETCHUP, ZCAT, baton) ; celles qui restent dehors
+                // sur un seul long épisode finissent à -35 à -45 % (BUTTHOLE, fone, OTC). Le retour dans
+                // la range EST le signal que la thèse est de nouveau vivante — on rend alors à la position
+                // sa sortie normale, plancher compris.
+                // Le test !deepDown évite le battement arm/désarm : sans lui la ligne suivante ré-arme aussitôt.
+                if (pos._awaitBounce && !deepDown && liveBinId != null && pos.live.lowerBinId != null
+                    && liveBinId >= pos.live.lowerBinId && liveBinId <= pos.live.upperBinId) {
+                    pos._awaitBounce = false; save();
+                    console.log(`  ↩️ ${pos.symbol}: revenue dans la range (bin ${liveBinId} dans [${pos.live.lowerBinId},${pos.live.upperBinId}], LP ${(realGain * 100).toFixed(1)}%) → attente de rebond DÉSARMÉE, plancher RSI2 rétabli`);
+                    tg(`↩️ ${pos.symbol}: revenue dans sa range (LP ${(realGain * 100).toFixed(1)}%) — attente de rebond désarmée, sortie RSI2 normale rétablie.`);
+                }
                 if (deepDown && !pos._awaitBounce) {
                     pos._awaitBounce = true; save();
                     console.log(`  ⏳ ${pos.symbol}: seuil -${(RANGE_DOWN * 100).toFixed(0)}% franchi (LP ${(realGain * 100).toFixed(1)}%) → attente du rebond, sortie au 1er RSI2>90 · plancher dur -${(CUT_HARD * 100).toFixed(0)}%`);

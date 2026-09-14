@@ -1005,3 +1005,58 @@ conditions d'entrée de l'époque sont irrécupérables — seul le forward tran
 rétabli ce contrôle et fait passer le ratio rejetés/ajoutés de 0,23 à 1,69. C'est un vrai
 correctif de bug, mais c'est aussi la cause principale de la chute du nombre de trades.
 Le shadow `feesSeuil` tranchera.
+
+---
+
+## 8. 14/09 — Le drapeau d'attente de rebond était COLLANT (corrigé)
+
+**Le défaut.** `_awaitBounce` était posé à `true` par trois endroits du code et **remis à
+`false` par aucun**. Une position ayant franchi −55 % (en prix depuis l'entrée **ou** en LP)
+gardait donc à vie une sortie dégradée : `rsi2 > 90 && (pos._awaitBounce || realGain > plancher)`
+— le `||` court-circuite le plancher, donc sortie au premier RSI2 > 90 à **n'importe quel LP**.
+
+**Le cas qui l'a révélé.** YOYO, 14/09 : sortie de range par le bas → armement. Puis retour
+**dans** la range (bin −265 pour une borne basse à −266), LP remonté de −34,5 % à −27,3 %,
+fees de nouveau encaissées. Le bot allait quand même la vider au premier RSI2 > 90.
+
+**Ce que disent les données** (21 positions sorties par le bas, depuis le 08/09) :
+
+| | issue |
+|---|---|
+| revenues dans la range (plusieurs épisodes) | CATE +0,58 % · AGI +1,43 % · KETCHUP +0,43 % · ZCAT +4,91 % · baton +12,67 % |
+| restées dehors (un seul long épisode) | BUTTHOLE −35,2 % · fone −43,7 % · OTC −44,5 % |
+
+Le retour dans la range **est** le signal que la thèse est de nouveau vivante.
+
+**Le correctif.** Désarmement quand le bin actif revient à l'intérieur de `[lowerBinId, upperBinId]`
+**et** que `deepDown` est redevenu faux. Le second test évite le battement arm/désarm : sans lui,
+la ligne d'armement qui suit ré-arme immédiatement. Log `↩️` + notification Telegram.
+
+**Ce que ça ne fait pas.** Aucune position saine n'est touchée — le drapeau n'existe que sur
+celles qui ont franchi −55 %. Le plancher RSI2 normal (dont le plancher taxe) est simplement
+rétabli.
+
+### Mesures de la session du 13-14/09 — ce qui est TRANCHÉ
+
+| piste | verdict |
+|---|---|
+| sortie sur bougie close au lieu du tick | **rejetée** — médiane 0,00 pt, et −0,65 pt sans l'unique outlier |
+| trail sur le rebond des positions hors range | **rejetée** — +5,8 % en bougies 1 h, **0** en bougies 15 min avec robustesse |
+| plancher de rentabilité sur les sorties RSI2 | **rejetée** — après une sortie RSI2 le token fait **−7,1 % médian** à +6 h (63 cas) : la règle protège, elle ne scalpe pas |
+| chopRate recalculé en continu comme sortie | **rejetée** — ne se déclenche jamais, ni sur perdants ni sur gagnants |
+| coupe sur cassure du SuperTrend | **rejetée** — entrer sous le ST est la meilleure configuration (ST HTF rouge : +4,77 % moyen contre +3,58 % vert ; distance < −30 % : +5,95 %) |
+| relever le plancher chop-rate au-dessus de 40 % | **rejetée** — les perdants avaient un chop **plus élevé** (88,4 %) que les gagnants (80,0 %) |
+
+### En cours de validation
+
+**Filtre d'entrée `cr == null`.** `chopOk = cr == null || cr >= 0.40` laisse passer les tokens
+dont le chop-rate n'est pas calculable. Ce sont de gros coins établis et vieux (MC 10,6 M contre
+2,4 M, âge 626 h contre 151 h, fee/TVL 6,7 % contre 17,7 %) : les seuils ±8 %/−30 % de `chopRate`
+ne se résolvent jamais sur eux. Résultat : **LP +2,66 % contre +4,18 %, slot immobilisé 190 min
+contre 73 min**. 10 % des entrées, toujours les mêmes tokens (MARKET ×6, STONK ×5, TripleT ×5).
+
+**Sortie « rebond avorté ».** MACD 15 min (histogramme rouge qui se résorbe ≥2 bougies puis
+s'élargit 2 bougies) **+** rebonds d'amplitude décroissante, la première qui se déclenche.
+18 perdants attrapés sur 21, 2 gagnants touchés sur 45. Hors échantillon sur les trois sorties
+REBOND de la nuit du 13 au 14 : MINI +57,2 % / 56,5 h, OTC +169,0 % / 35,3 h, baton +64,1 % / 13,5 h.
+**Backtest en cours sur les 328 gagnants restants** — c'est lui qui décide.
