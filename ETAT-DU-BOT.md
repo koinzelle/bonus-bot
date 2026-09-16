@@ -1499,3 +1499,54 @@ pas en cause.
 **Leçon de méthode :** toute ombre ajoutée dans la boucle de scan doit être placée APRÈS les
 variables qu'elle lit, et son ajout doit être **vérifié dans les logs pendant 24 h**. Celle-ci a
 tourné deux jours en cassant un tick sur N sans que personne ne regarde `grep -i error`.
+
+## 18. 16/09 — TRANCHÉ : on n'améliore pas la coupe 6 h en attrapant un rebond
+
+Une **soixantaine de variantes** testées le 16/09 pour tenter de sortir sur un petit rebond local
+plutôt qu'à sec. **Aucune ne survit à son contrôle.** Ne pas rouvrir.
+
+**Famille A — attendre un rebond APRÈS le seuil des 6 h.** Toutes perdantes, sans exception, quel
+que soit le déclencheur (RSI2 50/60/70/80, bougie verte, clôture > précédente, 2 vertes, EMA9,
++3 %/+5 % sur le creux local) et quelle que soit la laisse (30 min, 1 h, 2 h). La meilleure fait
+−0,08 SOL contre la coupe sèche. **Attendre après le signal perd toujours** — cohérent avec le test
+MACD (2 h de grâce = −0,166 sur les perdants pour +0,042 sur les gagnants, dégradation monotone).
+
+**Famille B — déclencher dans une fenêtre 4-6 h, coupe dure à 6 h.** Semble gagner (+0,12 à +0,13
+contre la coupe à 6 h) mais c'est un **piège de population** : la famille fait feu 55 fois au lieu
+de 42 parce qu'elle déclenche dès 4 h. Contre la vraie référence — **coupe sèche à 4 h, +0,6023** —
+il ne reste que +0,0379 pour l'EMA9 et +0,0308 pour le RSI2>70, soit sous le bruit (±0,08).
+
+**Le contrôle qui tranche : mélanger la série du signal.**
+
+| contrôle | résultat |
+|---|---|
+| EMA9 mélangée au hasard | médiane **0,6075** vs 0,6402 pour la vraie · **27 tirages sur 200 la battent** (p = 0,14) |
+| RSI2 mélangé | max 0,7792 vs 0,7810 pour la vraie · à égalité |
+
+**Ce qui bouge le chiffre est le SEUIL, pas le signal.** Monotonie, tous déclencheurs confondus :
+dès 2 h +0,7455 · dès 3 h +0,7706 · dès 4 h +0,6402 · dès 5 h +0,5416. Plus tôt = mieux,
+indépendamment de ce qu'on teste — donc le « signal » ne fait que déplacer la date.
+
+**Autres pistes closes le même jour :**
+- **Plus-haut glissant** (8 h à 48 h) au lieu du plus-haut depuis l'entrée : **résultats identiques
+  au centième**. C'est mathématique — au moment où le compteur atteint 6 h, le plus-haut depuis
+  l'entrée EST le plus-haut des 6 dernières heures. Les deux ne divergeraient qu'après la fermeture.
+- **Filtre MACD** : trie à l'envers (cf. section 15).
+- **« 3 sommets consécutifs plus bas »** : redondante à 34/38 (cf. section 15).
+
+### Le cas KNOTS (16/09) — effet de rattrapage, pas un défaut
+
+Le bot a journalisé `STAGNATION 23.0h` sur KNOTS et `20.8h` sur TripleT alors qu'en régime normal
+il doit **toujours** écrire ~6,0 h. Ces deux positions stagnaient déjà depuis deux jours quand la
+règle est arrivée : elles ont été rattrapées au redémarrage. Vérifié sur bougies fraîches — le
+plus-haut de KNOTS datait du 14/09 21:45, soit **46 h** avant la fermeture, et le prix était encore
+**22,5 % en dessous**. La règle aurait dû fermer le 15/09 à 03:45, quarante heures avant le rebond.
+
+**CONTRÔLE À FAIRE : les prochaines lignes `STAGNATION` doivent afficher ~6,0 h.** Au-delà, il y a
+un vrai problème.
+
+### La seule mesure qui vaudra quelque chose
+
+Arrêter de chercher dans le backtest — 18 perdants, on ne fait plus que sélectionner du bruit.
+À la place : pour chaque sortie `STAGNATION` réelle, regarder **ce que le prix a fait dans les 6 à
+24 h suivantes**. Si les tokens coupés remontent, la règle a tort. Dix déclenchements suffisent.
