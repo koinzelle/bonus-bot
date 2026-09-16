@@ -1550,3 +1550,62 @@ un vrai problème.
 Arrêter de chercher dans le backtest — 18 perdants, on ne fait plus que sélectionner du bruit.
 À la place : pour chaque sortie `STAGNATION` réelle, regarder **ce que le prix a fait dans les 6 à
 24 h suivantes**. Si les tokens coupés remontent, la règle a tort. Dix déclenchements suffisent.
+
+## 19. 16/09 — FILTRE DE CHUTE sur la sortie STAGNATION (déployé)
+
+**Ce que la règle nue faisait de mal.** Sur les 51 trades qui dépassent 6 h (30 gagnants,
+21 perdants — noter au passage que **81 % des perdants dépassent 6 h contre 19 % des gagnants** :
+un trade qui vit plus de 6 h est 3 fois plus souvent perdant), elle coupait **24 des 30 gagnants**
+pour 18 des 21 perdants. Et sur le **premier tiers de l'historique**, période calme, elle
+n'attrapait **aucun perdant** et coupait 11 gagnants : elle ne faisait que coûter.
+
+**Ce qui sépare.** Mesure du pouvoir discriminant au moment du signal, 18 perdants contre
+24 gagnants coupés :
+
+| variable | AUC | perdants | gagnants |
+|---|---|---|---|
+| **chute sous le plus-haut** | **0,155** | **−32,9 %** | **−13,8 %** |
+| pente des 6 dernières h | 0,213 | −25,8 % | −11,7 % |
+| volatilité ATR14 | 0,764 | 8,7 % | 4,6 % |
+| MC à l'entrée | 0,257 | 5,9 M | 21,2 M |
+| pic LP atteint | 0,391 | 1,0 % | 2,0 % |
+| bougies rouges sur 24 | 0,563 | 14 | 14 |
+| âge de la position | 0,503 | 6,8 h | 6,8 h |
+
+**Le gagnant coupé à tort n'est pas tombé.** Mécanisme clair, pas un artefact de calendrier.
+
+**La règle :** ne fermer que si `realGain <= -STAGNATION_LP` (défaut **0,13**, réglable, 0 désactive).
+
+**Exprimé en LP, pas en chute de prix, et c'est important :** les deux sont mathématiquement
+équivalents (chute −20 % ≡ LP −14,2 %, pente 0,710) et donnent le même résultat (0,5598 contre
+0,5612), mais `realGain` est **lu en direct sur la chaîne**. Aucune dépendance aux bougies, dont on
+a vu le 16/09 qu'elles peuvent raccourcir sans prévenir quand les clés Birdeye s'épuisent.
+
+**Effet mesuré :**
+
+```
+                         SANS filtre          AVEC filtre
+  perdants touchés     18/21  +0,7387       17/21  +0,7037
+  gagnants touchés     24/30  -0,2237       10/30  -0,1439
+  plus gros gagnant touché   +5,3 % de LP          +2,9 % de LP
+  NET                        0,5150                0,5598
+```
+
+Le NET ne gagne que +0,045, sous le bruit — **on l'achète pour la réduction de surface**, pas pour
+la performance. Et le filtre est positif ou neutre sur **7 découpes sur 8** (période, régime de
+marché, established, durée ; seule exception durée ≥ 12 h à −0,027). Il corrige exactement la
+faiblesse de la règle : jours haussiers 15 gagnants coupés → 6, premier tiers 11 → 5.
+
+### CONTRE-HYPOTHÈSES TESTÉES
+
+**« Déclencher moins souvent suffit, peu importe lesquels. »** Tirage au hasard de 27 déclenchements
+parmi les 42 de la règle nue, **2000 tirages** : médiane 0,3365, 90e centile 0,4976, max 0,7059.
+**76 tirages sur 2000 font aussi bien → p = 0,038.** Le filtre choisit bien. (C'est le contrôle qui
+avait tué le RSI et l'EMA9 en section 18.)
+
+**« 20 % est un point de chance. »** Plateau large : −10 % 0,5414 · −12 % 0,5432 · −15 % 0,5318 ·
+−18 % 0,5253 · **−20 % 0,5598** · −22 % 0,5458 · −25 % 0,5114 · −30 % 0,4464.
+
+**Réserve honnête :** p = 0,038 passe mais n'écrase rien, et la première moitié chronologique de la
+règle reste faible. Ce qui emporte la décision est la combinaison : mécanisme évident + plateau
+large + surface d'erreur réduite de 40 %.

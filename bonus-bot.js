@@ -276,6 +276,13 @@ const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
 // armée. 0 désactive. Réglable sur Railway (STAGNATION_H) sans redéploiement — le balayage donne un
 // plateau de 2 h à 6 h et un effondrement au-delà de 7 h, donc ne jamais monter au-dessus de 6.
 const STAGNATION_H = parseFloat(process.env.STAGNATION_H || '6');
+// (2026-09-16) FILTRE DE CHUTE sur la sortie STAGNATION. Ne ferme que si le LP est déjà tombé d'au
+// moins ce montant. 0 désactive le filtre. Mesuré : le gagnant coupé à tort dérive à -14 % sous son
+// plus-haut quand le perdant est déjà à -33 % (AUC 0,155) — une position qui n'est pas tombée n'est
+// pas en danger. Exprimé en LP et non en chute de prix : les deux sont équivalents (chute -20 % de
+// prix ≡ LP -14,2 %, pente 0,710) mais `realGain` est lu en direct sur la chaîne, donc ni bougies,
+// ni approximation, ni dépendance à Birdeye.
+const STAGNATION_LP = parseFloat(process.env.STAGNATION_LP || '0.13');
 // PLANCHER RSI2 ÉLARGI À -3% (2026-08-28, idée user, mesuré sur les trajectoires LP réelles) ────────────
 // Le RSI2>90 non-armé est le filet qui sort les positions MOLLES avant qu'elles retombent. Il exigeait
 // `realGain > 0` : une fenêtre trop étroite, qui se referme dès que la position passe sous le pair.
@@ -1746,7 +1753,20 @@ async function scan() {
                 //    chute décélère, pas parce que le prix repart. Filtrer trierait à l'envers (NET +0,09).
                 //  · laisser 2 h de grâce aux « verts » — coûte 0,166 SOL sur les perdants pour 0,042
                 //    récupéré sur les gagnants, et la dégradation est monotone à 2 h, 4 h et 6 h.
-                if (!armed && STAGNATION_H > 0 && pcs && pcs.length > 8) {
+                //
+                // (2026-09-16, 2e passe) FILTRE DE CHUTE ajouté. Sur les 51 trades qui dépassent 6 h,
+                // la règle nue coupait 24 des 30 gagnants (80 %) pour 18 des 21 perdants. Le filtre
+                // ramène les gagnants touchés à 10 sur 30 (33 %) en gardant 17 perdants sur 18, et le
+                // plus gros gagnant jamais touché passe de +5,3 % à +2,9 % de LP.
+                // Il corrige la vraie faiblesse de la règle : sur le premier tiers (période calme) elle
+                // n'attrapait AUCUN perdant et coupait 11 gagnants — elle ne faisait que coûter ; sur
+                // les jours haussiers, 15 gagnants pour 7 perdants. Le filtre ramène ces 15 à 6.
+                // Contre-hypothèses testées : (1) « déclencher moins souvent suffit » — tirage au hasard
+                // de 27 parmi les 42, 2000 tirages, médiane 0,3365 contre 0,5598, p = 0,038 : le filtre
+                // choisit bien ; (2) « 20 % est un point de chance » — plateau de -10 % à -22 %, décrue
+                // seulement au-delà de -25 %.
+                if (!armed && STAGNATION_H > 0 && (STAGNATION_LP <= 0 || realGain <= -STAGNATION_LP)
+                    && pcs && pcs.length > 8) {
                     const ouvertMs = typeof pos.openedAt === 'string' ? Date.parse(pos.openedAt) : pos.openedAt;
                     const iEntree = pcs.findIndex(c => c[0] * 1000 >= ouvertMs);
                     if (iEntree >= 0 && pcs.length - iEntree > 4 * STAGNATION_H) {
@@ -1754,7 +1774,7 @@ async function scan() {
                         for (let i = iEntree + 2; i < pcs.length; i++) if (pcs[i][2] > hautMax) { hautMax = pcs[i][2]; iHaut = i; }
                         const depuisH = (pcs[pcs.length - 1][0] - pcs[iHaut][0]) / 3600;
                         if (depuisH >= STAGNATION_H) {
-                            await closePaper(tok, pos, px, `STAGNATION ${depuisH.toFixed(1)}h sans nouveau plus-haut (LP ${(realGain * 100).toFixed(1)}%, peak +${(pos.peakGain * 100).toFixed(1)}%)`);
+                            await closePaper(tok, pos, px, `STAGNATION ${depuisH.toFixed(1)}h sans nouveau plus-haut (LP ${(realGain * 100).toFixed(1)}% ≤ -${(STAGNATION_LP * 100).toFixed(0)}%, peak +${(pos.peakGain * 100).toFixed(1)}%)`);
                             continue;
                         }
                     }
