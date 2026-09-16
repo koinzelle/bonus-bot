@@ -1390,3 +1390,85 @@ mesuré jusque-là.
 
 **Réversible sans redéploiement :** `CHOP_INCONNU_OK=1` rétablit l'ancien comportement.
 **À surveiller :** le compteur `chop-NON-MESURABLE` dans `/status`, et le nombre d'entrées par jour.
+
+## 15. 16/09 — STAGNATION : 6 h sans nouveau plus-haut (déployé)
+
+**La porte qui manquait.** Rien n'arrêtait une position entre 0 % et −75 % de LP : le TRAIL exige
++6 % de pic, le RSI2 exige un signal qui ne vient pas toujours (Tulip est morte à −66,8 % sans
+jamais en produire un, ni en 5 min ni en 15 min), et le CUT PLANCHER n'agit qu'à −75 %.
+
+**La règle :** si le trail ne s'est **jamais armé** (pic LP < 6 %) et que le prix n'a pas fait de
+nouveau plus-haut depuis 6 h sur les bougies 15 m → fermeture. Un nouveau plus-haut remet le
+compteur à zéro. C'est la 3ᵉ porte d'EP (BOREDOM) exprimée en prix.
+
+**Mesuré** sur 455 trades fermés rejoués sur bougies 15 m :
+
+| | |
+|---|---|
+| perdants attrapés | **18 sur 27** → +0,73 SOL |
+| gagnants coupés | 24 sur 288 → −0,22 SOL |
+| pertes effacées | **41 %** |
+| gains sacrifiés | **3,2 %** |
+| rapport | **5 pour 1** · PnL +14 à +21 % |
+| placebo apparié (400 tirages) | **0 tirage** ne fait aussi bien |
+
+**La porte `!armed` fait tout le travail.** Les 18 perdants attrapés n'ont JAMAIS dépassé +6 % de
+pic, et le plus gros gagnant touché fait +5,3 % de LP. Sans cette porte, la règle coupait aussi
+6 gagnants armés à −16,7 % chacun (SOLCAT +12,1 %, TripleT +10,8 %). Au-dessus de +6 %, c'est le
+TRAIL qui commande.
+
+**Balayage du seuil** — plateau de 2 h à 6 h, effondrement après :
+
+```
+  2 h +0,5896 (84 décl.)   3 h +0,6397 (65)   4 h +0,5964 (56)   5 h +0,4648 (48)
+  6 h +0,5088 (42)   7 h +0,2976   8 h +0,2020   10 h +0,0303 ← SOUS le meilleur tirage au hasard
+```
+
+Le creux à 5 h, sous ses deux voisins, donne le bruit : ±0,08 SOL. 4 h attrape 2 perdants de plus
+en coupant 12 gagnants de plus — NET identique, surface d'erreur doublée. **6 h retenu.**
+`STAGNATION_H` réglable sur Railway ; **ne jamais monter au-dessus de 6**.
+
+### PIÈGE DE MÉTHODE — le contrefactuel doit être ancré sur le PIC
+
+La première version de ce backtest annonçait **+1,52 SOL et 66,7 % des pertes effacées**. Faux.
+Elle extrapolait à rebours depuis la SORTIE avec la pente prix→LP, sur des écarts de prix de 90 % :
+elle fabriquait du LP qui n'a jamais existé — **fone annoncé à +19,6 % de LP alors que son
+`peakGainPct` vaut +0,4 %**, soit au-dessus du maximum jamais atteint. Six trades sur dix-huit
+dans ce cas. Corrigé en partant du pic (LP **mesuré**) et en n'extrapolant que sur la chute qui
+suit : 66,7 % → **41 %**, PnL +39 % → **+21 %**. La conclusion tenait, le montant non.
+`lvHist` ne sauve pas la mise : tampon glissant de 40 lectures ≈ 6 minutes avant la fermeture.
+
+### TESTÉ ET REJETÉ le 16/09 — ne pas rouvrir
+
+**Filtrer sur le MACD** (ne couper que ceux dont l'histogramme s'enfonce) : **13 des 18 perdants
+ont un MACD qui REMONTE** au moment du signal. Sur un token effondré, l'histogramme remonte parce
+que la chute décélère, pas parce que le prix repart. Filtrer trierait à l'envers — NET +0,0944
+contre +0,5088. Cohérent avec l'AUC 0,46-0,53 du 14/09.
+
+**Laisser 2 h de grâce aux « verts »** : coûte 0,166 SOL sur les perdants pour 0,042 récupéré sur
+les gagnants. Dégradation **monotone** — 2 h +0,2899, 4 h +0,1108, 6 h +0,0844.
+
+**« 3 sommets consécutifs plus bas »** (le « rebonds de plus en plus faibles » d'EP) fonctionne
+aussi (NET +1,1315 en version non corrigée) mais **34 de ses 38 déclenchements sont les mêmes
+trades** que la règle des 6 h. L'ajouter attrape les mêmes 18 perdants et touche 4 gagnants de
+plus : A ou B donne +1,3817 contre +1,3953 pour A seule. Redondante, écartée.
+
+## 16. 16/09 — Le 7ᵉ slot prend le reliquat (déployé)
+
+**Problème.** Les pertes de la mi-septembre ont réduit le wallet : la 7ᵉ position n'était plus
+finançable en taille pleine, et la règle « MISE PLEINE OU RIEN » du 05/09 laissait donc le slot
+vide en permanence — alors que ~25 candidats qualifiés sont refusés chaque jour (cf. section 12).
+
+**Changement.** Les 6 premières positions gardent la mise pleine ou rien. **Seule la dernière**
+accepte ce qui reste (`dernierSlot` passé depuis `bonus-bot.js` : `liveOpenCount === MAX_LIVE_POSITIONS - 1`).
+
+**Le plancher est mesuré, pas choisi.** Sur 455 trades, LP moyen 3,39 %, aller-retour 0,0046 SOL :
+
+```
+  0,10 SOL → -1,21 mSOL (50 % de trades rentables)      0,15 SOL → +0,48 mSOL (60 %)
+  0,12 SOL → -0,53 mSOL (55 %)                          0,28 SOL → +4,89 mSOL (70 %)
+  seuil de rentabilité : 0,1357 SOL
+```
+
+`MIN_POSITION_SOL` par défaut **0,13**, réglable sur Railway. En dessous, le slot vide vaut mieux
+qu'une position qui perd en moyenne. Log à surveiller : `🔻 DERNIER SLOT: mise réduite à …`.

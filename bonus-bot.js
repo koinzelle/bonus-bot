@@ -272,6 +272,10 @@ const TAXED_MIN_BPS = parseInt(process.env.TAXED_MIN_BPS || '200', 10);
 const ONESIDED_TOP_BUFFER = parseInt(process.env.ONESIDED_TOP_BUFFER || '3', 10);      // bins au-dessus de l'entrée avant de banker
 const TP_PCT = 0.06;       // armement du trail (RSI2 scalpe au top en dessous, trail au-dessus)
 const TRAIL = 0.01;        // trail 1% sous le peak une fois armé
+// (2026-09-16) STAGNATION : heures sans nouveau plus-haut de PRIX avant de fermer une position JAMAIS
+// armée. 0 désactive. Réglable sur Railway (STAGNATION_H) sans redéploiement — le balayage donne un
+// plateau de 2 h à 6 h et un effondrement au-delà de 7 h, donc ne jamais monter au-dessus de 6.
+const STAGNATION_H = parseFloat(process.env.STAGNATION_H || '6');
 // PLANCHER RSI2 ÉLARGI À -3% (2026-08-28, idée user, mesuré sur les trajectoires LP réelles) ────────────
 // Le RSI2>90 non-armé est le filet qui sort les positions MOLLES avant qu'elles retombent. Il exigeait
 // `realGain > 0` : une fenêtre trop étroite, qui se referme dès que la position passe sous le pair.
@@ -1705,6 +1709,41 @@ async function scan() {
                     continue;
                 }
 
+                // ── (2026-09-16) STAGNATION — la 3e porte d'EP (BOREDOM), exprimée en prix ────────────
+                // Une position qui ne fait plus de nouveau plus-haut depuis 6 h ne va nulle part : on ferme.
+                // Mesuré sur 455 trades fermés rejoués sur bougies 15m, contrefactuel ANCRÉ SUR LE PIC
+                // (`peakGainPct`, LP réellement mesuré) et jamais extrapolé depuis la sortie — la première
+                // version de ce backtest annonçait pour fone un LP de +19,6 % alors que son pic valait +0,4 %,
+                // soit un LP que la position n'a jamais atteint. Chiffres après correction :
+                //   18 des 27 perdants attrapés  +0,73 SOL   ·   24 gagnants coupés  -0,22 SOL
+                //   → 41 % des pertes effacées pour 3,2 % des gains, rapport 5 pour 1, PnL +14 à +21 %.
+                // Placebo apparié (même fréquence, instants tirés au hasard, 400 tirages) : 0 tirage n'y arrive.
+                //
+                // La porte `!armed` fait tout le travail : les 18 perdants attrapés n'ont JAMAIS dépassé
+                // +6 % de pic, et le plus gros gagnant touché fait +5,3 % de LP. Au-dessus de +6 % c'est le
+                // TRAIL qui commande et cette règle n'a rien à y faire — les 6 gagnants armés qu'elle
+                // coupait sans cette porte coûtaient -16,7 % chacun.
+                //
+                // Deux variantes TESTÉES ET REJETÉES le 16/09, ne pas les rouvrir :
+                //  · filtrer sur le MACD (ne couper que les rouges) — 13 des 18 perdants ont un histogramme
+                //    qui REMONTE au moment du signal. Sur un token effondré le MACD remonte parce que la
+                //    chute décélère, pas parce que le prix repart. Filtrer trierait à l'envers (NET +0,09).
+                //  · laisser 2 h de grâce aux « verts » — coûte 0,166 SOL sur les perdants pour 0,042
+                //    récupéré sur les gagnants, et la dégradation est monotone à 2 h, 4 h et 6 h.
+                if (!armed && STAGNATION_H > 0 && pcs && pcs.length > 8) {
+                    const ouvertMs = typeof pos.openedAt === 'string' ? Date.parse(pos.openedAt) : pos.openedAt;
+                    const iEntree = pcs.findIndex(c => c[0] * 1000 >= ouvertMs);
+                    if (iEntree >= 0 && pcs.length - iEntree > 4 * STAGNATION_H) {
+                        let hautMax = -Infinity, iHaut = iEntree;
+                        for (let i = iEntree + 2; i < pcs.length; i++) if (pcs[i][2] > hautMax) { hautMax = pcs[i][2]; iHaut = i; }
+                        const depuisH = (pcs[pcs.length - 1][0] - pcs[iHaut][0]) / 3600;
+                        if (depuisH >= STAGNATION_H) {
+                            await closePaper(tok, pos, px, `STAGNATION ${depuisH.toFixed(1)}h sans nouveau plus-haut (LP ${(realGain * 100).toFixed(1)}%, peak +${(pos.peakGain * 100).toFixed(1)}%)`);
+                            continue;
+                        }
+                    }
+                }
+
                 // RSI2>90 = scalp au top quand pas encore armé → reste sur bougie CLÔTURÉE (le RSI en a besoin).
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
                 if ((!armed || pos._awaitBounce) && candleAfterEntry) {
@@ -2142,7 +2181,7 @@ async function scan() {
                             // se calculait sur le seul cash libre et fondait à chaque ouverture (2,7× d'écart
                             // entre la 1re et la 8e position, pour des setups équivalents).
                             const deployedSol = Object.values(state.positions).reduce((x, q) => x + ((q.live && q.live.openValueSol) || 0), 0);
-                            const lp = await live.openBidAsk(poolAddr, deployedSol, oneSided);
+                            const lp = await live.openBidAsk(poolAddr, deployedSol, oneSided, liveOpenCount === MAX_LIVE_POSITIONS - 1);   // (2026-09-16) dernier slot → mise variable
                             if (lp) { lp.transferFeeBps = feeBpsEntree; state.positions[tok].live = lp; save(); tg(`${msg}\n🟢 RÉEL ouvert: ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); } // notif Telegram = uniquement l'entrée RÉELLE (avec tous les détails)
                         } else { console.log('  ⚠️ LIVE: aucune pool DLMM viable — trade papier seulement'); } // pas de notif Telegram pour le papier
                     } catch (e) { console.log(`  ⚠️ LIVE open échoué: ${String(e.message).slice(0, 80)} — papier seulement`); tg(`⚠️ LIVE ${w.symbol}: open échoué (${String(e.message).slice(0, 50)})`); }

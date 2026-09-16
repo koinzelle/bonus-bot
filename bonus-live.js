@@ -88,6 +88,14 @@ console.log(`  🔑 Wallet live: ${keypair.publicKey.toString()}`);
 // plafond absolu (POSITION_SIZE_SOL comme cap dur optionnel) borde le risque.
 const POSITION_SIZE_PCT = parseFloat(process.env.POSITION_SIZE_PCT || '2'); // % du capital par position
 const POSITION_SIZE_MAX_SOL = parseFloat(process.env.POSITION_SIZE_SOL || '999'); // plafond dur optionnel
+// (2026-09-16, demande user) DERNIER SLOT À TAILLE VARIABLE. Les pertes de la mi-septembre ont réduit le
+// wallet : la 7e position n'était plus finançable en taille pleine, donc le slot restait vide en permanence.
+// Les 6 premières gardent la règle « MISE PLEINE OU RIEN » du 05/09 — elle reste juste, une mise bridée
+// occupe un slot et des lectures RPC pour une fraction du gain. SEULE la dernière accepte le reliquat.
+// Le plancher est mesuré, pas choisi : sur 455 trades le LP moyen est de 3,39 % et l'aller-retour coûte
+// 0,0046 SOL, donc une position n'est rentable qu'à partir de 0,1357 SOL (à 0,10 elle perd 1,2 mSOL en
+// moyenne, à 0,15 elle gagne 0,5 mSOL). En dessous du plancher on préfère le slot vide.
+const MIN_POSITION_SOL = parseFloat(process.env.MIN_POSITION_SOL || '0.13');
 const BIN_RANGE = 34;              // ±34 bins = 69 bins — spec canonique EP (screenshot Meteora UI 19/07)
 const TX_RESERVE_SOL = 0.02;      // gas
 // Rent du compte de position Meteora (~0.057 SOL) : RÉCUPÉRÉ au close (shouldClaimAndClose) — ce n'est
@@ -388,7 +396,7 @@ async function sweepOrphans() {
 let _cashShortUntil = 0;
 // (2026-09-11) `oneSided` : pose la position ENTIÈREMENT EN SOL sous le prix, sans swap ni dépôt
 // de token — réservé aux mints à frais de transfert (voir ONESIDED_FEE_BPS dans bonus-bot.js).
-async function openBidAsk(poolAddress, deployedSol, oneSided = false) {
+async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlot = false) {
     if (Date.now() < _cashShortUntil) return null;   // cash insuffisant récemment constaté : on ne retente pas
     const balBefore = await solBalance();
     const balSol = balBefore / LAMPORTS_PER_SOL;
@@ -413,13 +421,20 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false) {
     // pleine, pour le quart du gain. Mesuré le 05/09 : 8 positions = 0,913 SOL au travail contre
     // 0,48 SOL de rent, soit 66 % seulement du capital engagé qui produit quelque chose.
     const dispo = balSol - RENT_RESERVE_SOL - TX_RESERVE_SOL;
-    const amountSol = cible;
-    console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (cible ${cible.toFixed(3)} | cash libre ${balSol.toFixed(3)} | dispo ${dispo.toFixed(3)} | capital ${capitalSol.toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
+    // (2026-09-16) Les 6 premières positions : mise PLEINE OU RIEN. La 7e (dernierSlot) : ce qui reste,
+    // tant que ça dépasse MIN_POSITION_SOL — en dessous le slot vide vaut mieux qu'une position à perte.
+    let amountSol = cible;
     if (dispo < cible) {
-        _cashShortUntil = Date.now() + 5 * 60 * 1000;   // stoppe la boucle de tentatives jusqu'au prochain close
-        console.log(`❌ cash libre insuffisant pour une mise PLEINE (dispo ${dispo.toFixed(4)} < ${cible.toFixed(3)}) — AUCUNE ouverture partielle, on attend un close`);
-        return null;
+        if (dernierSlot && dispo >= MIN_POSITION_SOL) {
+            amountSol = dispo;
+            console.log(`  🔻 DERNIER SLOT: mise réduite à ${amountSol.toFixed(4)} SOL (cible ${cible.toFixed(3)} non finançable, plancher ${MIN_POSITION_SOL})`);
+        } else {
+            _cashShortUntil = Date.now() + 5 * 60 * 1000;   // stoppe la boucle de tentatives jusqu'au prochain close
+            console.log(`❌ cash libre insuffisant (dispo ${dispo.toFixed(4)} < ${(dernierSlot ? MIN_POSITION_SOL : cible).toFixed(3)}${dernierSlot ? ' = plancher du dernier slot' : ' = mise pleine'}) — on attend un close`);
+            return null;
+        }
     }
+    console.log(`  💵 Mise LP: ${amountSol.toFixed(4)} SOL (cible ${cible.toFixed(3)} | cash libre ${balSol.toFixed(3)} | dispo ${dispo.toFixed(3)} | capital ${capitalSol.toFixed(3)}) + rent ~${RENT_RESERVE_SOL} SOL (récupéré au close)`);
 
     const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
     const xMint = dlmmPool.tokenX.publicKey.toString();
