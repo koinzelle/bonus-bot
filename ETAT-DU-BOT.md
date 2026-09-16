@@ -1472,3 +1472,30 @@ accepte ce qui reste (`dernierSlot` passé depuis `bonus-bot.js` : `liveOpenCoun
 
 `MIN_POSITION_SOL` par défaut **0,13**, réglable sur Railway. En dessous, le slot vide vaut mieux
 qu'une position qui perd en moyenne. Log à surveiller : `🔻 DERNIER SLOT: mise réduite à …`.
+
+## 17. 16/09 — BUG CORRIGÉ : l'ombre « objectif de prix » cassait le scan (221 fois)
+
+**Ce que j'ai cassé le 14/09.** L'ombre `🎯 [OMBRE]` (section 10, commit `b62b08c`) a été insérée
+dans la boucle de scan **avant** la déclaration `let realGain` qui se trouve ~20 lignes plus bas.
+Lire `realGain` en zone morte temporelle lève :
+
+```
+⚠️ scan tick (survécu): ReferenceError: Cannot access 'realGain' before initialization
+    at scan (/app/bonus-bot.js:1579:44)
+```
+
+**Le garde-fou du scan attrape l'exception et ABANDONNE LE TICK ENTIER.** Donc à chaque
+déclenchement, aucune position n'était évaluée ce tour-là — trail des positions armées compris.
+
+**Mesuré dans les logs persistés : 221 occurrences entre le 14/09 13:57 et le 16/09 19:24.**
+La condition étant `gain >= 0.15`, ça ne cassait que quand une position dépassait **+15 % de prix** —
+exactement les moments où le trail compte le plus. C'est aussi ce qui explique l'intermittence :
+invisible tant qu'aucune position ne montait fort.
+
+**Correction :** le bloc est descendu juste après `pos.peakGain = Math.max(…, realGain)`, où `gain`
+et `realGain` ont tous deux leur valeur définitive. `px` était déjà déclaré (ligne 1563), il n'était
+pas en cause.
+
+**Leçon de méthode :** toute ombre ajoutée dans la boucle de scan doit être placée APRÈS les
+variables qu'elle lit, et son ajout doit être **vérifié dans les logs pendant 24 h**. Celle-ci a
+tourné deux jours en cassant un tick sur N sans que personne ne regarde `grep -i error`.

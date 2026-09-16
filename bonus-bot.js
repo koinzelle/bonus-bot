@@ -1578,13 +1578,10 @@ async function scan() {
                 // On N'AGIT PAS : le backtest convertit des prix en LP via un coefficient moyen (0,41)
                 // qui est une mesure, pas une constante. L'ombre enregistre le LP RÉEL au moment où
                 // l'objectif est touché ; à la fermeture on compare les deux vrais LP. Coût nul.
-                for (const cible of [0.15, 0.25]) {
-                    const cle = '_shadowTP' + (cible * 100);
-                    if (!pos[cle] && gain >= cible) {
-                        pos[cle] = { lp: +(realGain * 100).toFixed(2), px, t: Date.now() };
-                        console.log(`  🎯 [OMBRE] ${pos.symbol}: prix +${(gain * 100).toFixed(1)}% (objectif +${(cible * 100).toFixed(0)}%) — on aurait fermé ICI à LP ${(realGain * 100).toFixed(1)}%`);
-                    }
-                }
+                // (2026-09-16) Le code de cette ombre est DESCENDU après la déclaration de `realGain`
+                // (voir « OMBRE objectif de prix » plus bas) : il était placé ici, 20 lignes AVANT le
+                // `let realGain`, et lisait donc une variable en zone morte temporelle. Chaque position
+                // qui franchissait +15 % de prix faisait éclater le tick de scan entier.
                 // CUT hors-range ADAPTATIF (2026-08-11, cas Jimothy coupé puis pump +30min) : gros coin établi
                 // (MC≥3M) rug rarement + rebondit (cf Remus) → -50% de marge ; petit volatil peut rug → -35%.
                 // (seuils RANGE_DOWN/TP_PCT/TRAIL = constantes de module, source unique)
@@ -1691,6 +1688,25 @@ async function scan() {
                 // - Runner : dès +6% LP (armé), on TRAIL 1% → sort quand ça retombe 1% sous le peak (ride le
                 //   pump, ex JLY +12%). - Petit bounce pas encore armé : RSI2>90 + profit (scalp). Sur realGain.
                 pos.peakGain = Math.max(pos.peakGain || 0, realGain);
+
+                // ── OMBRE « objectif de prix » (déplacée ici le 2026-09-16) ──────────────────────────
+                // BUG CORRIGÉ : ce bloc était 120 lignes plus haut, AVANT `let realGain` (ligne ~1601).
+                // Lire `realGain` en zone morte temporelle levait `ReferenceError: Cannot access
+                // 'realGain' before initialization`, attrapé par le garde-fou du scan qui journalise
+                // « scan tick (survécu) » et ABANDONNE LE TICK ENTIER. Mesuré dans les logs persistés :
+                // 221 occurrences entre le 14/09 13:57 et le 16/09 19:24 — donc 221 tours de scan où
+                // AUCUNE position n'a été évaluée, trail des positions armées compris. Et comme la
+                // condition est `gain >= 0.15`, ça ne cassait que lorsqu'une position dépassait +15 %
+                // de prix : exactement les moments où le trail compte le plus.
+                // Leçon : toute ombre ajoutée dans la boucle de scan doit être placée APRÈS les
+                // variables qu'elle lit, et son ajout vérifié dans les logs pendant 24 h.
+                for (const cible of [0.15, 0.25]) {
+                    const cle = '_shadowTP' + (cible * 100);
+                    if (!pos[cle] && gain >= cible) {
+                        pos[cle] = { lp: +(realGain * 100).toFixed(2), px, t: Date.now() };
+                        console.log(`  🎯 [OMBRE] ${pos.symbol}: prix +${(gain * 100).toFixed(1)}% (objectif +${(cible * 100).toFixed(0)}%) — on aurait fermé ICI à LP ${(realGain * 100).toFixed(1)}%`);
+                    }
+                }
                 const armed = pos.peakGain >= TP_PCT;   // +6% LP atteint
 
                 // LOG position par scan (2026-08-09) : fin du silence de bot 2 + audit sortie. On affiche TOUT
