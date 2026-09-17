@@ -6,6 +6,32 @@ surtout pour ne pas retenter ce qui a déjà été invalidé.
 
 ---
 
+## ⏰ À FAIRE TOUS LES DEUX JOURS — analyse des fermetures STAGNATION
+
+**Demandé par le user le 18/09. À déclencher sans qu'il ait à le redemander.**
+
+**Pourquoi c'est urgent et pas reportable :** GeckoTerminal ne renvoie que **200 bougies de 15 min,
+soit 50 h**. Le trajet du prix APRÈS une coupe n'est donc reconstituable que pendant deux jours.
+Passé ce délai, la mesure est **définitivement perdue** — et c'est la seule façon de savoir si la
+règle STAGNATION coupe trop tôt.
+
+**Quoi faire :** pour chaque fermeture dont `reason` contient `STAGNATION` et qui a moins de 48 h,
+mesurer le prix à +1 h / +3 h / +6 h / +12 h / +24 h après la coupe, plus les extrêmes. Script de
+référence : `/tmp/apresstag.js` (à réécrire s'il a disparu). Lecture : **négatif = la coupe était
+justifiée, positif = on a coupé trop tôt.**
+
+Relever en même temps les champs persistés depuis le 17-18/09 — `feesSol`, `feeVel`, `feeVel1h`,
+`feeHours`, `tvlEntry`, `tvlExit`, `tvlVarPct`, `volTvl*`, `tvlMin/Max`, `tvlPoints` — et tester les
+**deux hypothèses ouvertes** : faut-il épargner les positions à forte vélocité de frais, et un
+vol/TVL élevé annonce-t-il l'effondrement ?
+
+**Accumuler les relevés en section 20**, ne pas les laisser dans le fil de conversation.
+
+**Discipline :** AUC de chaque variable AVANT de chercher une règle. Dix champs neufs et peu de
+trades : on trouvera toujours quelque chose, et ce sera du bruit.
+
+---
+
 ## 1. Chiffres de référence
 
 - **616 trades** depuis le 22/07 (529 avec `pnlSolLive`, **87 à `null`** — résidu du bug d'orphelines).
