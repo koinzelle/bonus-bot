@@ -1753,3 +1753,77 @@ s'accumule.
 une API HTTP publique que le bot interroge déjà à chaque découverte.
 
 La ligne `📊` affiche désormais `💧203k v/t34.6 1h-12%` à côté de `💰`.
+
+## 21. 18/09 — POINT SUR LES OMBRES : trois questions tranchées par les données réelles
+
+### ⚠️ LA LEÇON QUI COMPTE PLUS QUE LES TROIS OMBRES
+
+**Trois backtests appuyés sur la fonction de transfert prix→LP ont été démentis par les données
+réelles, tous dans le MÊME sens : le modèle surévalue systématiquement les sorties précoces.**
+
+| question | ce que disait le backtest | ce que disent les données réelles |
+|---|---|---|
+| plancher RSI2 à −20 % | **+0,2740 SOL** (03/09) | **−0,3568 SOL** sur 117 trades |
+| objectif de prix +15 % | **+90 pt de LP** (14/09) | **−79,9 pt** sur 23 comparaisons |
+| objectif de prix +25 % | **+67 pt de LP** (14/09) | **−15,9 pt** sur 12 comparaisons |
+| contrefactuel STAGNATION | +1,52 SOL (1re version) | +0,93 SOL après ancrage sur le pic |
+
+**Règle à appliquer désormais :** tout backtest qui recommande de **sortir plus tôt** et qui repose
+sur une conversion prix→LP doit être considéré comme **faux jusqu'à preuve par ombre réelle**. La
+raison est structurelle : la fonction ignore les frais encaissés pendant l'attente, et 16,2 % des
+trades ont prix↓ avec LP↑ (cf. section transfert). Le coût de cette erreur a été trois déploiements
+évités de justesse, et une journée entière de tests le 16/09.
+
+### 1. Plancher RSI2 — TRANCHÉ, il reste à 0
+
+117 trades où le plancher a refusé une sortie RSI2 (`rsiFloorLp` contre `lpPct`, deux vraies valeurs,
+aucun modèle) :
+
+```
+  sortir au signal aurait été MEILLEUR :  18  (15 %)
+  sortir au signal aurait été PIRE     :  99  (85 %)
+  LP médian au signal -3,43 %  ·  LP médian réel +0,85 %  ·  bilan -0,3568 SOL
+```
+
+L'arbitrage en clair : les 8 plus gros écarts en faveur du signal (PURPS +45 pt, OTC +41,7, EMBER
++36,9…) valent ~+0,81 SOL sur les catastrophes, mais les 99 cas ordinaires coûtent ~−1,17 SOL.
+**Garder la position gagne de 0,36 SOL.** Le revert du 29/08 après BULLSHIT avait raison.
+
+### 2. Objectif de prix (ombre 🎯) — TRANCHÉ, le trail gagne
+
+```
+  objectif +15 %   23 cas   l'objectif gagne 5 fois (22 %)   somme -79,9 pt
+  objectif +25 %   12 cas   l'objectif gagne 5 fois (42 %)   somme -15,9 pt
+```
+
+Pires cas : wifout objectif 2,2 % contre réel 17,1 % (**le trail gagne 14,9 pt**), biketyson 5,5 %
+contre 15,1 % (+9,6 pt). Le trail laisse courir, et c'est ce qu'il faut. **Ombre à retirer.**
+Note : elle n'a produit de données qu'après le 16/09 21:30 — le bug de zone morte (section 17) l'a
+rendue muette du 14 au 16/09, en plus de casser un tick de scan sur N.
+
+### 3. Âge de l'ATH à l'entrée — TRANCHÉ sur 1 029 trades, aucun pouvoir prédictif
+
+```
+  <2h    n=126   77 % de gagnants   +4,4 %
+  2-5h   n=129   74 %               +4,3 %
+  5-12h  n=165   76 %               +6,6 %
+  >12h   n=609   77 %               +4,4 %
+```
+
+Plat. **Et ça RÉFUTE la note du 24/08** qui donnait « ATH frais <3 h = meilleur cohort (+7,7 %),
+stale >10 h = net −42 % (vrai levier) » : sur 609 trades, les stale >12 h font +4,4 % avec 77 % de
+gagnants. L'ancienne conclusion venait d'un échantillon trop petit. Question fermée.
+
+### Ombres encore en collecte (non jugeables)
+
+`clusters` 4023 · `atrEntry` 6346 · `downtrend` 4362 · `rebondRSI80` 1236 · `profil` 1078 ·
+`dip25` 999 · `feesSeuil` 476 · `patternKO` 338 · `athEpuise` 193 (validé le 02/09, ne pas lever).
+
+### Confirmés par le volume, rien à faire
+
+**downtrend vs range** (951 trades) : downtrend 79 % de gagnants et +6,6 % contre range 76 % et
++4,5 %. Le downtrend est MEILLEUR — ne jamais le gater, c'est définitif.
+**Taille** : petits MC 78 % / +5,5 % contre gros MC≥3M 76 % / +4,2 %. Écart faible.
+**Stacking par profondeur de dip** : gradient monotone spectaculaire (97 % → 80 % → 37 % → 13 % de
+gagnants) mais **circulaire** — une position qui a plongé de 30 % finit mal par construction. Aucune
+valeur prédictive à l'entrée.
