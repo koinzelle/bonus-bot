@@ -1609,3 +1609,64 @@ avait tué le RSI et l'EMA9 en section 18.)
 **Réserve honnête :** p = 0,038 passe mais n'écrase rien, et la première moitié chronologique de la
 règle reste faible. Ce qui emporte la décision est la combinaison : mécanisme évident + plateau
 large + surface d'erreur réduite de 40 %.
+
+## 20. 17/09 — La vélocité de frais devient persistante (déployé)
+
+**Le manque.** `_feeVel` était calculé et affiché dans la ligne `📊` depuis le 14/09, mais
+**jamais enregistré**. Il n'existait que dans le tampon de logs, effacé à chaque déploiement.
+Le seul champ de frais dans un trade est `feeTvl`, une métrique de **pool à l'entrée** — pas la
+productivité de la position. Conséquence : aucune règle de frais n'était backtestable.
+
+**Le cas qui l'a montré** (17/09) — deux fermetures STAGNATION à des LP voisins :
+
+```
+  wifout    LP -17,4 %   23,05 mSOL de frais   3,45 mSOL/h   paie son aller-retour en  1 h
+  TripleT   LP -28,3 %    8,43 mSOL            0,09 mSOL/h   paie son aller-retour en 49 h
+```
+
+Le bot ne faisait **aucune différence entre les deux**, et l'information disparaissait à la
+fermeture. Or c'est exactement la distinction que fait la porte BOREDOM d'EP : *« a position that
+is not earning its keep in fees »*.
+
+**Ce qui est déployé.** Trois choses :
+
+1. **Une série écrite à chaque scan** — `pos._feeHist`, échantillonnée toutes les 10 min (le scan
+   tourne toutes les 10 s), plafonnée à 200 points ≈ 33 h. Elle survit aux redéploiements :
+   `save()` sérialise l'état entier sans filtre, et la ligne de nettoyage au démarrage (383) ne
+   touche pas `_feeHist`.
+2. **`_feeVel1h`** — la vélocité sur la **dernière heure glissante**, affichée dans la ligne `📊`
+   à côté de la moyenne. C'est elle qui répond à « gagne-t-elle ENCORE sa vie ? » : une position
+   qui a bien payé six heures puis s'est éteinte garde une belle moyenne alors qu'elle est morte.
+3. **Quatre champs persistés dans le trade** : `feesSol`, `feeVel` (vie entière), `feeVel1h`,
+   `feeHours` (heures pour rembourser un aller-retour de 0,0046 SOL).
+
+**Le chiffre est fiable** : le bot ne réclame les frais qu'à la fermeture (`shouldClaimAndClose`),
+donc `_fees` est bien le total de la vie de la position et non un solde partiel.
+
+### Première mesure, à confirmer — NE PAS en faire une règle pour l'instant
+
+Extraction manuelle des logs, **21 fermetures** avec une lecture de vélocité :
+
+| | n | vélocité médiane | frais médians |
+|---|---|---|---|
+| gagnants | 9 | **3,17 mSOL/h** | 26,81 mSOL |
+| perdants | 12 | **1,73 mSOL/h** | 16,71 mSOL |
+
+**AUC 0,759** — de loin la variable la plus discriminante mesurée jusqu'ici (MACD et EMA : 0,46-0,53).
+Par tranche : sous 0,5 mSOL/h, 100 % de perdants ; au-dessus de 3 mSOL/h, 17 %.
+
+**Deux réserves qui interdisent d'agir.** n = 21. Et surtout un **risque de causalité inversée** :
+un gagnant sort en TRAIL après un mouvement qui génère beaucoup de frais, un perdant reste assis
+pendant que les siens s'éteignent — la vélocité pourrait être la **conséquence** de l'issue plutôt
+que son prédicteur. Il faut 100+ trades avec les champs persistés pour trancher.
+
+**Rappel d'une conclusion du 14/09 qui reste valable** : « hors range par le bas » **est** la
+vélocité de frais nulle (100 % token, plus aucun frais encaissé), et c'est un test **exact** que le
+bot fait déjà — un seuil sur la vélocité n'en est qu'un proxy bruité.
+
+### Question ouverte posée par le user le 17/09
+
+Faut-il **épargner de la sortie STAGNATION les positions qui paient bien** ? Trois des cinq
+premières fermetures STAGNATION portaient sur des positions remboursant leur aller-retour en 1 à
+3 h (wifout 3,45 mSOL/h était dans le décile haut de la journée). À rejuger quand les champs
+persistés auront produit 30 à 40 déclenchements.
