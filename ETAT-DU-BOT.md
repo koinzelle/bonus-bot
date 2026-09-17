@@ -1670,3 +1670,38 @@ Faut-il **épargner de la sortie STAGNATION les positions qui paient bien** ? Tr
 premières fermetures STAGNATION portaient sur des positions remboursant leur aller-retour en 1 à
 3 h (wifout 3,45 mSOL/h était dans le décile haut de la journée). À rejuger quand les champs
 persistés auront produit 30 à 40 déclenchements.
+
+### Complément du 18/09 — la liquidité de la pool est enregistrée elle aussi
+
+**La piste** (user, 18/09) : les gens ont-ils retiré leur liquidité avant que ça tourne mal ?
+Mesure sur les 5 premières fermetures STAGNATION, liquidité **actuelle** DexScreener :
+
+```
+  token      LP coupe   feeTvl entrée │ liquidité    vol 24 h    vol/TVL   issue
+  ELON        -33,9 %      26,4 %     │   203 793   7 051 916     34,6    a CONTINUÉ à chuter (-12 % à 6 h)
+  ALLINU      -13,1 %      18,9 %     │   553 624   2 100 870      3,8    est REPARTI (+26 % à 6 h)
+  wifout      -17,4 %      23,2 %     │   154 365   2 768 565     17,9    trop récent
+  KNOTS        +0,7 %      14,4 %     │ 1 086 998   1 195 900      1,1    trop récent
+  TripleT     -28,3 %       6,5 %     │   536 842     353 745      0,7    plus de bougies (token mort)
+```
+
+Ce n'est pas « la liquidité a fui », c'est plus précis : **ELON brassait 34 fois sa propre liquidité
+en 24 h dans une pool de 200 k$**. Et c'est ce qui explique pourquoi la vélocité de frais ne séparait
+pas ALLINU (1,68 mSOL/h, reparti) d'ELON (1,84 mSOL/h, effondré) : ELON générait bien des frais,
+mais par un **churn violent dans une pool trop mince**.
+
+**Aucun historique de TVL n'existe** — ni chez nous, ni chez DexScreener, ni chez GeckoTerminal, qui
+ne donnent que la liquidité courante. D'où l'ajout : `tvlEntry` / `vol24hEntry` posés à l'ouverture
+depuis `w.metPools` (donnée déjà en mémoire, coût nul), `tvlExit` / `vol24hExit` lus à la fermeture
+par **un** appel `dexInfo`, plus les dérivés `tvlVarPct`, `volTvlEntry`, `volTvlExit`.
+
+**Zéro appel Helius ajouté** : DexScreener est une API HTTP publique, sans rapport avec le RPC Solana.
+Le seul coût est un appel DexScreener par fermeture, ~15/jour, et il est **non bloquant** (try/catch) —
+une mesure ne doit jamais pouvoir faire échouer une fermeture.
+
+### Contrainte de méthode découverte le 18/09
+
+**GeckoTerminal ne renvoie que 200 bougies de 15 min, soit 50 h.** Le trajet du prix APRÈS une coupe
+n'est donc reconstituable que pendant deux jours. Cette mesure doit être relancée tous les 2-3 jours,
+pas en fin de mois. Premier relevé : ALLINU +26 % à 6 h (coupé trop tôt), ELON −12 % à 6 h (coupe
+justifiée) — un partout sur deux cas exploitables.

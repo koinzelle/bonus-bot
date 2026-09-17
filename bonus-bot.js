@@ -2181,6 +2181,16 @@ async function scan() {
                 const athAgeHr = athAgeH != null ? +athAgeH.toFixed(1) : null;
                 state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
                     // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
+                    // (2026-09-18) INSTANTANÉ DE LIQUIDITÉ À L'ENTRÉE. Piste ouverte par le user le 18/09 :
+                    // sur les 5 premières fermetures STAGNATION, ELON (qui a continué de chuter) brassait
+                    // 34 fois sa propre liquidité en 24 h dans une pool de 200 k$, quand ALLINU (qui est
+                    // reparti +26 %) tournait à 3,8. La vélocité de frais ne séparait PAS ces deux cas —
+                    // ELON générait bien des frais, mais par un churn violent dans une pool trop mince.
+                    // Aucun historique de TVL n'existe (ni chez nous, ni chez DexScreener ou GeckoTerminal) :
+                    // il faut donc commencer à le garder. Coût nul, la donnée est déjà dans `w.metPools`.
+                    tvlEntry: (() => { const m = (w.metPools || []).slice().sort((x, y) => (y.tvl || 0) - (x.tvl || 0))[0];
+                                       return m && m.tvl ? Math.round(m.tvl) : null; })(),
+                    vol24hEntry: w.vol != null ? Math.round(w.vol) : null,
                     dumpDepthPct: pInfo.dumpDepthPct ?? null, entryMcK: Math.round(curMc / 1000), trueAthMc: Math.round(trueAth * w.supply), pctOfTrueAth: trueAth > 0 ? +((ath / trueAth) * 100).toFixed(0) : null, vol24hK: w.vol ? Math.round(w.vol / 1000) : null,
                     athBreaks: w.athBreaks || 0, feeTvl: +feeTvl.toFixed(1),  // (2026-08-17) analyse cap-ATH/fees par trade sans reconstruire
                     // (2026-08-30) La SuperTrend était calculée à l'entrée puis JETÉE — il fallait la
@@ -2414,6 +2424,19 @@ async function closePaper(tok, pos, exitPrice, reason) {
     // (seuls 8% des trades ont les deux égaux). On stocke désormais le LP et la mise explicitement.
     const liveOpenVal = pos.live?.openValueSol;
     const livePct = (pnlSolLive != null && liveOpenVal) ? (pnlSolLive / liveOpenVal) * 100 : null;
+
+    // (2026-09-18) INSTANTANÉ DE LIQUIDITÉ À LA FERMETURE — un seul appel, ~15/jour, et JAMAIS bloquant :
+    // une mesure ne doit pas pouvoir faire échouer une fermeture. Couplé à `tvlEntry`, ça donne enfin la
+    // variation de liquidité sur la vie de la position, que personne n'expose en historique.
+    let tvlExit = null, vol24hExit = null;
+    try {
+        const di = await dexInfo(tok);
+        if (di) {
+            const m = (di.metPools || []).slice().sort((x, y) => (y.tvl || 0) - (x.tvl || 0))[0];
+            tvlExit = m && m.tvl ? Math.round(m.tvl) : null;
+            vol24hExit = di.vol24h != null ? Math.round(di.vol24h) : null;
+        }
+    } catch (_) { /* mesure best-effort */ }
     const trade = {
         pnlSolLive, // PnL RÉEL fees incluses (null en paper pur) — à comparer au pnlSol prix
         lpPct: livePct != null ? +livePct.toFixed(2) : null,        // rendement LP RÉEL en % de la mise
@@ -2437,6 +2460,15 @@ async function closePaper(tok, pos, exitPrice, reason) {
         feeVel: pos._feeVel != null ? +pos._feeVel.toFixed(6) : null,        // SOL/h sur toute la vie
         feeVel1h: pos._feeVel1h != null ? +pos._feeVel1h.toFixed(6) : null,  // SOL/h sur la dernière heure
         feeHours: pos._feeHours != null && isFinite(pos._feeHours) ? +pos._feeHours.toFixed(1) : null,
+        // (2026-09-18) LIQUIDITÉ ENTRÉE → SORTIE. `volTvl` = volume 24 h rapporté à la TVL : un ratio élevé
+        // signale une pool mince traversée par un flux violent. À croiser avec l'issue quand il y aura du volume.
+        tvlEntry: pos.tvlEntry ?? null,
+        tvlExit,
+        tvlVarPct: (pos.tvlEntry && tvlExit) ? +(((tvlExit / pos.tvlEntry) - 1) * 100).toFixed(1) : null,
+        vol24hEntry: pos.vol24hEntry ?? null,
+        vol24hExit,
+        volTvlEntry: (pos.tvlEntry && pos.vol24hEntry) ? +(pos.vol24hEntry / pos.tvlEntry).toFixed(2) : null,
+        volTvlExit: (tvlExit && vol24hExit) ? +(vol24hExit / tvlExit).toFixed(2) : null,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
