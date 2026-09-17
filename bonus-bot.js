@@ -1716,13 +1716,40 @@ async function scan() {
                 }
                 const armed = pos.peakGain >= TP_PCT;   // +6% LP atteint
 
+                // ── (2026-09-18, demande user) SÉRIE DE LIQUIDITÉ, ÉCHANTILLONNÉE EN COURS DE VIE ───────
+                // Avec seulement deux points (entrée/sortie), une TVL qui s'effondre au milieu de la vie
+                // puis remonte est invisible — or c'est exactement le moment intéressant : les LP qui
+                // retirent avant ou pendant un dump. On échantillonne toutes les 10 min.
+                // `fire-and-forget` DÉLIBÉRÉ : la boucle de scan évalue le trail, elle ne doit JAMAIS
+                // attendre un appel HTTP. On ne met pas de `await`, et un échec est silencieusement ignoré.
+                // Coût : 7 positions × 6/h = 42 appels/h chez DexScreener, plafonné à 300/min — soit 0,7 %
+                // du quota. ZÉRO appel Helius : DexScreener n'a rien à voir avec le RPC Solana.
+                if (!pos._tvlAt || Date.now() - pos._tvlAt > 10 * 60 * 1000) {
+                    pos._tvlAt = Date.now();
+                    dexInfo(tok).then(di => {
+                        if (!di) return;
+                        const m = (di.metPools || []).slice().sort((x, y) => (y.tvl || 0) - (x.tvl || 0))[0];
+                        if (!m || !m.tvl) return;
+                        pos._tvlHist = pos._tvlHist || [];
+                        pos._tvlHist.push({ t: Date.now(), tvl: Math.round(m.tvl), v: Math.round(di.vol24h || 0) });
+                        if (pos._tvlHist.length > 200) pos._tvlHist.shift();
+                        pos._tvl = Math.round(m.tvl);
+                        pos._volTvl = m.tvl > 0 ? +((di.vol24h || 0) / m.tvl).toFixed(2) : null;
+                        // variation de liquidité sur l'heure glissante — le signal cherché
+                        const ref = pos._tvlHist.find(q => Date.now() - q.t <= 72 * 60 * 1000);
+                        if (ref && Date.now() - ref.t >= 20 * 60 * 1000 && ref.tvl > 0) {
+                            pos._tvlVar1h = +(((m.tvl / ref.tvl) - 1) * 100).toFixed(1);
+                        }
+                    }).catch(() => { /* mesure best-effort, jamais bloquante */ });
+                }
+
                 // LOG position par scan (2026-08-09) : fin du silence de bot 2 + audit sortie. On affiche TOUT
                 // ce que le bot VOIT — LP, prix, RSI2 (= notre critère de sortie), RSI14 (comparable DexScreener,
                 // cas bot 1 où notre RSI divergeait), bin actif→haut du range, source valeur, timeframe.
                 const realSource = lvSrc; // diagnostic gel valeur (2026-08-11) : lot / lot-FIGÉ / indiv / cacheXs / prix
                 const rsi2v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
                 const rsi14v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 14);
-                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource}${pos._raw ? ` px:${pos._raw.px != null ? pos._raw.px.toPrecision(6) : '?'} X:${pos._raw.x != null ? pos._raw.x.toPrecision(6) : '?'} Y:${pos._raw.y != null ? pos._raw.y.toFixed(4) : '?'} lu:${pos._raw.readTs ? ((Date.now() - pos._raw.readTs) / 1000).toFixed(0) : '?'}s${pos._feeVel != null ? ` 💰${(pos._fees * 1000).toFixed(2)}m (${(pos._feeVel * 1000).toFixed(2)}m/h${pos._feeVel1h != null ? ` · 1h ${(pos._feeVel1h * 1000).toFixed(2)}m/h` : ''}${pos._feeHours != null && isFinite(pos._feeHours) ? `, paie en ${pos._feeHours.toFixed(0)}h` : ''})` : ''}` : ''} | 15m`);
+                console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource}${pos._raw ? ` px:${pos._raw.px != null ? pos._raw.px.toPrecision(6) : '?'} X:${pos._raw.x != null ? pos._raw.x.toPrecision(6) : '?'} Y:${pos._raw.y != null ? pos._raw.y.toFixed(4) : '?'} lu:${pos._raw.readTs ? ((Date.now() - pos._raw.readTs) / 1000).toFixed(0) : '?'}s${pos._feeVel != null ? ` 💰${(pos._fees * 1000).toFixed(2)}m (${(pos._feeVel * 1000).toFixed(2)}m/h${pos._feeVel1h != null ? ` · 1h ${(pos._feeVel1h * 1000).toFixed(2)}m/h` : ''}${pos._tvl != null ? ` 💧${Math.round(pos._tvl / 1000)}k${pos._volTvl != null ? ` v/t${pos._volTvl}` : ''}${pos._tvlVar1h != null ? ` 1h${pos._tvlVar1h > 0 ? '+' : ''}${pos._tvlVar1h}%` : ''}` : ''}${pos._feeHours != null && isFinite(pos._feeHours) ? `, paie en ${pos._feeHours.toFixed(0)}h` : ''})` : ''}` : ''} | 15m`);
 
                 // TRAILING TEMPS RÉEL (2026-08-09, cas STONK sorti à la main) : le trail est un STOP de
                 // protection → il agit sur la valeur LP live à CHAQUE scan, PLUS derrière candleAfterEntry
@@ -2469,6 +2496,12 @@ async function closePaper(tok, pos, exitPrice, reason) {
         vol24hExit,
         volTvlEntry: (pos.tvlEntry && pos.vol24hEntry) ? +(pos.vol24hEntry / pos.tvlEntry).toFixed(2) : null,
         volTvlExit: (tvlExit && vol24hExit) ? +(vol24hExit / tvlExit).toFixed(2) : null,
+        // extrêmes de liquidité VUS PENDANT la vie de la position (série échantillonnée toutes les 10 min)
+        tvlMin: (pos._tvlHist && pos._tvlHist.length) ? Math.min(...pos._tvlHist.map(q => q.tvl)) : null,
+        tvlMax: (pos._tvlHist && pos._tvlHist.length) ? Math.max(...pos._tvlHist.map(q => q.tvl)) : null,
+        volTvlMax: (pos._tvlHist && pos._tvlHist.length)
+            ? +Math.max(...pos._tvlHist.filter(q => q.tvl > 0).map(q => q.v / q.tvl)).toFixed(2) : null,
+        tvlPoints: (pos._tvlHist || []).length,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),

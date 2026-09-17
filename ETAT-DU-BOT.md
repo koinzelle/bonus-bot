@@ -1705,3 +1705,25 @@ une mesure ne doit jamais pouvoir faire échouer une fermeture.
 n'est donc reconstituable que pendant deux jours. Cette mesure doit être relancée tous les 2-3 jours,
 pas en fin de mois. Premier relevé : ALLINU +26 % à 6 h (coupé trop tôt), ELON −12 % à 6 h (coupe
 justifiée) — un partout sur deux cas exploitables.
+
+### Complément du 18/09 (2) — la liquidité est échantillonnée EN COURS DE VIE
+
+Deux points (entrée/sortie) ne suffisaient pas : une TVL qui s'effondre au milieu de la vie de la
+position puis remonte restait invisible, alors que c'est le moment intéressant — les LP qui retirent
+avant ou pendant un dump.
+
+**Échantillonnage toutes les 10 min par position ouverte**, stocké dans `pos._tvlHist` (200 points,
+~33 h, survit aux redéploiements). Dérivés : `pos._tvl`, `pos._volTvl`, et surtout **`_tvlVar1h`**,
+la variation de liquidité sur l'heure glissante. Persistés à la fermeture : `tvlMin`, `tvlMax`,
+`volTvlMax`, `tvlPoints`.
+
+**Le point d'implémentation qui compte : l'appel est en `fire-and-forget` DÉLIBÉRÉ.** Pas de `await`,
+et `.catch()` qui avale l'échec. La boucle de scan évalue le trail des positions armées — elle ne
+doit jamais attendre un appel HTTP. `dexInfo` a un `timeout: 10000`, donc aucune promesse ne
+s'accumule.
+
+**Coût : 7 positions × 6/h = 42 appels DexScreener par heure**, sur un plafond de 300 **par minute**
+— soit 0,7 % du quota. **Zéro appel Helius** : DexScreener n'a rien à voir avec le RPC Solana, c'est
+une API HTTP publique que le bot interroge déjà à chaque découverte.
+
+La ligne `📊` affiche désormais `💧203k v/t34.6 1h-12%` à côté de `💰`.
