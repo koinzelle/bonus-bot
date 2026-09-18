@@ -6,9 +6,27 @@ surtout pour ne pas retenter ce qui a déjà été invalidé.
 
 ---
 
-## ⏰ À FAIRE TOUS LES DEUX JOURS — analyse des fermetures STAGNATION
+## ⛔ SORTIE STAGNATION — RETIRÉE LE 18/09, NE PAS LA REMETTRE
 
-**Demandé par le user le 18/09. À déclencher sans qu'il ait à le redemander.**
+**Déployée le 16/09, retirée le 18/09 après 12 fermetures. Coût réel : -0,6079 SOL en deux jours**
+pendant que le reste du bot faisait +1,2476. Sur la seule journée du 18/09 : TRAIL +0,2608,
+RSI2 +0,0321, **STAGNATION -0,3519** — elle a transformé une journée verte en journée négative.
+
+**La cause est structurelle.** Elle se déclenchait entre -13 % et -15 % de LP après 6 h de calme,
+soit la description exacte d'un **creux dans un token qui chope** — précisément ce que l'entrée
+cherche (dumpé 35 %, chop ≥ 40 %, RSI2 < 50). Elle vendait le creux du cycle dans une stratégie
+qui s'appelle chop-cycle. Vérifié sur bougies fraîches : **7 des 11 coupes mesurables ont fortement
+rebondi, 5 seraient repassées positives** — KNOTS +63 % de plus-haut, ALLINU +82 %, PERPSPAD +87 %.
+
+**4e backtest prix→LP démenti par le réel, toujours dans le même sens** (cf. section 21) :
+backtest +0,93 SOL, réel -0,6079 en deux jours. Corriger l'ancrage sur le pic n'avait pas suffi.
+
+**Ce qui reste :** uniquement la COLLECTE — `feesSol`, `feeVel1h`, `tvlVarPct`, séries `_feeHist`
+et `_tvlHist`. Elle ne décide de rien.
+
+---
+
+### L'ancienne consigne, sans objet depuis le retrait
 
 **Pourquoi c'est urgent et pas reportable :** GeckoTerminal ne renvoie que **200 bougies de 15 min,
 soit 50 h**. Le trajet du prix APRÈS une coupe n'est donc reconstituable que pendant deux jours.

@@ -1759,53 +1759,29 @@ async function scan() {
                     continue;
                 }
 
-                // ── (2026-09-16) STAGNATION — la 3e porte d'EP (BOREDOM), exprimée en prix ────────────
-                // Une position qui ne fait plus de nouveau plus-haut depuis 6 h ne va nulle part : on ferme.
-                // Mesuré sur 455 trades fermés rejoués sur bougies 15m, contrefactuel ANCRÉ SUR LE PIC
-                // (`peakGainPct`, LP réellement mesuré) et jamais extrapolé depuis la sortie — la première
-                // version de ce backtest annonçait pour fone un LP de +19,6 % alors que son pic valait +0,4 %,
-                // soit un LP que la position n'a jamais atteint. Chiffres après correction :
-                //   18 des 27 perdants attrapés  +0,73 SOL   ·   24 gagnants coupés  -0,22 SOL
-                //   → 41 % des pertes effacées pour 3,2 % des gains, rapport 5 pour 1, PnL +14 à +21 %.
-                // Placebo apparié (même fréquence, instants tirés au hasard, 400 tirages) : 0 tirage n'y arrive.
+                // ── (2026-09-18) SORTIE STAGNATION : DÉPLOYÉE LE 16/09, RETIRÉE LE 18/09 ────────────────
+                // NE PAS LA REMETTRE. Coût réel mesuré : -0,6079 SOL en deux jours sur 12 fermetures,
+                // alors que le reste du bot faisait +1,2476 sur la même période. Sur la seule journée du
+                // 18/09 : TRAIL +0,2608, RSI2 +0,0321, STAGNATION -0,3519 — elle a transformé une
+                // journée verte en journée négative.
                 //
-                // La porte `!armed` fait tout le travail : les 18 perdants attrapés n'ont JAMAIS dépassé
-                // +6 % de pic, et le plus gros gagnant touché fait +5,3 % de LP. Au-dessus de +6 % c'est le
-                // TRAIL qui commande et cette règle n'a rien à y faire — les 6 gagnants armés qu'elle
-                // coupait sans cette porte coûtaient -16,7 % chacun.
+                // La cause est STRUCTURELLE, pas un réglage. Elle se déclenchait entre -13 % et -15 % de
+                // LP après 6 h de calme, c'est-à-dire la description exacte d'un CREUX DANS UN TOKEN QUI
+                // CHOPE — précisément ce que l'entrée du bot cherche (dumpé 35 %, chop >= 40 %, RSI2 < 50).
+                // Elle vendait le creux du cycle dans une stratégie qui s'appelle chop-cycle.
+                // Vérifié sur bougies fraîches : 7 des 11 coupes mesurables ont fortement rebondi, 5
+                // seraient repassées POSITIVES (KNOTS +63 % de plus-haut, ALLINU +82 %, PERPSPAD +87 %).
                 //
-                // Deux variantes TESTÉES ET REJETÉES le 16/09, ne pas les rouvrir :
-                //  · filtrer sur le MACD (ne couper que les rouges) — 13 des 18 perdants ont un histogramme
-                //    qui REMONTE au moment du signal. Sur un token effondré le MACD remonte parce que la
-                //    chute décélère, pas parce que le prix repart. Filtrer trierait à l'envers (NET +0,09).
-                //  · laisser 2 h de grâce aux « verts » — coûte 0,166 SOL sur les perdants pour 0,042
-                //    récupéré sur les gagnants, et la dégradation est monotone à 2 h, 4 h et 6 h.
+                // C'est le 4e backtest prix→LP démenti par le réel, toujours dans le même sens :
+                //   plancher RSI2 -20 %   : backtest +0,2740 SOL  ->  réel -0,3568
+                //   objectif prix +15 %   : backtest    +90 pt    ->  réel  -79,9 pt
+                //   objectif prix +25 %   : backtest    +67 pt    ->  réel  -15,9 pt
+                //   STAGNATION 6 h        : backtest +0,93 SOL    ->  réel -0,6079 en 2 jours
+                // Toute règle qui fait SORTIR PLUS TÔT et qui repose sur une conversion prix→LP doit être
+                // considérée comme fausse tant qu'une ombre réelle ne l'a pas confirmée.
                 //
-                // (2026-09-16, 2e passe) FILTRE DE CHUTE ajouté. Sur les 51 trades qui dépassent 6 h,
-                // la règle nue coupait 24 des 30 gagnants (80 %) pour 18 des 21 perdants. Le filtre
-                // ramène les gagnants touchés à 10 sur 30 (33 %) en gardant 17 perdants sur 18, et le
-                // plus gros gagnant jamais touché passe de +5,3 % à +2,9 % de LP.
-                // Il corrige la vraie faiblesse de la règle : sur le premier tiers (période calme) elle
-                // n'attrapait AUCUN perdant et coupait 11 gagnants — elle ne faisait que coûter ; sur
-                // les jours haussiers, 15 gagnants pour 7 perdants. Le filtre ramène ces 15 à 6.
-                // Contre-hypothèses testées : (1) « déclencher moins souvent suffit » — tirage au hasard
-                // de 27 parmi les 42, 2000 tirages, médiane 0,3365 contre 0,5598, p = 0,038 : le filtre
-                // choisit bien ; (2) « 20 % est un point de chance » — plateau de -10 % à -22 %, décrue
-                // seulement au-delà de -25 %.
-                if (!armed && STAGNATION_H > 0 && (STAGNATION_LP <= 0 || realGain <= -STAGNATION_LP)
-                    && pcs && pcs.length > 8) {
-                    const ouvertMs = typeof pos.openedAt === 'string' ? Date.parse(pos.openedAt) : pos.openedAt;
-                    const iEntree = pcs.findIndex(c => c[0] * 1000 >= ouvertMs);
-                    if (iEntree >= 0 && pcs.length - iEntree > 4 * STAGNATION_H) {
-                        let hautMax = -Infinity, iHaut = iEntree;
-                        for (let i = iEntree + 2; i < pcs.length; i++) if (pcs[i][2] > hautMax) { hautMax = pcs[i][2]; iHaut = i; }
-                        const depuisH = (pcs[pcs.length - 1][0] - pcs[iHaut][0]) / 3600;
-                        if (depuisH >= STAGNATION_H) {
-                            await closePaper(tok, pos, px, `STAGNATION ${depuisH.toFixed(1)}h sans nouveau plus-haut (LP ${(realGain * 100).toFixed(1)}% ≤ -${(STAGNATION_LP * 100).toFixed(0)}%, peak +${(pos.peakGain * 100).toFixed(1)}%)`);
-                            continue;
-                        }
-                    }
-                }
+                // La COLLECTE est conservée (feesSol, feeVel1h, tvlVarPct, séries _feeHist/_tvlHist) :
+                // elle ne décide de rien et alimente les mesures futures.
 
                 // RSI2>90 = scalp au top quand pas encore armé → reste sur bougie CLÔTURÉE (le RSI en a besoin).
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
