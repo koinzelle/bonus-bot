@@ -314,6 +314,9 @@ const STAGNATION_H = parseFloat(process.env.STAGNATION_H || '6');
 // prix ≡ LP -14,2 %, pente 0,710) mais `realGain` est lu en direct sur la chaîne, donc ni bougies,
 // ni approximation, ni dépendance à Birdeye.
 const STAGNATION_LP = parseFloat(process.env.STAGNATION_LP || '0.13');
+// (2026-09-18) Seuil d'une « catastrophe » : perte réelle >= 0,05 SOL sur un trade. Sert UNIQUEMENT
+// à l'ombre 2-catastrophes ci-dessous, rien n'est bloqué.
+const CATA_SEUIL_SOL = parseFloat(process.env.CATA_SEUIL_SOL || '0.05');
 // PLANCHER RSI2 ÉLARGI À -3% (2026-08-28, idée user, mesuré sur les trajectoires LP réelles) ────────────
 // Le RSI2>90 non-armé est le filet qui sort les positions MOLLES avant qu'elles retombent. Il exigeait
 // `realGain > 0` : une fenêtre trop étroite, qui se referme dès que la position passe sous le pair.
@@ -2222,6 +2225,11 @@ async function scan() {
                     // ELON générait bien des frais, mais par un churn violent dans une pool trop mince.
                     // Aucun historique de TVL n'existe (ni chez nous, ni chez DexScreener ou GeckoTerminal) :
                     // il faut donc commencer à le garder. Coût nul, la donnée est déjà dans `w.metPools`.
+                    cataCount: (() => {
+                        const c = (state.cataMints || {})[tok] || 0;
+                        if (c >= 2) console.log(`  🚫 [OMBRE 2-cata] ${w.symbol} : ${c} catastrophes passées sur ce token — AURAIT ÉTÉ BANNI`);
+                        return c;
+                    })(),
                     rebondRatio: (() => {
                         const r = ratioRebond(cs);
                         if (r != null && r < 0.80)
@@ -2506,6 +2514,9 @@ async function closePaper(tok, pos, exitPrice, reason) {
         // signale une pool mince traversée par un flux violent. À croiser avec l'issue quand il y aura du volume.
         // (2026-09-18) OMBRE rebond : < 0,80 = le dernier rebond fait moins de 80 % du précédent.
         // Rien n'est bloqué. À juger sur ~2 semaines en comparant les deux populations.
+        // (2026-09-18) nombre de catastrophes DÉJÀ subies sur ce mint au moment de l'entrée.
+        // >= 2 = l'ombre aurait refusé l'entrée. Rien n'est bloqué.
+        cataCount: pos.cataCount ?? null,
         rebondRatio: pos.rebondRatio ?? null,
         tvlEntry: pos.tvlEntry ?? null,
         tvlExit,
@@ -2573,6 +2584,23 @@ async function closePaper(tok, pos, exitPrice, reason) {
         state.watch[tok].lastExitTs = Date.now();                          // (2026-08-27) départ du TTL 48h anti-mourant
         state.mourantMints = state.mourantMints || {};
         state.mourantMints[tok] = { px: state.watch[tok].lastEntryPrice ?? pos.entry, exitTs: Date.now() };
+    }
+    // ── (2026-09-18) OMBRE « 2 CATASTROPHES » — compte seulement, ne bloque RIEN ──────────────────
+    // Observation du user : EMBER 15 entrées net -0,183, PURPS 4 entrées net -0,112 — les petits gains
+    // ne rattrapent jamais les catastrophes. Mesuré sur 870 trades, le risque ESCALADE :
+    //   aucune catastrophe passée sur le mint : 738 trades, 2,8 % de catastrophes, +0,00550/trade
+    //   1 catastrophe passée                  : 106 trades, 3,8 % (x1,33),         +0,00812/trade
+    //   2 catastrophes ou plus                :  26 trades, 7,7 % (x2,70),         -0,00058/trade
+    // La bascule est à la DEUXIÈME, pas à la première : bannir après la 1re coûterait -0,8461 SOL
+    // (le token reste MEILLEUR que la moyenne après une seule), bannir après la 2e gagne +0,0151 SOL.
+    // Gain en argent négligeable ; l'intérêt est structurel — c'est la seule règle testée qui coupe
+    // exactement là où l'espérance devient négative, sans prélever dans une population rentable.
+    // 26 trades seulement : on OBSERVE, on ne bloque pas.
+    if (pnlSolLive != null && pnlSolLive <= -CATA_SEUIL_SOL) {
+        state.cataMints = state.cataMints || {};
+        const c = (state.cataMints[tok] || 0) + 1;
+        state.cataMints[tok] = c;
+        console.log(`  ⚠️ [OMBRE cata] ${pos.symbol}: ${c}e catastrophe (${pnlSolLive.toFixed(4)} SOL)${c >= 2 ? ' — serait BANNI à partir de maintenant' : ''}`);
     }
     save();
     const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
