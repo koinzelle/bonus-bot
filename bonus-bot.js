@@ -163,6 +163,37 @@ const MOURANT_TTL_MS = MOURANT_TTL_H > 0 ? MOURANT_TTL_H * 3600 * 1000 : Infinit
 const ATR_ENTRY = (process.env.ATR_ENTRY || 'shadow').toLowerCase();
 const ATR_K = parseFloat(process.env.ATR_K || '4');
 const ATR_FLOOR = parseFloat(process.env.ATR_FLOOR || '0.05');
+// ── (2026-09-18) FORCE RELATIVE DU DERNIER REBOND — OMBRE, ne bloque RIEN ──────────────────────
+// Observation du user en regardant le graphe de HUHCAT : « les rebonds sont de moins en moins forts,
+// le token est mort ». Mesuré sur 741 trades avec 24 h d'historique avant l'entrée :
+//   dernier rebond < 80 % du précédent : 43-49 % de gagnants, 0,0035 SOL/trade  (301 trades)
+//   dernier rebond >= 80 %             : 58-61 % de gagnants, 0,0066 SOL/trade  (440 trades)
+// C'est une MARCHE à 80 %, pas une pente — d'où une AUC faible (0,524) alors que l'effet est net :
+// le ratio ne classe pas les trades, il les sépare en deux paquets.
+// Contrôles passés : positif sur les DEUX moitiés chronologiques (+0,00116 et +0,00287) et survit au
+// retrait des 3 meilleurs (0,00616 contre 0,00414).
+// ATTENTION à ce que ça n'est PAS : mesuré le 18/09, un rebond faible n'annonce AUCUN dump — 29,7 %
+// de chance d'un -20 % dans les 6 h contre 28,9 % quand les rebonds sont forts, rapport 1,03. Le bruit
+// de fond de ce marché est de ~29 % de dump à -20 % par tranche de 6 h, quel que soit l'état du prix.
+// Ce ratio sélectionne une population un peu meilleure ; il ne détecte pas les catastrophes.
+function ratioRebond(cs) {
+    if (!cs || cs.length < 98) return null;
+    const fen = cs.slice(-97, -1);                       // 96 bougies CLÔTURÉES = 24 h, sans la bougie en cours
+    const som = [];
+    for (let i = 2; i < fen.length - 2; i++)
+        if (fen[i][2] > fen[i - 1][2] && fen[i][2] > fen[i - 2][2] && fen[i][2] > fen[i + 1][2] && fen[i][2] > fen[i + 2][2])
+            som.push({ i, h: fen[i][2] });
+    if (som.length < 3) return null;
+    const S = som.slice(-3), amp = [];
+    for (let k = 1; k < S.length; k++) {
+        let lo = Infinity;
+        for (let j = S[k - 1].i; j <= S[k].i; j++) lo = Math.min(lo, fen[j][3]);
+        amp.push(lo > 0 ? (S[k].h / lo - 1) * 100 : null);
+    }
+    if (amp[0] == null || amp[1] == null || !(amp[0] > 0)) return null;
+    return +(amp[1] / amp[0]).toFixed(3);
+}
+
 function atrPct15(cs) {   // ATR14 sur les bougies 15m, en % du prix courant
     if (cs.length < 15) return null;
     let tr = 0, cnt = 0;
@@ -2191,6 +2222,14 @@ async function scan() {
                     // ELON générait bien des frais, mais par un churn violent dans une pool trop mince.
                     // Aucun historique de TVL n'existe (ni chez nous, ni chez DexScreener ou GeckoTerminal) :
                     // il faut donc commencer à le garder. Coût nul, la donnée est déjà dans `w.metPools`.
+                    rebondRatio: (() => {
+                        const r = ratioRebond(cs);
+                        if (r != null && r < 0.80)
+                            console.log(`  🔇 [OMBRE rebond] ${w.symbol} : dernier rebond à ${(r * 100).toFixed(0)}% du précédent — AURAIT ÉTÉ BLOQUÉ (seuil 80%)`);
+                        else if (r != null)
+                            console.log(`  🔊 [OMBRE rebond] ${w.symbol} : dernier rebond à ${(r * 100).toFixed(0)}% du précédent — passe`);
+                        return r;
+                    })(),
                     tvlEntry: (() => { const m = (w.metPools || []).slice().sort((x, y) => (y.tvl || 0) - (x.tvl || 0))[0];
                                        return m && m.tvl ? Math.round(m.tvl) : null; })(),
                     vol24hEntry: w.vol != null ? Math.round(w.vol) : null,
@@ -2465,6 +2504,9 @@ async function closePaper(tok, pos, exitPrice, reason) {
         feeHours: pos._feeHours != null && isFinite(pos._feeHours) ? +pos._feeHours.toFixed(1) : null,
         // (2026-09-18) LIQUIDITÉ ENTRÉE → SORTIE. `volTvl` = volume 24 h rapporté à la TVL : un ratio élevé
         // signale une pool mince traversée par un flux violent. À croiser avec l'issue quand il y aura du volume.
+        // (2026-09-18) OMBRE rebond : < 0,80 = le dernier rebond fait moins de 80 % du précédent.
+        // Rien n'est bloqué. À juger sur ~2 semaines en comparant les deux populations.
+        rebondRatio: pos.rebondRatio ?? null,
         tvlEntry: pos.tvlEntry ?? null,
         tvlExit,
         tvlVarPct: (pos.tvlEntry && tvlExit) ? +(((tvlExit / pos.tvlEntry) - 1) * 100).toFixed(1) : null,

@@ -1845,3 +1845,47 @@ gagnants. L'ancienne conclusion venait d'un échantillon trop petit. Question fe
 **Stacking par profondeur de dip** : gradient monotone spectaculaire (97 % → 80 % → 37 % → 13 % de
 gagnants) mais **circulaire** — une position qui a plongé de 30 % finit mal par construction. Aucune
 valeur prédictive à l'entrée.
+
+## 22. 18/09 — OMBRE « force du dernier rebond » (n'agit pas)
+
+**Origine.** Observation du user en regardant le graphe de HUHCAT : *« les rebonds sont de moins en
+moins forts, le token est mort »*.
+
+**Mesuré sur 741 trades** ayant 24 h d'historique avant l'entrée. On prend les 3 derniers sommets
+locaux, on mesure l'amplitude creux→sommet des 2 derniers rebonds, et on regarde leur ratio :
+
+```
+  ratio du dernier rebond      n     SOL/trade   gagnants
+    moins de 50 %            160      0,00355      43 %
+    50 à 80 %                141      0,00338      49 %
+    ──────────────────────────────────────────────────── marche à 80 %
+    80 à 100 %                72      0,00692      61 %
+    100 à 150 %              123      0,00644      58 %
+    plus de 150 %            245      0,00665      59 %
+```
+
+**C'est une MARCHE à 80 %, pas une pente** — d'où une AUC faible (0,524) alors que l'effet est net :
+le ratio ne classe pas les trades, il les sépare en deux paquets. Contrôles passés : positif sur les
+**deux** moitiés chronologiques (+0,00116 et +0,00287) et survit au retrait des 3 meilleurs (0,00616
+contre 0,00414). C'est le premier filtre d'entrée de la semaine à passer la batterie.
+
+**Ce que ça n'est PAS — mesure du 18/09 qui a coûté un test et vaut d'être retenue :**
+
+```
+  dernier rebond < 80 %    1931 obs   573 dumps à -20 % dans les 6 h   29,7 %
+  dernier rebond ≥ 80 %    2694 obs   778 dumps                         28,9 %
+```
+
+**Un rebond faible n'annonce AUCUN dump** (rapport 1,03). Et le chiffre de fond est le plus important
+de la semaine : **à tout instant d'une position, il y a ~29 % de chance d'un dump de -20 % dans les
+6 heures**, quel que soit l'état du prix. C'est ce qui explique que rien ne prédise — ni les entrées
+(dump depth 0,44-0,58, MACD 0,46-0,53, âge ATH plat sur 1 029 trades), ni les sorties (70 variantes
+testées le 16/09, toutes rejetées). Les dumps ne sont pas annoncés.
+
+**Et ça explique pourquoi le TRAIL est ce qui marche** (+4,90 SOL, 117 % du PnL) : il ne prédit rien,
+il constate un pic et réagit quand ça retombe d'un point, à 72 % de la hauteur de bougie. Quand le
+futur n'est pas prévisible, la bonne architecture est de réagir vite, pas d'anticiper. Chaque ajout
+d'anticipation a coûté — plancher RSI2, objectif de prix, SuperTrend en sortie, STAGNATION.
+
+**Déployé en OMBRE UNIQUEMENT** (`🔇` / `🔊 [OMBRE rebond]`), champ `rebondRatio` persisté dans le
+trade. Ne bloque rien. À juger vers le 02/10 en comparant les deux populations sur issues réelles.
