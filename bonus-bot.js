@@ -2314,6 +2314,31 @@ async function scan() {
                     // ELON générait bien des frais, mais par un churn violent dans une pool trop mince.
                     // Aucun historique de TVL n'existe (ni chez nous, ni chez DexScreener ou GeckoTerminal) :
                     // il faut donc commencer à le garder. Coût nul, la donnée est déjà dans `w.metPools`.
+                    // ── (2026-09-19) OMBRE « CURATION EP » : passé du token ET état du graphe ────────────
+                    // Le user : « le bot rentre dès qu'il y a une baisse, peu importe si le token est en
+                    // train de mourir ». Vrai : l'entrée ne regarde que la profondeur du creux, jamais si
+                    // le token est encore vivant. EP, lui, garde un token en whitelist tant que son graphe
+                    // tient. Mesuré en marche avant sur 870 trades, les deux critères COMBINÉS battent
+                    // chacun pris séparément :
+                    //   tout prendre (actuel)              870 trades  0,00563/trade  57 % gagn  3,1 % cata  15,0/j
+                    //   graphe vivant seul (vsMax >= 0,20) 650         0,00656        63 %       2,8 %      11,2/j
+                    //   prouvé seul (3 trades, +0,05 SOL)  303         0,00731        79 %       3,6 %       5,2/j
+                    //   1 trade positif ET graphe vivant   505         0,00705        65 %       2,4 %       8,7/j
+                    //   prouvé ET graphe vivant            256         0,00843        83 %       2,3 %       4,4/j
+                    // Avec ~0,007 SOL de coût d'exécution réel par trade (cf. section 23), « tout prendre »
+                    // est NÉGATIF (-0,0014) alors que ces combinaisons repassent au-dessus de la ligne.
+                    // Le réglage strict fait mieux par trade mais tombe à 4,4 entrées/jour pour 7 places.
+                    // OMBRE : on journalise le verdict, on ne bloque rien.
+                    filtreEP: (() => {
+                        const h = (state.trades || []).filter(z => z.tok === tok && z.pnlSolLive != null);
+                        const sol = h.reduce((a, z) => a + z.pnlSolLive, 0);
+                        const prouve = h.length >= 1 && sol > 0;
+                        const v = ratioRebondVsMax(cs);
+                        const vivant = v == null || v >= 0.20;
+                        const ok = prouve && vivant;
+                        console.log(`  🎯 [OMBRE curation] ${w.symbol} : passé ${h.length} trade(s) ${sol >= 0 ? '+' : ''}${sol.toFixed(4)} SOL → ${prouve ? 'prouvé' : 'NON prouvé'} · graphe ${v != null ? (v * 100).toFixed(0) + '%' : 'n/d'} → ${vivant ? 'vivant' : 'MOURANT'} · ${ok ? '✅ serait pris' : '🚫 serait REFUSÉ'}`);
+                        return { prouve, vivant, ok, nPasses: h.length, solPasse: +sol.toFixed(4), vsMax: v };
+                    })(),
                     // (2026-09-18) OMBRE WHITELIST — la méthode d'EP : « manual whitelist curation IS the alpha »,
                     // ses 10 meilleurs tokens font 73 % de son profit. Mesuré sur 870 trades, en marche avant :
                     //   tout prendre (actuel)          870 trades  0,00563/trade  57 % gagnants
@@ -2644,6 +2669,8 @@ async function closePaper(tok, pos, exitPrice, reason) {
         // (2026-09-18) variante du user : dernier rebond / plus fort des 24 h. < 0,20 = 38 % de gagnants.
         // Meilleure AUC que `rebondRatio` (0,587 contre 0,555) sur échantillon jamais vu.
         // (2026-09-18) état whitelist au moment de l'entrée : { n, sol, prouve }. Rien n'est bloqué.
+        // (2026-09-19) verdict combiné « curation EP » au moment de l'entrée. Rien n'est bloqué.
+        filtreEP: pos.filtreEP ?? null,
         tokenProuve: pos.tokenProuve ?? null,
         rebondVsMax: pos.rebondVsMax ?? null,
         scoreEntree: pos.scoreEntree ?? null,
