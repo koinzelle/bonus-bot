@@ -474,6 +474,38 @@ if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})
 for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; delete p._priceHotUntil; delete p._peakLogged; delete p._obLast; delete p._armEvalTs; }
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
+// ── (2026-09-18) INSTANTANÉ HORAIRE DU WALLET — la seule mesure de PnL qui ne ment pas ────────────
+// `pnlSolLive` = closeValueSol − openValueSol mesure la variation de valeur INTERNE à la position LP.
+// Les swaps d'entrée et de sortie, la taxe de transfert et le slippage se produisent ENTRE le wallet
+// et la position : ils sont hors mesure. Mesuré à la main le 18/09 : le wallet est passé de 2,7655 SOL
+// (13/09, 7 positions) à 2,4515 — soit -0,314 SOL — pendant que le bot annonçait +1,07 SOL de gains.
+// L'écart fait ~0,007 SOL de coûts invisibles par trade, contre +0,0056 de gain affiché.
+// Le per-trade est INUTILISABLE : `proceedsSol` et `depositedSol` sont mesurés autour d'un événement,
+// donc pollués par les 6 autres positions (écarts de ±0,14 à 0,20 SOL constatés le 11/09, soit la
+// taille d'une ouverture). Un TOTAL à date, lui, est insensible à la concurrence.
+// Une ligne par heure, 720 points gardés (30 jours). Coût : 1 appel RPC par heure.
+async function instantaneWallet() {
+    try {
+        if (!live.enabled || !live.solBalance) return;
+        const lam = await live.solBalance();
+        const cout = Object.values(state.positions || {})
+            .reduce((a, p) => a + ((p.live && p.live.openValueSol) || 0), 0);
+        const n = Object.values(state.positions || {}).filter(p => p.live).length;
+        state.walletHist = state.walletHist || [];
+        state.walletHist.push({ t: Date.now(), sol: +(lam / 1e9).toFixed(4), cout: +cout.toFixed(4), n });
+        if (state.walletHist.length > 720) state.walletHist.shift();
+        const tot = lam / 1e9 + cout + n * 0.06;
+        const prem = state.walletHist[0];
+        const ref = prem ? prem.sol + prem.cout + prem.n * 0.06 : null;
+        console.log(`  🏦 WALLET: ${(lam / 1e9).toFixed(4)} liquide + ${cout.toFixed(4)} en position + ${(n * 0.06).toFixed(2)} rent = ${tot.toFixed(4)} SOL`
+            + (ref != null && state.walletHist.length > 2
+                ? ` | depuis ${new Date(prem.t).toISOString().slice(5, 16).replace('T', ' ')} : ${tot - ref >= 0 ? '+' : ''}${(tot - ref).toFixed(4)} SOL` : ''));
+        save();
+    } catch (e) { console.log('  ⚠️ instantané wallet:', String(e.message).slice(0, 60)); }
+}
+setInterval(instantaneWallet, 60 * 60 * 1000);
+setTimeout(instantaneWallet, 30 * 1000);
+
 // ── SHADOW STATS PERSISTÉS (2026-07-29, demande user) : les mesures shadow étaient des console.log
 // (buffer mémoire ~50 lignes, vidé au redeploy) → on perdait les vrais totaux. On les accumule ici,
 // DANS l'état (donc sur le volume Railway = survit aux redeploys). Compteurs + listes plafonnées (FIFO).
@@ -2282,6 +2314,23 @@ async function scan() {
                     // ELON générait bien des frais, mais par un churn violent dans une pool trop mince.
                     // Aucun historique de TVL n'existe (ni chez nous, ni chez DexScreener ou GeckoTerminal) :
                     // il faut donc commencer à le garder. Coût nul, la donnée est déjà dans `w.metPools`.
+                    // (2026-09-18) OMBRE WHITELIST — la méthode d'EP : « manual whitelist curation IS the alpha »,
+                    // ses 10 meilleurs tokens font 73 % de son profit. Mesuré sur 870 trades, en marche avant :
+                    //   tout prendre (actuel)          870 trades  0,00563/trade  57 % gagnants
+                    //   1 trade passé positif          668         0,00590        58 %
+                    //   2 trades + 0,02 SOL cumulés    438         0,00638        69 %
+                    //   3 trades + 0,05 SOL cumulés    303         0,00731        79 %
+                    // Le SOL/trade monte de 30 % et le taux de réussite de 57 à 79 %. Le volume tombe à
+                    // ~5 trades/jour pour 7 places — mais avec ~0,007 SOL de coûts d'exécution invisibles
+                    // par trade, moins de trades mieux choisis peut être la différence entre perdre et gagner.
+                    // OMBRE : on observe, on ne bloque pas.
+                    tokenProuve: (() => {
+                        const h = (state.trades || []).filter(z => z.tok === tok && z.pnlSolLive != null);
+                        const n = h.length, sol = h.reduce((a, z) => a + z.pnlSolLive, 0);
+                        const prouve = n >= 3 && sol >= 0.05;
+                        if (n > 0) console.log(`  🏅 [OMBRE whitelist] ${w.symbol} : ${n} trade(s) passé(s), ${sol >= 0 ? '+' : ''}${sol.toFixed(4)} SOL cumulés — ${prouve ? 'PROUVÉ' : 'non prouvé, aurait été écarté'}`);
+                        return { n, sol: +sol.toFixed(4), prouve };
+                    })(),
                     rebondVsMax: (() => {
                         const v = ratioRebondVsMax(cs);
                         if (v != null && v < 0.20)
@@ -2594,6 +2643,8 @@ async function closePaper(tok, pos, exitPrice, reason) {
         // < -0,60 = quartile bas, le seul négatif sur l'échantillon de test. Rien n'est bloqué.
         // (2026-09-18) variante du user : dernier rebond / plus fort des 24 h. < 0,20 = 38 % de gagnants.
         // Meilleure AUC que `rebondRatio` (0,587 contre 0,555) sur échantillon jamais vu.
+        // (2026-09-18) état whitelist au moment de l'entrée : { n, sol, prouve }. Rien n'est bloqué.
+        tokenProuve: pos.tokenProuve ?? null,
         rebondVsMax: pos.rebondVsMax ?? null,
         scoreEntree: pos.scoreEntree ?? null,
         cataCount: pos.cataCount ?? null,

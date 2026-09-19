@@ -788,4 +788,4 @@ async function closeVerified(pos) {
     }
 }
 
-module.exports = { enabled: true, findMeteoraPool, transferFeeBps, MAX_TRANSFER_FEE_BPS, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions };
+module.exports = { enabled: true, solBalance, findMeteoraPool, transferFeeBps, MAX_TRANSFER_FEE_BPS, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions };

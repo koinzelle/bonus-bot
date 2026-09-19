@@ -1889,3 +1889,63 @@ d'anticipation a coûté — plancher RSI2, objectif de prix, SuperTrend en sort
 
 **Déployé en OMBRE UNIQUEMENT** (`🔇` / `🔊 [OMBRE rebond]`), champ `rebondRatio` persisté dans le
 trade. Ne bloque rien. À juger vers le 02/10 en comparant les deux populations sur issues réelles.
+
+## 23. 18-19/09 — LE PnL AFFICHÉ N'EST PAS LE PnL DU WALLET
+
+**Le user : « je ne vois pas mon solde monter ».** Il avait raison.
+
+```
+  pnlSolLive = closeValueSol − openValueSol        (bonus-bot.js, close)
+```
+
+C'est la variation de valeur **interne à la position LP**. Les swaps d'entrée et de sortie, la taxe
+de transfert et le slippage se produisent **entre le wallet et la position** — hors mesure. Le
+commentaire du code l'assume : *« insensible au bruit wallet »*. Ce bruit, c'est l'argent du user.
+
+**Mesure à la main du 18/09**, méthode fiable (liquide + positions au COÛT + rent, même nombre de
+positions) :
+
+```
+  13/09  :  2,7655 SOL
+  18/09  :  2,4515 SOL     →  -0,314 SOL en 6 jours
+  pendant que le bot annonçait  +1,07 SOL sur la même période
+```
+
+**Écart ≈ 1,39 SOL sur ~190 trades, soit ~0,007 SOL de coûts invisibles par trade** — contre
++0,0056 SOL de gain affiché par trade. **À 17 trades/jour, les frais d'exécution mangent tout l'edge.**
+
+**Le per-trade est inutilisable** : `proceedsSol` et `depositedSol` sont mesurés autour d'un
+événement, donc pollués par les 6 autres positions (±0,14 à 0,20 SOL constatés le 11/09, soit la
+taille d'une ouverture). Un **total à date** y est insensible.
+
+**Déployé : instantané horaire du wallet** dans `state.walletHist` (720 points = 30 jours), ligne
+`🏦 WALLET:` dans les logs avec l'écart depuis le premier point. `solBalance` exporté depuis
+`bonus-live.js`. Coût : 1 appel RPC par heure.
+
+### Ce que ça change sur la stratégie — et ça réconcilie tout
+
+Avec ~0,007 SOL de coût réel par trade :
+
+```
+  tout prendre (actuel)          0,00563 − 0,007  ≈  -0,0014/trade   NÉGATIF
+  whitelist « 3 trades +0,05 »   0,00731 − 0,007  ≈  +0,0003/trade   à l'équilibre
+```
+
+**Trader moins, sur des tokens prouvés, devient la seule voie rentable.** Et c'est exactement ce
+qu'EP décrit : *« manual whitelist curation IS the alpha »*, ses 10 meilleurs tokens = 73 % de son
+profit. Mesuré en marche avant sur 870 trades :
+
+| règle d'admission | trades | SOL/trade | gagnants | catastrophes |
+|---|---|---|---|---|
+| tout prendre (actuel) | 870 | 0,00563 | 57 % | 3,1 % |
+| 1 trade passé positif | 668 | 0,00590 | 58 % | 2,8 % |
+| 2 trades + 0,02 SOL | 438 | 0,00638 | 69 % | 3,7 % |
+| **3 trades + 0,05 SOL** | **303** | **0,00731** | **79 %** | 3,6 % |
+
+Le volume tombe à ~5 trades/jour pour 7 places : la whitelist ne remplit pas le book. C'est le
+compromis à trancher quand l'instantané wallet aura confirmé le coût réel.
+
+**Note :** bannir les mauvais tokens ÉCHOUE (-0,85 SOL, la catastrophe arrive en premier et le token
+redevient bon ensuite). Ne garder que les **prouvés** est l'opération inverse, et elle marche.
+
+**Déployé en OMBRE** : `🏅 [OMBRE whitelist]`, champ `tokenProuve` = `{ n, sol, prouve }` persisté.
