@@ -176,6 +176,31 @@ const ATR_FLOOR = parseFloat(process.env.ATR_FLOOR || '0.05');
 // de chance d'un -20 % dans les 6 h contre 28,9 % quand les rebonds sont forts, rapport 1,03. Le bruit
 // de fond de ce marché est de ~29 % de dump à -20 % par tranche de 6 h, quel que soit l'état du prix.
 // Ce ratio sélectionne une population un peu meilleure ; il ne détecte pas les catastrophes.
+// ── (2026-09-18) SCORE D'ENTRÉE COMBINÉ — OMBRE, ne bloque RIEN ────────────────────────────────
+// Aucune variable d'entrée ne sépare seule : ~20 testées, toutes entre 0,44 et 0,55 d'AUC. Mais
+// QUATRE variables faibles combinées séparent. Validé honnêtement : paramètres calculés sur la
+// PREMIÈRE moitié chronologique (193 trades), AUC mesurée sur la SECONDE (193 trades jamais vus).
+//   ratio de rebond seul  0,617   ·  volume 24 h seul  0,617
+//   drawdown seul         0,595   ·  fee/TVL seul      0,516  (n'apporte rien, gardé tel que testé)
+//   SCORE COMBINÉ         0,634   ← sépare
+// Par quartile sur l'échantillon de TEST :
+//   Q1 (le pire) n=48  -0,1917 SOL  -0,00399/trade  83 % gagnants  14,6 % de catastrophes
+//   Q2           n=48  +0,3379      +0,00704        90 %            4,2 %
+//   Q3           n=48  +0,5854      +0,01220        96 %            0,0 %
+//   Q4           n=48  +0,4422      +0,00921        92 %            4,2 %
+// Le quartile bas est le SEUL négatif et concentre les catastrophes. Le bloquer aurait rapporté
+// +0,19 SOL sur 193 trades et évité 7 catastrophes.
+// RÉSERVES : 48 trades par quartile, un seul découpage temporel, et le sous-ensemble exige 48 h de
+// bougies. Les poids ne sont PAS ajustés (simple somme de z-scores à parts égales) — c'est ce qui
+// limite le surapprentissage. Seuil Q1 mesuré sur l'apprentissage : score < -0,60.
+// Moyennes/écarts-types figés sur l'apprentissage, à NE PAS recalculer en direct (ce serait tricher).
+const SCORE_Z = { ratio: [1.9093, 2.9369], vol: [9942.4352, 36775.7855], fee: [24.6031, 26.663], dd: [57.0155, 21.2455] };
+function scoreEntree(ratio, vol24hK, feeTvl, drawdownPct) {
+    if (ratio == null || vol24hK == null || feeTvl == null || drawdownPct == null) return null;
+    const z = (v, k) => (v - SCORE_Z[k][0]) / SCORE_Z[k][1];
+    return +(z(ratio, 'ratio') + z(vol24hK, 'vol') + z(feeTvl, 'fee') + z(drawdownPct, 'dd')).toFixed(3);
+}
+
 function ratioRebond(cs) {
     if (!cs || cs.length < 98) return null;
     const fen = cs.slice(-97, -1);                       // 96 bougies CLÔTURÉES = 24 h, sans la bougie en cours
@@ -2225,6 +2250,15 @@ async function scan() {
                     // ELON générait bien des frais, mais par un churn violent dans une pool trop mince.
                     // Aucun historique de TVL n'existe (ni chez nous, ni chez DexScreener ou GeckoTerminal) :
                     // il faut donc commencer à le garder. Coût nul, la donnée est déjà dans `w.metPools`.
+                    scoreEntree: (() => {
+                        const r = ratioRebond(cs);
+                        const sc = scoreEntree(r, w.vol != null ? Math.round(w.vol / 1000) : null,
+                                               (feeTvlMap.get(tok) || {}).ratio != null ? +((feeTvlMap.get(tok).ratio) * 100).toFixed(1) : null,
+                                               pInfo.drawdownPct ?? null);
+                        if (sc != null)
+                            console.log(`  📊 [OMBRE score] ${w.symbol} : score ${sc}${sc < -0.60 ? ' — QUARTILE BAS, aurait été bloqué' : ''}`);
+                        return sc;
+                    })(),
                     cataCount: (() => {
                         const c = (state.cataMints || {})[tok] || 0;
                         if (c >= 2) console.log(`  🚫 [OMBRE 2-cata] ${w.symbol} : ${c} catastrophes passées sur ce token — AURAIT ÉTÉ BANNI`);
@@ -2516,6 +2550,9 @@ async function closePaper(tok, pos, exitPrice, reason) {
         // Rien n'est bloqué. À juger sur ~2 semaines en comparant les deux populations.
         // (2026-09-18) nombre de catastrophes DÉJÀ subies sur ce mint au moment de l'entrée.
         // >= 2 = l'ombre aurait refusé l'entrée. Rien n'est bloqué.
+        // (2026-09-18) score d'entrée combiné (rebond + volume + fee/TVL + drawdown, z-scores figés).
+        // < -0,60 = quartile bas, le seul négatif sur l'échantillon de test. Rien n'est bloqué.
+        scoreEntree: pos.scoreEntree ?? null,
         cataCount: pos.cataCount ?? null,
         rebondRatio: pos.rebondRatio ?? null,
         tvlEntry: pos.tvlEntry ?? null,
