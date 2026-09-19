@@ -1,4 +1,4 @@
-# État du bonus-bot — mis à jour le 04/09/2026
+# État du bonus-bot — mis à jour le 19/09/2026
 
 Document **vivant** : à relire au début de chaque session et à mettre à jour à la fin.
 Il existe pour éviter de re-dériver des conclusions qui ont coûté cher à établir, et
@@ -1949,3 +1949,95 @@ compromis à trancher quand l'instantané wallet aura confirmé le coût réel.
 redevient bon ensuite). Ne garder que les **prouvés** est l'opération inverse, et elle marche.
 
 **Déployé en OMBRE** : `🏅 [OMBRE whitelist]`, champ `tokenProuve` = `{ n, sol, prouve }` persisté.
+
+---
+
+## 16. 19/09 — SEUIL RSI2 D'ENTRÉE : SOUS 50 IL NE PRÉDIT RIEN ; AU-DESSUS, NON TRANCHÉ
+
+**Question posée** : pourquoi le bot n'ouvre-t-il pas avec 4 slots libres et 42 tokens en watch ?
+Le funnel mesuré en **tokens distincts** (7 jours de logs persistés, 35-47 candidats/jour arrivent
+au creux) désigne le RSI comme premier goulot, loin devant :
+
+| porte | tokens-jours | part |
+|---|---:|---:|
+| **pas-survendu (RSI2 > 50)** | **165** | **34,2 %** |
+| pattern-KO | 66 | 13,7 % |
+| chop-NON-MESURABLE | 59 | 12,2 % |
+| ATH-épuisé (4x·<1,5M) | 57 | 11,8 % |
+| coin < 10h · fees < 3% · cooldown | 43 · 38 · 34 | 25 % |
+
+**NE PAS lire `blockCount` pour ça** : il compte des TICKS, pas des candidats (un token qui traîne
+6 h dans la watch s'y compte des milliers de fois), et il mélange les époques de réglage
+(`fees<5%` et `fees<3%`, `RSI>40` et `RSI>50` y coexistent). Il donne `pas-au-creux` à 26 %, ce qui
+dit seulement que « pas au creux » est l'état normal d'un token.
+
+### Ce qui est TRANCHÉ : le RSI2 n'a aucun pouvoir prédictif entre 0 et 50
+
+555 trades depuis le 02/09 (`rsi2Entry` n'existe pas avant), net de taxe :
+
+| mesure | valeur |
+|---|---:|
+| AUC « RSI2 bas = meilleur » | **0,504** |
+| AUC placebo aléatoire | 0,475 |
+| AUC témoin (minute d'entrée, effet attendu nul) | 0,451 |
+| AUC feeTvl (signal faible connu, r=+0,118) | 0,528 |
+| r (rsi2Entry ↔ rendement net) | **−0,020** |
+
+Bandes non monotones : 0-9 +1,33 % · 10-19 **−0,31 %** · 20-29 +3,49 % · 30-39 +1,19 % · 40-50
+−0,08 %. Même profil que le MACD le 14/09 : AUC 0,50 = rien. **Resserrer le seuil ne sert donc à
+rien non plus.**
+
+### Ce qui n'est PAS tranché : au-dessus de 50
+
+Mesure forward sur l'ombre `rebondRSI80` (200 records, 4 jours, 40 mints), même étalon sur trois bras :
+
+| bras | n | h+6h méd | max 6h méd | touche +6 % | tombe −35 % |
+|---|---:|---:|---:|---:|---:|
+| ACCEPTÉS (RSI2<50) | 101 | +0,9 % | +11,8 % | 72 % | 11 % |
+| REFUSÉS (RSI2>80) | 188 | +1,5 % | +10,4 % | 64 % | 10 % |
+| PLACEBO (hasard, mêmes mints) | 1291 | +3,0 % | +17,2 % | 73 % | 16 % |
+
+Bootstrap sur l'écart refusés − acceptés : **les trois intervalles contiennent 0**
+(h6 +0,58 pt [−3,08 ; +3,43] · max6 −1,43 [−7,73 ; +3,23] · pire6 +1,21 [−3,53 ; +6,63]), et le bras
+accepté est instable d'une moitié de fenêtre à l'autre (h6 +2,6 % → +0,2 %). **Ne pas toucher au
+seuil sur cette base.**
+
+**Le placebo qui « gagne » ne prouve pas que l'entrée est sans valeur — il prouve que l'étalon est
+mauvais pour cette question.** Le bot tire 67 % de son PnL des FEES, encaissées tant que la position
+reste dans la range ; un forward de PRIX récompense exactement les mouvements qui font SORTIR de la
+range, là où elle n'encaisse plus rien. Corollaire pour les prochains backtests d'entrée : un proxy
+prix ne peut pas départager deux populations d'entrées sur ce bot.
+
+Seul indice, **non significatif** : la tranche 80-89 fait mieux que 90-100 (h6 médian +3,1 % vs
++0,9 %), cohérent avec le backtest du 27/08 (« le rebond confirmé bat le couteau »).
+
+**Biais à connaître** : le diag est une CHAÎNE else-if (`bonus-bot.js:2167-2180`). « bloqué → RSI »
+signifie que les portes SUIVANTES (ATH-épuisé, coin-mourant, fees, explosif, cooldown) n'ont jamais
+été évaluées. Le bras « refusés » est donc une BORNE HAUTE des entrées qu'on gagnerait.
+
+### DÉPLOYÉ ce jour : les ombres ne s'effacent plus
+
+`recordShadow` plafonnait à 200 records par ombre (FIFO). Mesuré : **21 193 records produits,
+2 736 encore lisibles, 10 ombres sur 14 saturées**. `rebondRSI80`, posée le 27/08 pour trancher
+précisément la question ci-dessus, ne couvrait plus que 3,5 jours — c'est pour ça que le test
+au-dessus de 50 est muet.
+
+Chaque record est désormais journalisé : `🕯️ SHADOW <type> {json}`. Les logs sont persistés
+365 jours (`/logs/file`), donc la trace survit au cap ET aux redéploiements. Coût ~850 lignes/jour
+sur ~15 000 (+6 %), zéro appel RPC, aucune décision touchée. **Relire cette question vers la
+mi-octobre**, sur plusieurs centaines d'épisodes indépendants.
+
+### Autre chose vue en passant (mesure seulement, non corrigé)
+
+Le prix de sortie archivé est `pos.lastPx` (`bonus-bot.js:3021`), qui peut avoir une minute. Sur un
+gap il est maximalement faux : WOW le 19/09 est enregistré à **+11,9 % de prix** pour un LP réel de
+**+1,8 %**. `pnlPct`/`pnlSol` et le **« WR 75 % » affiché sont donc des chiffres de PRIX gonflés**.
+Aucune décision ne les lit (toutes passent par `pnlSolLive`) — ne pas juger le bot dessus.
+
+### WOW : le trail n'a pas de défaut, c'est un gap
+
+Armé 6,04 %, pic 6,97 %, seuil 5,97 %, sorti à +1,8 %. `lvHist` : 19:27:34 LP 6,5 % bin -317 →
+19:27:44 LP 1,8 % bin **-327**. Dix bins en un tick de 10 s, données fraîches (`âge donnée 0.0s`).
+Sur 255 sorties TRAIL depuis le 01/09 : **60 % rendent ≤1,5 pt** (réglage = 1), médiane 1,34 pt ;
+seules 4 % rendent >5 pt, toujours sur le même motif (MARKET 15 bins, CHAIN 15, STONK 13, UBER 14).
+Lire plus vite ne rattrape pas un gap. Confirme le verdict du 08/09 sur HONTER, preuve par les bins.

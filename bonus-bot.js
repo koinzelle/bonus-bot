@@ -522,8 +522,22 @@ function recordShadow(type, data) {
     if (!s[type]) s[type] = { n: 0, records: [] };
     s[type].n++;
     if (data) {
-        s[type].records.push({ ...data, ts: new Date().toISOString() });
-        if (s[type].records.length > 200) s[type].records.shift(); // cap FIFO
+        const rec = { ...data, ts: new Date().toISOString() };
+        // ── (2026-09-19) LE CAP FIFO EFFACE LES OMBRES AVANT QU'ELLES PUISSENT CONCLURE ──────
+        // Mesuré ce jour : 21 193 records produits depuis le début, 2 736 encore lisibles —
+        // 10 ombres sur 14 sont saturées à 200. `rebondRSI80` (posée le 27/08 pour trancher le
+        // seuil RSI d'entrée) tire ~57 records/jour : ses 200 places ne couvrent que 3,5 jours,
+        // alors qu'il faut des semaines d'épisodes indépendants pour sortir du bruit. Le
+        // backtest du 19/09 a buté exactement là-dessus : AUC 0,504 sous RSI 50 (donc aucun
+        // pouvoir prédictif, conclusion solide sur 555 trades), mais au-dessus de 80 tous les
+        // intervalles de confiance contenaient 0 faute d'échantillon.
+        // On journalise donc chaque record : les logs sont persistés 365 jours (`/logs/file`),
+        // ils survivent au cap ET aux redéploiements qui réinitialiseraient l'état.
+        // Coût mesuré : ~850 lignes/jour sur ~15 000, soit +6 %. Zéro appel RPC.
+        // Relire avec : grep '🕯️ SHADOW <type>' puis JSON.parse de la fin de ligne.
+        console.log(`  🕯️ SHADOW ${type} ${JSON.stringify(rec)}`);
+        s[type].records.push(rec);
+        if (s[type].records.length > 200) s[type].records.shift(); // cap FIFO (état seulement — la trace durable est dans les logs)
     }
     if (data && data.level != null) { // stacking : compteur par palier
         s[type].byLevel = s[type].byLevel || {};
