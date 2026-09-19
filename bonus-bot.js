@@ -2329,6 +2329,7 @@ async function scan() {
                     // est NÉGATIF (-0,0014) alors que ces combinaisons repassent au-dessus de la ligne.
                     // Le réglage strict fait mieux par trade mais tombe à 4,4 entrées/jour pour 7 places.
                     // OMBRE : on journalise le verdict, on ne bloque rien.
+                    noteTri: ratioRebondVsMax(cs),
                     filtreEP: (() => {
                         const h = (state.trades || []).filter(z => z.tok === tok && z.pnlSolLive != null);
                         const sol = h.reduce((a, z) => a + z.pnlSolLive, 0);
@@ -2408,6 +2409,26 @@ async function scan() {
                     downtrendEntry: downtrend, established };  // established (MC≥5M) → exit régime doux (15m, TP bas)
                 save();
                 if (downtrend) { console.log(`  · [SHADOW downtrend] ${w.symbol} : entrée en LOWER-HIGHS (haut récent -${((1 - recentHigh12 / priorHigh12) * 100).toFixed(0)}% vs avant) — mesure, on juge l'issue (dead-cat ?)`); recordShadow('downtrend', { symbol: w.symbol, dropHighPct: +((1 - recentHigh12 / priorHigh12) * 100).toFixed(0) }); }
+                const liveOpenCountPre = Object.values(state.positions).filter(p => p.live).length;
+                // ── (2026-09-19) OMBRE TRI — mesure la dispersion des candidats, ne décide RIEN ──────────
+                // Le bot prend le PREMIER qualifié, sans aucun score, alors que ~25 candidats pleinement
+                // qualifiés sont refusés chaque jour faute de place (7 slots). Trier plutôt que filtrer a
+                // un avantage décisif : ça ne coûte AUCUN volume — on prend toujours 7 positions, mais les
+                // 7 meilleures disponibles. Et ça résout l'objection du user sur les nouveaux tokens : un
+                // token neuf au beau graphe passe devant un token connu qui s'éteint.
+                // MAIS un tri ne peut pas se mesurer en ombre : il dirait « j'aurais pris X au lieu de Y »
+                // et on ne saurait jamais ce que X aurait rendu — le contrefactuel est invisible.
+                // Ce qu'on PEUT mesurer d'abord, et qui décide si ça vaut le refactor :
+                //   1. la DISPERSION — si tous les candidats d'un instant ont la même note, trier ne
+                //      rapporte rien ; s'il y a un écart franc, il y a de la matière ;
+                //   2. le RANG du choix réel — le premier arrivé était-il le meilleur du moment ?
+                // La note reprend `rebondVsMax` (AUC 0,587 hors échantillon), la seule mesure de graphe
+                // qui sépare et qui s'évalue sur n'importe quel token, connu ou pas.
+                const noteTri = ratioRebondVsMax(cs);
+                console.log(`  📋 [OMBRE tri] ${w.symbol} note ${noteTri != null ? noteTri.toFixed(2) : 'n/d'}`
+                    + ` | ${liveOpenCountPre >= MAX_LIVE_POSITIONS ? 'refusé faute de place' : 'entre'}`
+                    + ` | ${liveOpenCountPre}/${MAX_LIVE_POSITIONS} places prises`);
+
                 const msg = `🎯 ENTRÉE ${w.symbol} (chop-cycle${downtrend ? ' ⚠️downtrend' : ''})\nprix: $${entry.toFixed(8)} | chop ${(cr * 100).toFixed(0)}% | dumpé -${(dumpedFromHigh * 100).toFixed(0)}% sous le haut récent\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: TP +6% OU RSI(2)>90 | cut hors-range -35% | on cycle`;
                 console.log(msg.replace(/\n/g, ' | '));   // Telegram RÉEL uniquement (2026-08-11) : la notif part seulement si l'ouverture live réussit (voir plus bas)
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
@@ -2670,6 +2691,9 @@ async function closePaper(tok, pos, exitPrice, reason) {
         // Meilleure AUC que `rebondRatio` (0,587 contre 0,555) sur échantillon jamais vu.
         // (2026-09-18) état whitelist au moment de l'entrée : { n, sol, prouve }. Rien n'est bloqué.
         // (2026-09-19) verdict combiné « curation EP » au moment de l'entrée. Rien n'est bloqué.
+        // (2026-09-19) note de graphe au moment de la qualification, pour mesurer la dispersion
+        // entre candidats simultanés et le rang du choix réel. Ne décide rien.
+        noteTri: pos.noteTri ?? null,
         filtreEP: pos.filtreEP ?? null,
         tokenProuve: pos.tokenProuve ?? null,
         rebondVsMax: pos.rebondVsMax ?? null,
