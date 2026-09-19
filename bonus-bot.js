@@ -219,6 +219,38 @@ function ratioRebond(cs) {
     return +(amp[1] / amp[0]).toFixed(3);
 }
 
+// ── (2026-09-18) VARIANTE DU USER, MEILLEURE : dernier rebond rapporté au PLUS FORT des 24 h ──────
+// Sa lecture du graphe HUHCAT : entre le sommet du 17/09 à 17 h (+109 % puis +83 %) et nos entrées du
+// lendemain, il ne restait que des soubresauts de +17 % à +35 %. `ratioRebond` compare les deux
+// DERNIERS entre eux — il voyait +20 % puis +35 % et trouvait ça sain. Comparer à l'histoire récente
+// du token est plus juste. Mesuré sur 369 trades jamais utilisés pour la construire :
+//   ratio vs MAX 24 h  AUC 0,587   ·  ratio paire  0,555  ·  amplitude seule 0,507
+//   heures depuis le dernier sommet  0,450 (rien)
+// Par tranche, sur 737 trades :
+//   < 20 %   220 trades  38 % de gagnants  0,00291/trade  ← le token est mort
+//   20-40 %  216         58 %              0,00746
+//   40-70 %  136         65 %              0,00574
+//   70-100 % 165         61 %              0,00601
+// OMBRE : on journalise les deux mesures, on tranche dans deux semaines sur trades réels.
+function ratioRebondVsMax(cs) {
+    if (!cs || cs.length < 98) return null;
+    const fen = cs.slice(-97, -1);
+    const som = [];
+    for (let i = 2; i < fen.length - 2; i++)
+        if (fen[i][2] > fen[i - 1][2] && fen[i][2] > fen[i - 2][2] && fen[i][2] > fen[i + 1][2] && fen[i][2] > fen[i + 2][2])
+            som.push(i);
+    if (som.length < 3) return null;
+    const amp = [];
+    for (let k = 1; k < som.length; k++) {
+        let lo = Infinity;
+        for (let j = som[k - 1]; j <= som[k]; j++) lo = Math.min(lo, fen[j][3]);
+        if (lo > 0) amp.push((fen[som[k]][2] / lo - 1) * 100);
+    }
+    if (amp.length < 2) return null;
+    const max = Math.max(...amp);
+    return max > 0 ? +(amp[amp.length - 1] / max).toFixed(3) : null;
+}
+
 function atrPct15(cs) {   // ATR14 sur les bougies 15m, en % du prix courant
     if (cs.length < 15) return null;
     let tr = 0, cnt = 0;
@@ -2250,6 +2282,14 @@ async function scan() {
                     // ELON générait bien des frais, mais par un churn violent dans une pool trop mince.
                     // Aucun historique de TVL n'existe (ni chez nous, ni chez DexScreener ou GeckoTerminal) :
                     // il faut donc commencer à le garder. Coût nul, la donnée est déjà dans `w.metPools`.
+                    rebondVsMax: (() => {
+                        const v = ratioRebondVsMax(cs);
+                        if (v != null && v < 0.20)
+                            console.log(`  📉 [OMBRE vsMax] ${w.symbol} : dernier rebond à ${(v * 100).toFixed(0)}% du plus fort des 24 h — TOKEN QUI S'ÉTEINT, aurait été bloqué`);
+                        else if (v != null)
+                            console.log(`  📈 [OMBRE vsMax] ${w.symbol} : dernier rebond à ${(v * 100).toFixed(0)}% du plus fort des 24 h`);
+                        return v;
+                    })(),
                     scoreEntree: (() => {
                         const r = ratioRebond(cs);
                         const sc = scoreEntree(r, w.vol != null ? Math.round(w.vol / 1000) : null,
@@ -2552,6 +2592,9 @@ async function closePaper(tok, pos, exitPrice, reason) {
         // >= 2 = l'ombre aurait refusé l'entrée. Rien n'est bloqué.
         // (2026-09-18) score d'entrée combiné (rebond + volume + fee/TVL + drawdown, z-scores figés).
         // < -0,60 = quartile bas, le seul négatif sur l'échantillon de test. Rien n'est bloqué.
+        // (2026-09-18) variante du user : dernier rebond / plus fort des 24 h. < 0,20 = 38 % de gagnants.
+        // Meilleure AUC que `rebondRatio` (0,587 contre 0,555) sur échantillon jamais vu.
+        rebondVsMax: pos.rebondVsMax ?? null,
         scoreEntree: pos.scoreEntree ?? null,
         cataCount: pos.cataCount ?? null,
         rebondRatio: pos.rebondRatio ?? null,
