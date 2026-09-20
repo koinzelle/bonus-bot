@@ -1831,7 +1831,21 @@ async function scan() {
                 // TRAILING (2026-08-04, data live : le RSI coupait les gains à +2.5% vs cuts -30%, breakeven).
                 // - Runner : dès +6% LP (armé), on TRAIL 1% → sort quand ça retombe 1% sous le peak (ride le
                 //   pump, ex JLY +12%). - Petit bounce pas encore armé : RSI2>90 + profit (scalp). Sur realGain.
-                pos.peakGain = Math.max(pos.peakGain || 0, realGain);
+                // ── (2026-09-20) LE PEAK NE SE RELÈVE QUE SUR UNE VALEUR LP RÉELLE ──────────────
+                // `realGain` vaut la valeur on-chain (`lot`/`indiv`) OU, en repli, le gain de PRIX brut
+                // (`let realGain = gain`, plus haut). Mélanger les deux dans `peakGain` est ce qui a
+                // produit le faux sommet de JEANPHIL le 20/09 : `LP 16.8% | peak 16.8% | src:prix`
+                // alors que la chaîne disait 8,8 %. Deux dégâts : le seuil de trail se cale 8 points
+                // trop haut, et comme le repli monte la valeur ET le peak ensemble, `rg <= peak - TRAIL`
+                // devient structurellement infaisable à l'instant du repli. Le peak est la référence
+                // d'une sortie : il n'accepte que ce que la chaîne a réellement mesuré.
+                const srcLpReelle = lvSrc === 'lot' || lvSrc === 'indiv';
+                if (srcLpReelle) pos.peakGain = Math.max(pos.peakGain || 0, realGain);
+                else if (realGain > (pos.peakGain || 0)) {
+                    recordShadow('peakFantome', { symbol: pos.symbol, tok, src: lvSrc, realGain: +(realGain * 100).toFixed(2),
+                        peakGarde: +((pos.peakGain || 0) * 100).toFixed(2), lvRg: pos._lv ? +(pos._lv.rg * 100).toFixed(2) : null,
+                        lvAgeS: pos._lv ? Math.round((Date.now() - pos._lv.ts) / 1000) : null });
+                }
 
                 // ── OMBRE « objectif de prix » (déplacée ici le 2026-09-16) ──────────────────────────
                 // BUG CORRIGÉ : ce bloc était 120 lignes plus haut, AVANT `let realGain` (ligne ~1601).
@@ -2497,8 +2511,42 @@ async function scan() {
 // TRAJECTOIRE LP (2026-08-19) : pose _lv ET historise (valeur%, bin, ts) → au close on l'attache au trade →
 // consultable via /trades?all=1 (jamais perdue). Un trou de temps entre 2 points = lecture gelée (429) ;
 // une décroissance lisse = mécanique LP. Tranche « 429 vs LP non-linéaire » sur les sorties trail tardives.
+// ── (2026-09-20) DÉTECTEUR DE GEL — SUR LA VALEUR, PAS SUR L'ÂGE ────────────────────────────────
+// Le garde-fou du 13/09 (`🕓`) ignore le lot quand la LECTURE est vieille. Il n'a jamais tiré sur
+// JEANPHIL (0 fois en 10 min de gel, 1 seule fois de toute la journée) parce que les lectures
+// étaient fraîches — elles renvoyaient simplement toujours le même `activeId`. On compte donc les
+// lectures CONSÉCUTIVES à bin identique. Seuil à 3 : la cadence d'une position armée est de 8 s,
+// donc 3 lectures ≈ 25 s d'immobilité, très en dessous des 10 min observées et au-dessus du bruit
+// normal (une pool calme peut rester un bin ou deux le temps de deux lectures).
+// (2026-09-20, 2e passe) 3 lectures = ~25 s, BIEN trop court : une pool calme reste légitimement
+// plusieurs minutes dans le même bin, le détecteur tirerait en continu et appellerait DexScreener
+// toutes les 15 s pour rien. On exige DEUX conditions — n lectures identiques ET une durée — ce qui
+// laisse largement la place au cas réel (JEANPHIL : 10 min, ~76 lectures) tout en ignorant le calme
+// ordinaire. `_gelAt` est posé par `noteGel` au premier bin d'une série.
+// (2026-09-20, 3e passe — objection user : « quelle pool calme si le trail est armé »). Il a raison
+// sur le fond et le détail le contredit : `peakGain` est un HIGH-WATER, il ne redescend jamais (cf.
+// 28/09 `bonus-bot.js:1358`, « une position qui a touché 5,99 % restait en lecture 8 s À VIE, même à
+// -30 % »). Une armée PEUT donc dormir. Mais attendre en aveugle quand le trail est armé coûte cher.
+// On remplace donc la durée par le test qui sépare vraiment les deux cas : LE BIN NE BOUGE PAS ALORS
+// QUE LE PRIX BOUGE. Pool réellement calme → le prix ne bouge pas non plus → aucun déclenchement et
+// aucun appel DexScreener. Pool qui bouge + bin figé → c'est le cas JEANPHIL, et on part tout de
+// suite. Le prix utilisé (`pos.lastPx`, bougies) est DÉJÀ en mémoire : ce test est gratuit.
+const GEL_LECTURES = parseInt(process.env.GEL_LECTURES || '4', 10);   // ~35 s à la cadence 8 s des armées
+const GEL_PRIX_MIN = parseFloat(process.env.GEL_PRIX_MIN || '0.02');  // le prix a bougé ≥2 % pendant que le bin ne bougeait pas
+// Transfert prix→LP mesuré on-chain le 13/09 : à la HAUSSE le LP prend ~0,409 × la hausse du prix
+// (la liquidité Bid-Ask est aux extrêmes, un mouvement au milieu de la range ne capte presque rien).
+// Utiliser le gain de PRIX brut comme s'il était un gain de LP est ce qui a fabriqué le faux sommet
+// à +16,8 % sur JEANPHIL alors que la chaîne disait +8,8 %.
+const PRIX_VERS_LP_HAUSSE = parseFloat(process.env.PRIX_VERS_LP_HAUSSE || '0.409');
+function noteGel(pos, bin) {
+    if (bin == null) return 0;
+    if (pos._gelBin === bin) pos._gelN = (pos._gelN || 1) + 1;
+    else { pos._gelBin = bin; pos._gelN = 1; pos._gelAt = Date.now(); pos._gelPx0 = pos.lastPx || null; }
+    return pos._gelN;
+}
 function recordLv(pos, rg, bin, raw) {
     const now = Date.now();
+    noteGel(pos, bin);
     if (raw) pos._raw = { px: raw.px, x: raw.x, y: raw.y, fees: raw.fees, readTs: raw.readTs };   // (2026-09-11) termes bruts pour diagnostic
     // ── (2026-09-14) VÉLOCITÉ DE FEES ───────────────────────────────────────────────────────────
     // Les fees accumulées sont déjà lues à CHAQUE cycle (repliées dans x et y depuis toujours) mais
@@ -3033,6 +3081,52 @@ async function fastPositionCheck() {
                 console.log(`  🔺 ${pos.symbol} | peak LP ${(pos.peakGain * 100).toFixed(2)}% (+${((pos.peakGain - pkAvant) * 100).toFixed(2)} pt) | LP ${(rg * 100).toFixed(2)}% | rapide${franchit ? ` | ⚡ ARMEMENT franchi (${(TP_PCT * 100).toFixed(0)}%)` : ''}`);
             }
             const armed = pos.peakGain >= TP_PCT, exitPx = pos.lastPx || pos.entry;
+            // ── (2026-09-20) LECTURE GELÉE → ON PILOTE LA SORTIE SUR DEXSCREENER ────────────────
+            // Cas JEANPHIL : 10 min de lectures FRAÎCHES et IDENTIQUES (bin -288) pendant que la pool
+            // faisait un aller-retour visible sur ses propres bougies. Le trail ne pouvait pas partir :
+            // sa référence ne bougeait plus. Les deux garde-fous existants ont tourné à vide — `⚡`
+            // force une relecture (qui réinterroge le même nœud et renvoie la même chose) et `🕓`
+            // teste l'âge (qui était bon). Ici on teste la VALEUR, et on se donne une source externe.
+            //
+            // POURQUOI CE N'EST PAS « FERMER SUR LE PRIX » : le repli `src:prix` existant prenait le
+            // gain de PRIX BRUT comme s'il était du LP — d'où le faux sommet à +16,8 % quand la chaîne
+            // disait +8,8 %. Ici (a) on part du DERNIER LP DE CONFIANCE et on n'applique que le DELTA
+            // de prix depuis le gel, jamais un niveau recalculé depuis l'entrée ; (b) on convertit avec
+            // le transfert mesuré on-chain le 13/09 (0,409 à la hausse, 0,44 à la baisse) ; (c) cette
+            // estimation ne RELÈVE JAMAIS `peakGain` — sinon elle remonte sa propre référence et le
+            // trail ne peut structurellement jamais tirer, ce qui est exactement ce qui s'est passé.
+            const derivePrix = (pos._gelPx0 && pos.lastPx) ? Math.abs(pos.lastPx / pos._gelPx0 - 1) : 0;
+            const gele = armed && (pos._gelN || 0) >= GEL_LECTURES && derivePrix >= GEL_PRIX_MIN;
+            if (gele) {
+                if (!pos._gelAnchor) {
+                    const slot = live.currentSlot ? await live.currentSlot() : null;
+                    const rot = live.resetPoolRead ? live.resetPoolRead(pos.live.poolAddress) : null;
+                    pos._gelAnchor = { rg, px: null, at: Date.now() };
+                    console.log(`  🧊 ${pos.symbol}: bin ${bv.activeBinId} identique sur ${pos._gelN} lectures alors que le prix a bougé de ${(derivePrix * 100).toFixed(1)}%`
+                        + ` | slot ${slot ?? '?'} | LP gelé ${(rg * 100).toFixed(2)}% | peak ${(pos.peakGain * 100).toFixed(2)}%`
+                        + (rot ? ` | pool purgée, RPC #${rot.rpcAvant}→#${rot.rpcApres} sur ${rot.providers}` : ''));
+                    if (rot && rot.providers < 2) console.log(`  ⚠️ ${pos.symbol}: UN SEUL provider RPC — la rotation est un no-op, ajouter un endpoint à RPC_URLS`);
+                }
+                // prix externe, throttlé à 15 s (la boucle tourne toutes les 10 s)
+                if (!pos._gelPxAt || Date.now() - pos._gelPxAt > 15000) {
+                    pos._gelPxAt = Date.now();
+                    try {
+                        const di = await dexInfo(tok);
+                        if (di && di.price > 0) {
+                            if (pos._gelAnchor.px == null) pos._gelAnchor.px = di.price;
+                            const d = di.price / pos._gelAnchor.px - 1;
+                            const lpEst = pos._gelAnchor.rg + d * (d >= 0 ? PRIX_VERS_LP_HAUSSE : 0.44);
+                            const seuil = pos.peakGain - TRAIL;
+                            console.log(`  🧊 ${pos.symbol} DexScreener: prix ${(d * 100).toFixed(1)}% depuis le gel`
+                                + ` → LP estimé ${(lpEst * 100).toFixed(2)}% (seuil ${(seuil * 100).toFixed(2)}%)`);
+                            if (lpEst <= seuil) {
+                                await closePaper(tok, pos, exitPx, `TRAIL LP ~${(lpEst * 100).toFixed(1)}% via DexScreener (peak +${(pos.peakGain * 100).toFixed(1)}%, lecture chaîne gelée ${pos._gelN}×)`);
+                                continue;
+                            }
+                        }
+                    } catch (e) { console.log(`  ⚠️ ${pos.symbol}: DexScreener KO (${String(e.message).slice(0, 40)}) — on garde la chaîne`); }
+                }
+            } else if (pos._gelAnchor) { delete pos._gelAnchor; delete pos._gelPxAt; }
             // ── (2026-09-08) TRACE DE CADENCE SUR POSITION ARMÉE ────────────────────────────────
             // Cas OTC et HONTER : armées à 6,16 % et 8,65 %, sorties à 3,8 % et 3,1 % — soit 2,4 et
             // 5,6 points rendus pour un trail réglé à 1. Une position armée relève du palier 8 s

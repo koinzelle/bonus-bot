@@ -788,4 +788,22 @@ async function closeVerified(pos) {
     }
 }
 
-module.exports = { enabled: true, solBalance, findMeteoraPool, transferFeeBps, MAX_TRANSFER_FEE_BPS, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions };
+// ── (2026-09-20) OUTILS DE DIAGNOSTIC DU GEL DE LECTURE ─────────────────────────────────────────
+// Cas JEANPHIL du 20/09 20:44→20:54 : `px` (donc `activeId`, dont il est une fonction arithmétique
+// pure) identique sur ~76 lectures FRAÎCHES pendant 10 min, dont deux relectures forcées. Le
+// garde-fou du 13/09 ne pouvait rien voir : il teste l'ÂGE de la lecture, pas le fait que la valeur
+// ait changé — 0 ligne `🕓` sur toute la fenêtre. Deux causes possibles et un seul champ les sépare :
+//   slot qui AVANCE + activeId figé  → le nœud sert un état périmé  → il faut changer de provider
+//   slot FIGÉ                         → le nœud est bloqué           → failover
+//   slot qui avance + volume réel nul → la pool dormait vraiment     → rien à réparer côté RPC
+// `getSlot()` est un appel EN PLUS (Anchor n'expose pas le contexte) : réservé aux positions armées.
+async function currentSlot() { try { return await connection.getSlot(); } catch (_) { return null; } }
+// Purge l'instance DLMM cachée d'une pool ET avance le pointeur de provider : la prochaine lecture
+// repart d'un objet neuf sur un autre endpoint. Sans second provider valide la rotation est un no-op.
+function resetPoolRead(poolAddress) {
+    _dlmmCache.delete(poolAddress);
+    const avant = _rpcIdx;
+    _rpcIdx = (_rpcIdx + 1) % RPC_URLS.length;
+    return { poolPurgee: true, rpcAvant: avant, rpcApres: _rpcIdx, providers: RPC_URLS.length };
+}
+module.exports = { enabled: true, solBalance, findMeteoraPool, transferFeeBps, MAX_TRANSFER_FEE_BPS, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions, currentSlot, resetPoolRead };

@@ -1,4 +1,4 @@
-# État du bonus-bot — mis à jour le 19/09/2026
+# État du bonus-bot — mis à jour le 20/09/2026
 
 Document **vivant** : à relire au début de chaque session et à mettre à jour à la fin.
 Il existe pour éviter de re-dériver des conclusions qui ont coûté cher à établir, et
@@ -519,7 +519,13 @@ des ratios par épisode. Pondéré par le mouvement — le bon calcul, les fees 
 7 positions concurrentes, écarts de ±0,14 à 0,20 SOL (la taille d'une ouverture), moyenne **+0,0092/trade**,
 un écart positif donc du bruit pur. Un instrument faux est pire que pas d'instrument.
 
-## 3quaterdecies. LP FIGÉ — CAUSE TROUVÉE ET CORRIGÉE (13/09) — clôt le §3sexies
+## 3quaterdecies. LP FIGÉ — À MOITIÉ CORRIGÉ SEULEMENT (13/09) — voir §17 (20/09)
+
+> **⚠️ CORRECTION DU 20/09 : ce titre disait « CAUSE TROUVÉE ET CORRIGÉE » et « clôt le §3sexies ».
+> C'est FAUX.** Le correctif ci-dessous traite le cas « le lot est VIEUX » (test sur `readTs`).
+> Le 20/09, JEANPHIL a gelé 10 minutes avec des lectures **FRAÎCHES et IDENTIQUES** : le test d'âge
+> n'avait rien à signaler, la ligne `🕓` est apparue **0 fois** pendant le gel (1 fois dans la
+> journée entière). Il existe donc un second mode de gel, non couvert. Voir §17.
 
 **L'instrumentation du 12/09 a capturé le bug en flagrant délit. Cas baton, 12/09 23:44→23:49 :**
 
@@ -2041,3 +2047,79 @@ Armé 6,04 %, pic 6,97 %, seuil 5,97 %, sorti à +1,8 %. `lvHist` : 19:27:34 LP 
 Sur 255 sorties TRAIL depuis le 01/09 : **60 % rendent ≤1,5 pt** (réglage = 1), médiane 1,34 pt ;
 seules 4 % rendent >5 pt, toujours sur le même motif (MARKET 15 bins, CHAIN 15, STONK 13, UBER 14).
 Lire plus vite ne rattrape pas un gap. Confirme le verdict du 08/09 sur HONTER, preuve par les bins.
+
+
+---
+
+## 17. 20/09 — LP FIGÉ, SECOND MODE : LECTURE FRAÎCHE MAIS IDENTIQUE
+
+**Cas JEANPHIL, 20:44 → 20:54.** `px 0.0000569435` (donc `activeId`, dont il est une fonction
+arithmétique pure) **identique sur ~76 lectures**, dont deux relectures FORCÉES, pendant que les
+bougies 1 min **de la pool elle-même** donnaient :
+
+| UTC | close | |
+|---|---:|---|
+| 20:43 | 0,006733808 | sommet — et 0,0000569435 × 118,25 = **0,006734**, la valeur où le bot s'est figé |
+| 20:45 | 0,005867060 | −12,9 % |
+| 20:48 | 0,006639551 | +13,2 % |
+| 20:56 | 0,005849684 | −11,9 % |
+
+**Les deux garde-fous existants ont tourné à vide :**
+- `⚡ écart prix↔LP` (`bonus-bot.js:1737`) a bien tiré deux fois et invalidé le lot (`_batchLv.ts = 0`).
+  La relecture était réellement fraîche — **et a renvoyé la même valeur**. Forcer une relecture ne sert
+  à rien quand on réinterroge le même nœud.
+- `🕓 ARMED_MAX_AGE_MS` (13/09) teste l'ÂGE de la lecture. Elle était bonne (0 à 17 s). **0 déclenchement.**
+
+**PIÈGE DE MÉTHODE — j'ai conclu faux avant de vérifier.** J'ai sondé la pool depuis un RPC public et
+conclu « la pool est lente, le bot lisait juste ». La sonde tournait à **20:57-20:59, APRÈS la fenêtre
+du gel**. Une observation hors fenêtre ne dit rien sur la fenêtre. C'est le user qui a rétabli les
+faits en demandant les bougies DexScreener. **Toujours vérifier que la fenêtre de mesure couvre
+l'événement mesuré.**
+
+**CAUSE ENCORE OUVERTE.** Deux explications produisent le même log et un seul champ les sépare :
+- slot qui AVANCE + `activeId` figé → le nœud sert un état périmé → changer de provider
+- slot FIGÉ → nœud bloqué → failover
+- slot qui avance + volume réel nul → la pool dormait → rien à réparer (les bougies de 20:45 et 20:48
+  sont à volume **0** et **6**, donc cette hypothèse n'est pas écartée)
+
+**Aggravant : il n'y a qu'un seul provider RPC utilisable.** `RPC_URLS` contient deux clés Helius et
+**la seconde est vide**. Le failover de `rotatingFetch` n'a nulle part où aller, donc tous les
+garde-fous qui reposent sur « relire » tournent à vide. **Premier correctif à faire, côté Railway :
+ajouter un vrai second endpoint.**
+
+### Le faux sommet — corrigé
+
+À 20:57:08 : `LP 16.8% | peak 16.8% | armé✓ | trail≤15.8% | src:prix`, quand la chaîne disait 8,8 %.
+Le repli prenait le gain de **PRIX BRUT** pour un gain de **LP**. Deux dégâts :
+1. le seuil de trail se cale 8 points trop haut ;
+2. le repli monte la valeur ET le peak ensemble → `rg <= peak - TRAIL` devient **structurellement
+   infaisable à l'instant du repli**. C'est la vraie réponse à « pourquoi il n'a pas fermé ».
+
+**DÉPLOYÉ** : `peakGain` n'accepte plus que `lvSrc === 'lot' | 'indiv'`. Tout relèvement refusé part en
+ombre `🕯️ SHADOW peakFantome` — à lire dans quelques jours pour savoir combien de trades étaient
+concernés.
+
+### DÉPLOYÉ — détecteur de gel sur la VALEUR + sortie via DexScreener
+
+- `noteGel()` compte les lectures consécutives à `activeId` identique.
+- Déclenchement : position **armée** + `GEL_LECTURES` (4 ≈ 35 s) lectures à bin identique **ET** le
+  prix (`pos.lastPx`, déjà en mémoire, donc gratuit) a bougé de ≥ `GEL_PRIX_MIN` (2 %) pendant ce temps.
+  **Objection du user, retenue : « quelle pool calme si le trail est armé ? »** — il a raison sur le
+  fond, même si `peakGain` est un high-water (une armée PEUT dormir, cf. §28/08). Un garde-fou de
+  durée en aveugle coûtait cher sur une position armée ; le test de divergence est plus rapide ET
+  plus précis : pool réellement calme → le prix ne bouge pas non plus → aucun déclenchement ni appel
+  DexScreener ; pool qui bouge + bin figé → c'est JEANPHIL, et on part en ~35 s au lieu de 10 min.
+- Action : log `🧊` avec le **slot** (`live.currentSlot()`, un appel en plus, réservé aux armées —
+  Anchor n'expose pas le contexte, ma première affirmation « coût nul » était fausse), purge de
+  l'instance DLMM et rotation forcée du provider (`live.resetPoolRead`), puis prix DexScreener
+  throttlé à 15 s.
+- **Estimation LP, et pourquoi ce n'est pas « fermer sur le prix »** : on part du **dernier LP de
+  confiance** et on n'applique que le **delta de prix depuis le gel**, jamais un niveau recalculé
+  depuis l'entrée ; conversion avec le transfert mesuré on-chain le 13/09 (**0,409 à la hausse**,
+  0,44 à la baisse) ; et cette estimation **ne relève jamais `peakGain`**.
+- Si `lpEst <= peak - TRAIL` → fermeture, raison `TRAIL LP ~x% via DexScreener (… lecture chaîne gelée N×)`.
+
+**À lire dans les jours qui viennent :** les lignes `🧊`. Si elles n'apparaissent jamais, le gel était
+un accident isolé. Si elles apparaissent avec un slot qui avance, c'est le nœud — et il faut le
+second provider. Si elles apparaissent sur des pools à volume nul, c'est un faux positif et il faut
+durcir `GEL_MS`.
