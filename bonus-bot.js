@@ -2649,7 +2649,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
     pos._closing = true; pos._closingAt = Date.now();
     // ── LIVE : fermer la vraie position D'ABORD. Si le close réel échoue → on GARDE le tracking
     // (pattern anti-world de bot 1 : jamais supprimer une position pas vidée on-chain).
-    let pnlSolLive = null, trade_pnlSource = null;
+    let pnlSolLive = null, trade_pnlSource = null, closeRate = false;
     if (pos.live && live.enabled) {
         // anti-spam Telegram : la sortie se re-déclenche à chaque tick tant que la position est GARDÉE
         // (close en échec) → on n'alerte qu'une fois / 15 min par position, mais on RE-TENTE le close à
@@ -2687,6 +2687,14 @@ async function closePaper(tok, pos, exitPrice, reason) {
                 // enregistré avec `pnlSolLive: null` et `pnlSource: 'flat-to-flat'` : visible comme
                 // anomalie, mais son chiffre n'entre dans aucune somme.
                 pnlSolLive = null; trade_pnlSource = 'flat-to-flat';
+                // ── (2026-09-20) UN CLOSE RATÉ N'EST PAS UNE SORTIE — cas JEANPHIL ────────────────
+                // 20/09 21:00:09 : la lecture on-chain échoue PARCE QUE LA POSITION N'EXISTAIT DÉJÀ
+                // PLUS — le user l'avait fermée à la main. Le bot a quand même enregistré une sortie
+                // `TRAIL LP +13.9% (peak +16.9%)`, chiffres venant du repli PRIX, avec
+                // `pnlSol: +0.1387` et un incrément du WR. `pnlSolLive: null` protégeait les sommes en
+                // SOL, pas le reste : un close qui n'a rien vendu comptait comme un trade gagnant.
+                // On le marque donc pour ce qu'il est et on n'invente aucun PnL de prix.
+                closeRate = true;
                 const indic = (r.proceedsSol != null && pos.live.depositedSol != null)
                     ? +(r.proceedsSol - pos.live.depositedSol).toFixed(4) : null;
                 console.log(`  ⚠️ ${pos.symbol}: lecture on-chain KO au close → PnL NON ENREGISTRÉ (indicatif flat-to-flat ${indic != null ? indic : '?'} SOL, non fiable : pollué par les ouvertures concurrentes)`);
@@ -2777,7 +2785,8 @@ async function closePaper(tok, pos, exitPrice, reason) {
             ? +Math.max(...pos._tvlHist.filter(q => q.tvl > 0).map(q => q.v / q.tvl)).toFixed(2) : null,
         tvlPoints: (pos._tvlHist || []).length,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
-        pnlPct: +(pnlPct * 100).toFixed(2), pnlSol: +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
+        pnlPct: closeRate ? null : +(pnlPct * 100).toFixed(2), pnlSol: closeRate ? null : +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
+        closeRate: closeRate || null,   // (2026-09-20) la fermeture n'a rien vendu : position déjà absente on-chain
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
         drawdownPct: pos.drawdownPct ?? null, dumpDepthPct: pos.dumpDepthPct ?? null, entryMcK: pos.entryMcK ?? null, trueAthMc: pos.trueAthMc ?? null, pctOfTrueAth: pos.pctOfTrueAth ?? null, vol24hK: pos.vol24hK ?? null, downtrendEntry: pos.downtrendEntry ?? null,
         athBreaks: pos.athBreaks ?? null, feeTvl: pos.feeTvl ?? null, peakGainPct: pos.peakGain != null ? +(pos.peakGain * 100).toFixed(1) : null, // (2026-08-19) comble le trou + peak pour lire la trajectoire
@@ -2792,7 +2801,8 @@ async function closePaper(tok, pos, exitPrice, reason) {
         outBottomEpisodes: pos._obEpisodes || 0,
         // (2026-09-11) 'flat-to-flat' = close raté, pnlSolLive volontairement null (chiffre non fiable).
         pnlSource: trade_pnlSource,
-        openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(), reason,
+        openedAt: new Date(pos.openedAt).toISOString(), closedAt: new Date().toISOString(),
+        reason: closeRate ? `CLOSE RATÉ (position déjà absente on-chain) — ${reason}` : reason,
     };
     state.trades.push(trade);
     delete state.positions[tok];
@@ -2848,8 +2858,9 @@ async function closePaper(tok, pos, exitPrice, reason) {
         console.log(`  ⚠️ [OMBRE cata] ${pos.symbol}: ${c}e catastrophe (${pnlSolLive.toFixed(4)} SOL)${c >= 2 ? ' — serait BANNI à partir de maintenant' : ''}`);
     }
     save();
-    const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
-    const wr = state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100;
+    const tot = state.trades.reduce((s, t) => s + (t.pnlSol || 0), 0);   // (2026-09-20) pnlSol est null sur un close raté → || 0 sinon NaN
+    const _wrBase = state.trades.filter(t => !t.closeRate);   // (2026-09-20) exclut les closes ratés (rien vendu)
+    const wr = _wrBase.length ? _wrBase.filter(t => t.pnlSol > 0).length / _wrBase.length * 100 : 0;
     // PnL LP réel en % de la mise (= ce que Meteora affiche) — souvent TRÈS différent du % prix quand le
     // token a fait un V (Bid-Ask achète le dip, revend la remontée → +66% LP sur +4.9% prix, cas Looks).
     const liveLine = pnlSolLive != null ? `\n💵 PnL LP RÉEL: ${livePct != null ? `${livePct > 0 ? '+' : ''}${livePct.toFixed(0)}% (` : ''}${pnlSolLive > 0 ? '+' : ''}${pnlSolLive} SOL${livePct != null ? ')' : ''} — fees incluses` : '';
@@ -2930,7 +2941,7 @@ http.createServer((req, res) => {
         return res.end(`fermeture lancée: ${targets.map(([, p]) => p.symbol).join(', ')}`);
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    const tot = state.trades.reduce((s, t) => s + t.pnlSol, 0);
+    const tot = state.trades.reduce((s, t) => s + (t.pnlSol || 0), 0);   // (2026-09-20) pnlSol est null sur un close raté → || 0 sinon NaN
     // athAgeBins (2026-07-30, demande user) : issue par tranche d'âge de l'ATH à l'entrée, sur TOUS les
     // trades fermés → le tableau athAgeH↔issue se remplit tout seul. À relire quand ~30-40+ trades (voir
     // mémoire project-athage-vs-outcome-review). Bin = <2h / 2-5h / 5-12h / >12h.
@@ -3020,7 +3031,7 @@ http.createServer((req, res) => {
         updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
         trades: state.trades.length,
-        winRate: state.trades.length ? Math.round(state.trades.filter(t => t.pnlSol > 0).length / state.trades.length * 100) + '%' : null,
+        winRate: (() => { const b = state.trades.filter(t => !t.closeRate); return b.length ? Math.round(b.filter(t => t.pnlSol > 0).length / b.length * 100) + '%' : null; })(),   // (2026-09-20) hors closes ratés
         pnlSolPaper: +tot.toFixed(4),
         // A/B live : trailing (réel) vs TP fixe +6% (ombre) sur les MÊMES entrées
         blockCount: state.blockCount || {}, // compteur cumulé des raisons de non-entrée → voir le vrai goulot
