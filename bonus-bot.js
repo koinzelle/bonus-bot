@@ -2532,7 +2532,8 @@ async function scan() {
 // aucun appel DexScreener. Pool qui bouge + bin figé → c'est le cas JEANPHIL, et on part tout de
 // suite. Le prix utilisé (`pos.lastPx`, bougies) est DÉJÀ en mémoire : ce test est gratuit.
 const GEL_LECTURES = parseInt(process.env.GEL_LECTURES || '4', 10);   // ~35 s à la cadence 8 s des armées
-const GEL_PRIX_MIN = parseFloat(process.env.GEL_PRIX_MIN || '0.02');  // le prix a bougé ≥2 % pendant que le bin ne bougeait pas
+const GEL_PRIX_MIN = parseFloat(process.env.GEL_PRIX_MIN || '0.02');
+const GEL_PEAK_SUIVI = process.env.GEL_PEAK_SUIVI !== '0';   // pendant un gel, l'estimation DexScreener fait le peak (demande user 20/09)  // le prix a bougé ≥2 % pendant que le bin ne bougeait pas
 // Transfert prix→LP mesuré on-chain le 13/09 : à la HAUSSE le LP prend ~0,409 × la hausse du prix
 // (la liquidité Bid-Ask est aux extrêmes, un mouvement au milieu de la range ne capte presque rien).
 // Utiliser le gain de PRIX brut comme s'il était un gain de LP est ce qui a fabriqué le faux sommet
@@ -3123,6 +3124,20 @@ async function fastPositionCheck() {
                             if (pos._gelAnchor.px == null) pos._gelAnchor.px = di.price;
                             const d = di.price / pos._gelAnchor.px - 1;
                             const lpEst = pos._gelAnchor.rg + d * (d >= 0 ? PRIX_VERS_LP_HAUSSE : 0.44);
+                            // (2026-09-20, demande user) PENDANT LE GEL, L'ESTIMATION FAIT LE PEAK.
+                            // Sinon le bot traile depuis le dernier peak on-chain et rend tout ce qui
+                            // s'est passé pendant le gel : cas JEANPHIL, peak vu 8,81 % alors que le LP
+                            // réel montait à ~11 % → sortie vers 7,81 % au lieu de ~10 %.
+                            // Contrairement au repli `src:prix` qui a fabriqué le faux sommet à 16,8 %,
+                            // `lpEst` est ancré sur un LP RÉEL et converti (0,409/0,44) : valeur et peak
+                            // sont sur la même échelle, donc trailer dessus est cohérent.
+                            // Risque assumé : si la conversion surestime, le peak monte trop haut et la
+                            // première vraie lecture déclenche une sortie basse (le prix baisse mais le
+                            // LP monte dans 16,2 % des trades, note du 05/09). Réglable : GEL_PEAK_SUIVI=0.
+                            if (GEL_PEAK_SUIVI && lpEst > pos.peakGain) {
+                                console.log(`  🧊 ${pos.symbol}: peak relevé ${(pos.peakGain * 100).toFixed(2)}% → ${(lpEst * 100).toFixed(2)}% (estimation DexScreener pendant le gel)`);
+                                pos.peakGain = lpEst;
+                            }
                             const seuil = pos.peakGain - TRAIL;
                             console.log(`  🧊 ${pos.symbol} DexScreener: prix ${(d * 100).toFixed(1)}% depuis le gel`
                                 + ` → LP estimé ${(lpEst * 100).toFixed(2)}% (seuil ${(seuil * 100).toFixed(2)}%)`);
