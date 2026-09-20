@@ -3027,7 +3027,17 @@ http.createServer((req, res) => {
         mode: live.enabled ? 'LIVE' : 'PAPER',
         maxLivePositions: MAX_LIVE_POSITIONS, maxPaperPositions: MAX_POSITIONS,
         exitTuning: { armPct: TP_PCT * 100, trailPct: TRAIL * 100, bounceArmPct: RANGE_DOWN * 100, cutHardPct: CUT_HARD * 100, rsi2FloorLpPct: RSI2_FLOOR_LP * 100 },
-        entryTuning: { feeTvlFloor: FEE_TVL_FLOOR, rsiMax: 50, mourantTtl: MOURANT_TTL_H > 0 ? MOURANT_TTL_H + 'h' : 'à vie', atrEntry: ATR_ENTRY, atrK: ATR_K },
+        entryTuning: { feeTvlFloor: FEE_TVL_FLOOR, rsiMax: 50, mourantTtl: MOURANT_TTL_H > 0 ? MOURANT_TTL_H + 'h' : 'à vie', atrEntry: ATR_ENTRY, atrK: ATR_K,
+            // (2026-09-20) VALEURS EFFECTIVES DES GARDE-FOUS TAXE. Elles n'étaient exposées nulle part :
+            // impossible de vérifier depuis l'extérieur qu'une variable Railway avait bien été prise en
+            // compte, il fallait attendre qu'un candidat taxé atteigne la porte pour voir la trace.
+            // ⚠️ `MAX_TRANSFER_FEE_BPS` est déclaré DEUX FOIS avec des défauts différents : 1000 ici
+            // (bonus-bot.js:355, c'est celui qui garde l'entrée ligne 2322) et 300 dans bonus-live.js:291,
+            // exporté mais jamais utilisé. C'est celui d'ici qui compte.
+            maxTransferFeeBps: MAX_TRANSFER_FEE_BPS,
+            maxTaxedPositions: MAX_TAXED_POSITIONS,
+            taxedMinBps: TAXED_MIN_BPS,
+        },
         updatedAt: new Date().toISOString(),
         positions: state.positions, watchCount: Object.keys(state.watch).length,
         trades: state.trades.length,
