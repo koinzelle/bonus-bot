@@ -3099,13 +3099,20 @@ async function fastPositionCheck() {
             const gele = armed && (pos._gelN || 0) >= GEL_LECTURES && derivePrix >= GEL_PRIX_MIN;
             if (gele) {
                 if (!pos._gelAnchor) {
+                    // ── (2026-09-20, retiré le soir même — demande user) PAS DE ROTATION NI DE PURGE ──
+                    // La « parade » posée une heure plus tôt (purge de l'instance DLMM + rotation forcée
+                    // du provider) était pire qu'inutile : `RPC_URLS` a deux entrées mais la 2e clé
+                    // Helius est VIDE, donc la rotation bascule sur une clé morte, prend un 429 et
+                    // revient — un aller-retour gaspillé à chaque gel. Et la purge force un
+                    // `DLMM.create` (l'un des appels les plus chers) pour rien, puisque `getActiveBin()`
+                    // relit le lbPair depuis la chaîne de toute façon : le cache d'instance n'a jamais
+                    // été en cause. Elle ne redeviendra utile que le jour où un VRAI second endpoint
+                    // sera dans `RPC_URLS` — et il faudra alors la réécrire en connaissance de la cause,
+                    // que le `slot` ci-dessous aura établie. On garde le diagnostic, on jette le remède.
                     const slot = live.currentSlot ? await live.currentSlot() : null;
-                    const rot = live.resetPoolRead ? live.resetPoolRead(pos.live.poolAddress) : null;
                     pos._gelAnchor = { rg, px: null, at: Date.now() };
                     console.log(`  🧊 ${pos.symbol}: bin ${bv.activeBinId} identique sur ${pos._gelN} lectures alors que le prix a bougé de ${(derivePrix * 100).toFixed(1)}%`
-                        + ` | slot ${slot ?? '?'} | LP gelé ${(rg * 100).toFixed(2)}% | peak ${(pos.peakGain * 100).toFixed(2)}%`
-                        + (rot ? ` | pool purgée, RPC #${rot.rpcAvant}→#${rot.rpcApres} sur ${rot.providers}` : ''));
-                    if (rot && rot.providers < 2) console.log(`  ⚠️ ${pos.symbol}: UN SEUL provider RPC — la rotation est un no-op, ajouter un endpoint à RPC_URLS`);
+                        + ` | slot ${slot ?? '?'} | LP gelé ${(rg * 100).toFixed(2)}% | peak ${(pos.peakGain * 100).toFixed(2)}%`);
                 }
                 // prix externe, throttlé à 15 s (la boucle tourne toutes les 10 s)
                 if (!pos._gelPxAt || Date.now() - pos._gelPxAt > 15000) {

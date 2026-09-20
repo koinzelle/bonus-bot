@@ -2110,9 +2110,15 @@ concernés.
   plus précis : pool réellement calme → le prix ne bouge pas non plus → aucun déclenchement ni appel
   DexScreener ; pool qui bouge + bin figé → c'est JEANPHIL, et on part en ~35 s au lieu de 10 min.
 - Action : log `🧊` avec le **slot** (`live.currentSlot()`, un appel en plus, réservé aux armées —
-  Anchor n'expose pas le contexte, ma première affirmation « coût nul » était fausse), purge de
-  l'instance DLMM et rotation forcée du provider (`live.resetPoolRead`), puis prix DexScreener
-  throttlé à 15 s.
+  Anchor n'expose pas le contexte, ma première affirmation « coût nul » était fausse), puis prix
+  DexScreener throttlé à 15 s.
+- **PARADE RETIRÉE LE SOIR MÊME (demande user, à raison).** J'avais ajouté purge de l'instance DLMM +
+  rotation forcée du provider. C'était pire qu'inutile : `RPC_URLS` a deux entrées mais **la 2e clé
+  Helius est vide**, donc la rotation bascule sur une clé morte, prend un 429 et revient — un
+  aller-retour gaspillé à chaque gel ; et la purge force un `DLMM.create` (appel très cher) pour rien,
+  puisque `getActiveBin()` relit le lbPair depuis la chaîne de toute façon — **le cache d'instance
+  n'a jamais été en cause**. Règle qui s'en dégage : ne pas coder un remède avant que le diagnostic
+  ait désigné la cause. On garde le `slot`, on jette le remède.
 - **Estimation LP, et pourquoi ce n'est pas « fermer sur le prix »** : on part du **dernier LP de
   confiance** et on n'applique que le **delta de prix depuis le gel**, jamais un niveau recalculé
   depuis l'entrée ; conversion avec le transfert mesuré on-chain le 13/09 (**0,409 à la hausse**,

@@ -798,12 +798,4 @@ async function closeVerified(pos) {
 //   slot qui avance + volume réel nul → la pool dormait vraiment     → rien à réparer côté RPC
 // `getSlot()` est un appel EN PLUS (Anchor n'expose pas le contexte) : réservé aux positions armées.
 async function currentSlot() { try { return await connection.getSlot(); } catch (_) { return null; } }
-// Purge l'instance DLMM cachée d'une pool ET avance le pointeur de provider : la prochaine lecture
-// repart d'un objet neuf sur un autre endpoint. Sans second provider valide la rotation est un no-op.
-function resetPoolRead(poolAddress) {
-    _dlmmCache.delete(poolAddress);
-    const avant = _rpcIdx;
-    _rpcIdx = (_rpcIdx + 1) % RPC_URLS.length;
-    return { poolPurgee: true, rpcAvant: avant, rpcApres: _rpcIdx, providers: RPC_URLS.length };
-}
-module.exports = { enabled: true, solBalance, findMeteoraPool, transferFeeBps, MAX_TRANSFER_FEE_BPS, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions, currentSlot, resetPoolRead };
+module.exports = { enabled: true, solBalance, findMeteoraPool, transferFeeBps, MAX_TRANSFER_FEE_BPS, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions, currentSlot };
