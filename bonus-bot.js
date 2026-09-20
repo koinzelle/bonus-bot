@@ -3081,10 +3081,34 @@ async function fastPositionCheck() {
         // seuils = constantes de module (plus de copie locale qui dérive)
         for (const [tok, pos] of Object.entries(state.positions)) {
             if (!pos.live || !pos.live.openValueSol || pos._closing) continue;
-            const bv = bmap.get(pos.live.positionKeypairPub);
+            let bv = bmap.get(pos.live.positionKeypairPub);
             if (!bv || bv.valueSol == null) continue;
+            // ── (2026-09-21) LA BOUCLE RAPIDE NE TRAILE PLUS SUR UNE VALEUR PÉRIMÉE ─────────────
+            // `batchedPositionValues` réinjecte la dernière valeur connue des positions non lues ce
+            // cycle, marquée `stale: true` (l.1462). Le SCAN respecte ce drapeau (`lot-PÉRIMÉ`,
+            // l.1763) — la boucle rapide, celle qui déclenche réellement le trail toutes les 10 s,
+            // ne l'a jamais testé. Elle pouvait donc trailer indéfiniment sur une valeur figée.
+            // Et c'est le pire état possible : une valeur qui ne bouge plus est TOUJOURS égale à son
+            // propre `peakGain`, donc `rg <= peak - TRAIL` ne peut JAMAIS devenir vrai — le trail est
+            // mathématiquement impossible tant que la lecture ne bouge pas (cas JEANPHIL du 20/09,
+            // LP bloqué à 8,81 % pour un seuil à 7,81 % pendant 10 minutes).
+            // On ne se contente PAS de sauter : sauter laisse le trail non évalué, ce qui ne ferme pas
+            // davantage. On force une lecture individuelle, comme le scan le fait déjà via `🕓`.
+            const perimee = bv.stale || (bv.readTs && Date.now() - bv.readTs > ARMED_MAX_AGE_MS);
+            if (perimee && (pos.peakGain || 0) >= TP_PCT && live.positionValueAndBin) {
+                try {
+                    const r = await live.positionValueAndBin(pos.live);
+                    if (r && r.valueSol != null) bv = { ...r, stale: false };
+                    else continue;
+                } catch (_) { continue; }   // lecture KO → on n'évalue RIEN plutôt que sur du périmé
+            } else if (perimee) {
+                continue;                    // non armée : aucune sortie rapide possible, on attend le scan
+            }
             const rg = bv.valueSol / pos.live.openValueSol - 1;
-            recordLv(pos, rg, bv.activeBinId);
+            // (2026-09-21) `raw` passé ici : sans lui `pos._raw` n'était rafraîchi QUE par le scan, donc
+            // `px / X / Y / chaîne lue il y a` de la ligne ⏱️ pouvaient afficher des valeurs vieilles de
+            // plusieurs minutes et faire passer un affichage périmé pour un gel de lecture. Coût nul.
+            recordLv(pos, rg, bv.activeBinId, bv);
             const pkAvant = pos.peakGain || 0;
             pos.peakGain = Math.max(pkAvant, rg);
             // ── (2026-09-06) TRACE DU PIC VU PAR LA BOUCLE RAPIDE ────────────────────────────────
