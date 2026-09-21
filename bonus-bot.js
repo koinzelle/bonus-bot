@@ -2023,6 +2023,25 @@ async function scan() {
                 const candleAfterEntry = plast[0] > (pos.entryCandleTs || 0);
                 if ((!armed || pos._awaitBounce) && candleAfterEntry) {
                     const rsi2 = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
+                    // ── (2026-09-21) OMBRE EXIT_TF_15M_ALL — GRATUITE ───────────────────────────
+                    // Je pensais qu'elle coûtait une seconde série de bougies. Faux : `cs` EST déjà
+                    // la série 15 min, récupérée l.1635 pour les portes d'entrée de chaque token
+                    // scanné. `pcs` est la série qui DÉCIDE (5 min sur un volatil en stand-by).
+                    // On calcule donc les deux RSI2 sur des données déjà en mémoire et on journalise
+                    // les cas où la règle de septembre aurait TENU la position que le 5 min ferme.
+                    // C'est exactement la mesure qui manquait : le commit du 14/09 a fait passer les
+                    // volatils de 47 à 112 minutes, sans qu'on sache jamais ce que ça rapportait.
+                    if (pcs !== cs && rsi2 != null && rsi2 > 90 && Array.isArray(cs) && cs.length >= 10) {
+                        const rsi2_15 = calculateRSI(cs.slice(0, -1).map(c => c[4]), 2);
+                        if (rsi2_15 != null && rsi2_15 <= 90 && !pos._shTf15) {
+                            pos._shTf15 = true;
+                            recordShadow('sbTf15', { symbol: pos.symbol, tok, rsi2_5m: +rsi2.toFixed(0),
+                                rsi2_15m: +rsi2_15.toFixed(0), lp: +(realGain * 100).toFixed(2),
+                                peakPct: +((pos.peakGain || 0) * 100).toFixed(1),
+                                ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
+                            console.log(`  🕯️ [OMBRE tf15] ${pos.symbol}: sortie RSI2 en 5 min (${rsi2.toFixed(0)}) — en 15 min le RSI2 est à ${rsi2_15.toFixed(0)}, la position aurait été TENUE (LP ${(realGain * 100).toFixed(1)}%)`);
+                        }
+                    }
                     // en attente de rebond, le RSI2>90 sort QUEL QUE SOIT le signe : c'est la seule issue
                     // d'une position profondément négative (LP>0 exigerait un prix ×2,22).
                     // SHADOW PLANCHER RSI2 (2026-09-03) — mesure ce que coûterait/rapporterait d'autoriser
