@@ -2317,6 +2317,35 @@ async function scan() {
             else block = 'ENTRÉE';
             state.blockCount = state.blockCount || {};
             state.blockCount[block] = (state.blockCount[block] || 0) + 1;
+            // ── (2026-09-21) OMBRES DU STAND-BY ──────────────────────────────────────────────────
+            // Le bot est revenu au comportement de fin août : tout ce qui a été ajouté en septembre
+            // est débranché par variable d'environnement. Chaque règle débranchée journalise ici ce
+            // qu'elle AURAIT fait, pendant que le bot tourne sans elle.
+            // C'est le contrefactuel exact — même seconde, même marché, même token — là où toutes mes
+            // mesures de la journée comparaient des fenêtres différentes et se sont fait démentir.
+            // Throttle 1 h par token et par ombre, sinon un token à la porte en permanence (GP : 381
+            // refus en une journée) noierait le fichier.
+            if (atDip && !state.positions[tok]) {
+                w._sh = w._sh || {};
+                const shOnce = (cle, data) => {
+                    if (w._sh[cle] && now - w._sh[cle] < 3600e3) return;
+                    w._sh[cle] = now; recordShadow(cle, { symbol: w.symbol, tok, price: curPrice, ...data });
+                };
+                // A. tolérance RSI (RSI_ATH_MAX) — ce token serait entré si elle était active
+                if (block === `pas-survendu(RSI>${RSI_ENTRY_MAX}=pompe)` && (w.athBreaks || 0) <= 3
+                    && rsiEntry != null && rsiEntry < 75)
+                    shOnce('sbRsiTolere', { rsi2: +rsiEntry.toFixed(0), athBreaks: w.athBreaks || 0, feeTvl: +feeTvl.toFixed(1), mcK: Math.round(curMc / 1000) });
+                // B. plancher fees 5 % — ce token passait au plancher de 3 %
+                if (!feesOk && feeTvl >= 3 && feeTvl < FEE_TVL_FLOOR)
+                    shOnce('sbFeeFloor', { feeTvl: +feeTvl.toFixed(1), mcK: Math.round(curMc / 1000) });
+                // C. cooldown 10 min — ce token serait entré avec l'ancien délai court
+                if (block === 'cooldown' && w.cooldownUntil
+                    && (now - (w.cooldownUntil - REENTRY_COOLDOWN_MS)) > 10 * 60e3)
+                    shOnce('sbCooldown10', { attenteMin: Math.round((now - (w.cooldownUntil - REENTRY_COOLDOWN_MS)) / 60000) });
+                // D. filtre chop — il est OUVERT en stand-by : on marque ce qu'il aurait bloqué
+                if (block === 'ENTRÉE' && chopInconnu)
+                    shOnce('sbChopInconnu', { dumpPct: +(dumpedFromHigh * 100).toFixed(1), feeTvl: +feeTvl.toFixed(1), mcK: Math.round(curMc / 1000) });
+            }
             w.diag = {
                 hot: w.hot, block, armed, patternOk: patOk,
                 athMcK: Math.round(athMc / 1000), curMcK: Math.round(curMc / 1000),
@@ -2445,10 +2474,11 @@ async function scan() {
                 // (2026-09-21) marque la position ouverte via le laissez-passer UPSIDE, et CONSOMME le
                 // laissez-passer : il ne doit servir qu'une fois, sinon un token qui échoue à ouvrir
                 // le garderait 20 min et pourrait entrer plus tard sans creux ni survente.
+                const _chopInconnu = !!chopInconnu;   // (2026-09-21) marque les entrées que le filtre chop aurait bloquées
                 const _reopenTest = !!(w.reopenUntil && now < w.reopenUntil);
                 if (w.reopenUntil) w.reopenUntil = 0;
                 if (_reopenTest) console.log(`  🔁 ${w.symbol}: RÉ-OUVERTURE après sortie par le haut (dump+RSI2 contournés) — position de TEST`);
-                state.positions[tok] = { _reopenTest, symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
+                state.positions[tok] = { _reopenTest, _chopInconnu, symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
                     // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
                     // (2026-09-18) INSTANTANÉ DE LIQUIDITÉ À L'ENTRÉE. Piste ouverte par le user le 18/09 :
                     // sur les 5 premières fermetures STAGNATION, ELON (qui a continué de chuter) brassait
@@ -2909,6 +2939,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         tvlPoints: (pos._tvlHist || []).length,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         reopenTest: pos._reopenTest || null,   // (2026-09-21) ouverte via le laissez-passer UPSIDE d'EP
+        chopInconnu: pos._chopInconnu || null, // (2026-09-21) le filtre chop de septembre l'aurait refusée
         pnlPct: closeRate ? null : +(pnlPct * 100).toFixed(2), pnlSol: closeRate ? null : +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         closeRate: closeRate || null,   // (2026-09-20) la fermeture n'a rien vendu : position déjà absente on-chain
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
