@@ -1984,6 +1984,33 @@ async function scan() {
                 // cas bot 1 où notre RSI divergeait), bin actif→haut du range, source valeur, timeframe.
                 const realSource = lvSrc; // diagnostic gel valeur (2026-08-11) : lot / lot-FIGÉ / indiv / cacheXs / prix
                 const rsi2v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
+                // ── (2026-09-21, demande user) OMBRE « rebond armé à la SORTIE DE RANGE » ──────────
+                // Variante proposée : au lieu d'attendre -55 % de LP pour armer, on arme dès que le
+                // bin sort de la range par le bas (≈ -25/-30 % de LP), et on DÉSARME si la position
+                // revient dans sa range — exactement la logique du désarmement réel (l.1848).
+                // Mesurable, contrairement à l'attente actuelle : elle sort PLUS TÔT que la coupe
+                // sèche, donc la position est encore ouverte quand l'ombre se déclenche.
+                // On journalise le LP qu'elle aurait réalisé ; à la fermeture on comparera au réel.
+                if (pos.live && liveBinId != null && pos.live.lowerBinId != null) {
+                    const horsRangeBas = liveBinId < pos.live.lowerBinId;
+                    if (horsRangeBas && !pos._shRngArm) {
+                        pos._shRngArm = true;
+                        console.log(`  🕯️ [OMBRE rangeBas] ${pos.symbol}: sortie de range par le bas (bin ${liveBinId} < ${pos.live.lowerBinId}, LP ${(realGain * 100).toFixed(1)}%) → attente de rebond ARMÉE en ombre`);
+                    } else if (!horsRangeBas && pos._shRngArm && !pos._shRngFait) {
+                        pos._shRngArm = false;   // revenue dans la range → désarmée, comme la vraie règle
+                        console.log(`  🕯️ [OMBRE rangeBas] ${pos.symbol}: revenue dans la range (LP ${(realGain * 100).toFixed(1)}%) → ombre DÉSARMÉE`);
+                    }
+                    if (pos._shRngArm && !pos._shRngFait && rsi2v != null && rsi2v > 90) {
+                        pos._shRngFait = true;
+                        pos._shRngLp = +(realGain * 100).toFixed(2);
+                        recordShadow('sbRebondRange', { symbol: pos.symbol, tok, lpOmbre: pos._shRngLp,
+                            rsi2: rsi2v, bin: liveBinId, lowerBin: pos.live.lowerBinId,
+                            peakPct: +((pos.peakGain || 0) * 100).toFixed(1),
+                            ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
+                        console.log(`  🕯️ [OMBRE rangeBas] ${pos.symbol}: aurait FERMÉ à ${pos._shRngLp}% de LP (RSI2 ${rsi2v} > 90) — le réel continue`);
+                    }
+                }
+
                 const rsi14v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 14);
                 console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource}${pos._raw ? ` px:${pos._raw.px != null ? pos._raw.px.toPrecision(6) : '?'} X:${pos._raw.x != null ? pos._raw.x.toPrecision(6) : '?'} Y:${pos._raw.y != null ? pos._raw.y.toFixed(4) : '?'} lu:${pos._raw.readTs ? ((Date.now() - pos._raw.readTs) / 1000).toFixed(0) : '?'}s${pos._feeVel != null ? ` 💰${(pos._fees * 1000).toFixed(2)}m (${(pos._feeVel * 1000).toFixed(2)}m/h${pos._feeVel1h != null ? ` · 1h ${(pos._feeVel1h * 1000).toFixed(2)}m/h` : ''}${pos._tvl != null ? ` 💧${Math.round(pos._tvl / 1000)}k${pos._volTvl != null ? ` v/t${pos._volTvl}` : ''}${pos._tvlVar1h != null ? ` 1h${pos._tvlVar1h > 0 ? '+' : ''}${pos._tvlVar1h}%` : ''}` : ''}${pos._feeHours != null && isFinite(pos._feeHours) ? `, paie en ${pos._feeHours.toFixed(0)}h` : ''})` : ''}` : ''} | ${(process.env.EXIT_TF_15M_ALL !== '0' || pos.established) ? '15m' : '5m'}`);
 
@@ -2979,6 +3006,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         reopenTest: pos._reopenTest || null,   // (2026-09-21) ouverte via le laissez-passer UPSIDE d'EP
         chopInconnu: pos._chopInconnu || null, // (2026-09-21) le filtre chop de septembre l'aurait refusée
         sousVerrou48: pos._sousVerrou48 || null, // (2026-09-21) le verrou 48 h du 14/09 l'aurait refusée
+        rebondRangeLp: pos._shRngLp ?? null,   // (2026-09-21) LP qu'aurait réalisé l'armement à la sortie de range
         pnlPct: closeRate ? null : +(pnlPct * 100).toFixed(2), pnlSol: closeRate ? null : +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         closeRate: closeRate || null,   // (2026-09-20) la fermeture n'a rien vendu : position déjà absente on-chain
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
