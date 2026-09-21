@@ -340,6 +340,15 @@ const VOL_MIN_24H = 1_000_000;    // volume 24h ≥ $1M — filtre DexScreener e
 // position allait être fermée de toute façon. Seul le seuil d'armement était faux.
 const RANGE_DOWN = 0.55;   // seuil d'ARMEMENT de l'attente du rebond
 const CUT_HARD = 0.75;     // plancher DUR : on ferme quoi qu'il arrive (anti-rug)
+// ── (2026-09-21) RETOUR À LA COUPE SÈCHE — état de fin août ──────────────────────────────────────
+// Jusqu'au 30/08 (commit 587451e), franchir -RANGE_DOWN FERMAIT la position. Depuis, on arme une
+// attente de rebond (sortie au 1er RSI2>90) avec un plancher dur à -CUT_HARD. Mesuré le 21/09 sur
+// les 4 cas depuis le 11/09 : l'attente réalise -0,7608 SOL là où une coupe sèche à -55 % aurait
+// fait -0,6155 — elle COÛTE 0,1453 SOL, et une seule des quatre a rebondi (à -64 %, donc pire).
+// Cumulée aux 11 cas de la validation initiale, elle passe de +0,0725 à -0,073 SOL sur 15 cas.
+// Sur la même période le taux de perdants est passé de 3 % à 12 % et la pire perte de -43,7 % à
+// -70,8 %. AWAIT_BOUNCE=0 rétablit la coupe sèche de fin août.
+const AWAIT_BOUNCE = process.env.AWAIT_BOUNCE !== '0';
 // ── (2026-09-11) FRAIS DE TRANSFERT TOKEN-2022 ────────────────────────────────────────────────
 // Le bot déplace le token 4 fois par aller-retour (swap d'entrée, dépôt, retrait, reswap) et la
 // taxe tombe à CHAQUE transfert : 3,00 % observés sur 30 fermetures lues on-chain, 30 sur 30.
@@ -1646,6 +1655,7 @@ async function scan() {
                                 if (r.activeBinId != null && posO.live.upperBinId != null && r.activeBinId > posO.live.upperBinId + (posO.live.oneSided ? ONESIDED_TOP_BUFFER : 0)) { await closePaper(tok, posO, exitPx, posO.live.oneSided ? `CYCLE ONE-SIDED COMPLET (banké +${(rg * 100).toFixed(1)}% LP, 100% SOL, bougies KO)` : `CUT hors-range HAUT (banké +${(rg * 100).toFixed(1)}% LP, bougies KO)`); continue; }
                                 if (armedO && rg <= posO.peakGain - TRAIL) { await closePaper(tok, posO, exitPx, `TRAIL LP +${(rg * 100).toFixed(1)}% (peak +${(posO.peakGain * 100).toFixed(1)}%, bougies KO)`); continue; }
                                 // (2026-08-27) était -0.35 en dur ici alors que tout le reste est à -55% depuis le 19/08
+                                if (rg <= -RANGE_DOWN && !AWAIT_BOUNCE) { await closePaper(tok, posO, exitPx, `CUT SEC ${(rg * 100).toFixed(1)}% LP (coupe sèche fin août, bougies KO)`); continue; }
                                 if (rg <= -RANGE_DOWN && !posO._awaitBounce) { posO._awaitBounce = true; console.log(`  ⏳ ${posO.symbol}: -${(RANGE_DOWN * 100).toFixed(0)}% franchi (bougies KO) → attente du rebond`); }
                                 if (rg <= -CUT_HARD) { await closePaper(tok, posO, exitPx, `CUT PLANCHER ${(rg * 100).toFixed(1)}% LP (≤ -${(CUT_HARD * 100).toFixed(0)}%, bougies KO)`); continue; }
                             }
@@ -1861,6 +1871,10 @@ async function scan() {
                     pos._awaitBounce = false; save();
                     console.log(`  ↩️ ${pos.symbol}: revenue dans la range (bin ${liveBinId} dans [${pos.live.lowerBinId},${pos.live.upperBinId}], LP ${(realGain * 100).toFixed(1)}%) → attente de rebond DÉSARMÉE, plancher RSI2 rétabli`);
                     tg(`↩️ ${pos.symbol}: revenue dans sa range (LP ${(realGain * 100).toFixed(1)}%) — attente de rebond désarmée, sortie RSI2 normale rétablie.`);
+                }
+                if (deepDown && !AWAIT_BOUNCE) {
+                    await closePaper(tok, pos, px, `CUT SEC ${(realGain * 100).toFixed(1)}% LP (≤ -${(RANGE_DOWN * 100).toFixed(0)}%, coupe sèche fin août)`);
+                    continue;
                 }
                 if (deepDown && !pos._awaitBounce) {
                     pos._awaitBounce = true; save();
@@ -3405,6 +3419,7 @@ async function fastPositionCheck() {
             } else if (rg <= -CUT_HARD) {
                 await closePaper(tok, pos, exitPx, `CUT PLANCHER ${(rg * 100).toFixed(1)}% LP (≤ -${(CUT_HARD * 100).toFixed(0)}%, rapide)`);
             } else if (rg <= -RANGE_DOWN && !pos._awaitBounce) {
+                if (!AWAIT_BOUNCE) { await closePaper(tok, pos, exitPx, `CUT SEC ${(rg * 100).toFixed(1)}% LP (≤ -${(RANGE_DOWN * 100).toFixed(0)}%, coupe sèche fin août, rapide)`); continue; }
                 pos._awaitBounce = true; save();   // la boucle rapide n'a pas le RSI2 : elle arme, le scan sortira
                 console.log(`  ⏳ ${pos.symbol}: seuil -${(RANGE_DOWN * 100).toFixed(0)}% franchi (LP ${(rg * 100).toFixed(1)}%, rapide) → attente du rebond`);
             }
