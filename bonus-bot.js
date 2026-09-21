@@ -2531,7 +2531,12 @@ async function scan() {
 // QUE LE PRIX BOUGE. Pool réellement calme → le prix ne bouge pas non plus → aucun déclenchement et
 // aucun appel DexScreener. Pool qui bouge + bin figé → c'est le cas JEANPHIL, et on part tout de
 // suite. Le prix utilisé (`pos.lastPx`, bougies) est DÉJÀ en mémoire : ce test est gratuit.
-const GEL_LECTURES = parseInt(process.env.GEL_LECTURES || '4', 10);   // ~35 s à la cadence 8 s des armées
+// (2026-09-21, 4e passe — cas Aiden) 4 lectures = 32 s : ABSURDE. Mesuré sur la pool d'Aiden, elle
+// avance d'UN bin toutes les 2-3 minutes ; rester 32 s dans le même bin est le comportement NORMAL
+// d'une pool qui respire. JEANPHIL, le vrai gel, c'était 76 lectures sur 10 minutes. On monte donc à
+// 30 lectures (~4 min à la cadence 8 s des armées) — JEANPHIL aurait déclenché à 4 min sur 10, Aiden
+// jamais. Un seuil trop bas ne produit pas « un peu de bruit » : il fabrique des fermetures.
+const GEL_LECTURES = parseInt(process.env.GEL_LECTURES || '30', 10);   // ~4 min à la cadence 8 s des armées
 const GEL_PRIX_MIN = parseFloat(process.env.GEL_PRIX_MIN || '0.02');
 const GEL_PEAK_SUIVI = process.env.GEL_PEAK_SUIVI !== '0';   // pendant un gel, l'estimation DexScreener fait le peak (demande user 20/09)  // le prix a bougé ≥2 % pendant que le bin ne bougeait pas
 // Transfert prix→LP mesuré on-chain le 13/09 : à la HAUSSE le LP prend ~0,409 × la hausse du prix
@@ -3199,22 +3204,35 @@ async function fastPositionCheck() {
                                 // chaîne répond, elle décide — l'estimation n'est qu'un déclencheur
                                 // d'attention. On ne ferme sur l'estimation que si la chaîne est
                                 // réellement muette. Coût : 1 appel RPC par déclenchement.
+                                // La lecture fraîche ne sert pas à opposer un veto — elle sert à savoir
+                                // SI LE GEL EST RÉEL :
+                                //   valeur DIFFÉRENTE de la figée → la chaîne est repartie, elle décide
+                                //     (cas Aiden : la pool avançait d'un bin toutes les 2-3 min, il n'y
+                                //      avait aucun gel, seulement un seuil de détection trop bas)
+                                //   valeur IDENTIQUE à la figée   → gel CONFIRMÉ, la chaîne ne peut rien
+                                //     dire de plus et l'estimation décide (cas JEANPHIL : une relecture
+                                //     réellement fraîche renvoyait le même px, 10 min durant)
+                                // Opposer un veto systématique rendrait la sortie impossible dans le seul
+                                // cas qu'elle existe pour traiter — une valeur figée est toujours égale à
+                                // son propre peak, donc toujours au-dessus du seuil.
                                 let lpFinal = lpEst, via = 'DexScreener';
                                 if (live.positionValueAndBin) {
                                     try {
                                         const r = await live.positionValueAndBin(pos.live);
                                         if (r && r.valueSol != null) {
-                                            lpFinal = r.valueSol / pos.live.openValueSol - 1; via = 'chaîne';
-                                            recordLv(pos, lpFinal, r.activeBinId, r);
-                                            console.log(`  🧊 ${pos.symbol}: lecture individuelle → LP RÉEL ${(lpFinal * 100).toFixed(2)}%`
-                                                + ` (estimation ${(lpEst * 100).toFixed(2)}%, écart ${((lpFinal - lpEst) * 100).toFixed(2)} pt)`);
+                                            const lpChain = r.valueSol / pos.live.openValueSol - 1;
+                                            const bouge = Math.abs(lpChain - rg) > 1e-9;
+                                            console.log(`  🧊 ${pos.symbol}: lecture individuelle → ${(lpChain * 100).toFixed(2)}%`
+                                                + ` | figée ${(rg * 100).toFixed(2)}% | estimation ${(lpEst * 100).toFixed(2)}%`
+                                                + ` → ${bouge ? 'la chaîne est REPARTIE, elle décide' : 'GEL CONFIRMÉ, l estimation décide'}`);
+                                            if (bouge) {
+                                                recordLv(pos, lpChain, r.activeBinId, r);
+                                                lpFinal = lpChain; via = 'chaîne';
+                                                delete pos._gelAnchor; delete pos._gelPxAt;
+                                                if (lpFinal > seuil) { console.log(`  🧊 ${pos.symbol}: fermeture ANNULÉE — ${(lpFinal * 100).toFixed(2)}% > seuil ${(seuil * 100).toFixed(2)}%`); continue; }
+                                            }
                                         }
-                                    } catch (_) { /* chaîne muette → on garde l'estimation */ }
-                                }
-                                if (lpFinal > seuil) {
-                                    console.log(`  🧊 ${pos.symbol}: fermeture ANNULÉE — la chaîne dit ${(lpFinal * 100).toFixed(2)}% > seuil ${(seuil * 100).toFixed(2)}%`);
-                                    delete pos._gelAnchor; delete pos._gelPxAt;   // la lecture a répondu : plus de gel
-                                    continue;
+                                    } catch (_) { /* chaîne muette → l'estimation décide */ }
                                 }
                                 await closePaper(tok, pos, exitPx, `TRAIL LP ${(lpFinal * 100).toFixed(1)}% via ${via} (peak +${(pos.peakGain * 100).toFixed(1)}%, lecture chaîne gelée ${pos._gelN}×)`);
                                 continue;
