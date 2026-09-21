@@ -506,6 +506,20 @@ if (!state.poolOriginResetV1) { for (const tok of Object.keys(state.watch || {})
 // (2026-08-27) `_closing` est persisté par save() : un verrou posé avant un crash/redeploy rendrait la
 // position définitivement infermable. On le purge au démarrage.
 for (const p of Object.values(state.positions || {})) { delete p._closing; delete p._closingAt; delete p._gone; delete p._priceHotUntil; delete p._peakLogged; delete p._obLast; delete p._armEvalTs; }
+// ── (2026-09-22) PURGE DES POSITIONS PAPIER AU DÉMARRAGE — demande user ─────────────────────────
+// En mode LIVE une position sans objet `live` est un fantôme : elle n'existe nulle part on-chain,
+// elle ne peut rien rapporter, et elle OCCUPE UN SLOT sur les 7.
+// Elle naît quand le bot écrit `state.positions[tok]` avant la confirmation de l'ouverture réelle
+// et qu'un redémarrage tombe entre les deux — le nettoyage « entrée ANNULÉE » n'a jamais lieu.
+// Cas GP le 21/09 : ouverte 20:44, redémarrage 20:47, fantôme. Elle a ensuite fait planter le scan
+// à CHAQUE tick sur `pos.live.oneSided` — 90 ticks abandonnés en 1 h 20, plus aucune position lue,
+// CYPHERCAT réduite à 2 relevés et un pic de LP à +6 % jamais enregistré.
+// Le coût n'est donc pas « un slot perdu » : c'est la surveillance de TOUTES les positions.
+if (live.enabled) {
+    for (const [k, p] of Object.entries(state.positions || {})) {
+        if (!p.live) { console.log(`  🧹 Position PAPIER purgée au démarrage : ${p.symbol} (aucun objet live, slot libéré)`); delete state.positions[k]; }
+    }
+}
 function save() { try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch (e) { console.log('⚠️ save:', e.message); } }
 
 // ── (2026-09-18) INSTANTANÉ HORAIRE DU WALLET — la seule mesure de PnL qui ne ment pas ────────────
