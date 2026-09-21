@@ -2183,3 +2183,46 @@ JEANPHIL, c'est rater la descente comme le sommet. **Le faux positif n'est PAS c
 mais en aval** : une position vivante accumule des fees en continu, donc sa `valueSol` change à chaque
 lecture. La confirmation compare la lecture fraîche à la valeur figée — différente, même d'un iota de
 fees → la chaîne tourne, elle décide ; strictement identique → gel réel, l'estimation décide.
+
+
+---
+
+## 19. 21/09 — LA CAUSE DES FAUX POSITIFS : ON LISAIT LE PRIX DE LA MAUVAISE POOL
+
+**Deux déclenchements réels, deux fermetures prématurées :**
+
+| | valeur « gelée » | LP réel au close | verdict |
+|---|---|---|---|
+| Aiden 06:46 | 8,57 % | **8,57 %** | la chaîne avait raison |
+| LinkedInu 08:01 | 8,75 % | **8,76 %** | la chaîne avait raison |
+| JEANPHIL 20/09 | 8,81 % | 11 → 7 % (vu sur Meteora par le user) | la chaîne avait tort |
+
+**CAUSE : `dexInfo(tok)` rend le prix du token sur la paire la PLUS LIQUIDE, pas sur la pool où le bot
+est LP.** Mesuré sur LinkedInu pendant son gel :
+
+| pool | liquidité | prix au même instant |
+|---|---:|---:|
+| raydium `CMcEKRDM…` ← lue par `dexInfo` | $156 069 | 0,002412 |
+| meteora `FB2NwdqN…` ← **la position** | $41 985 | **0,002364** |
+
+La paire Raydium oscillait de **±7 % sur des volumes de 3 à 14 $** pendant que la pool Meteora ne
+suivait pas. Les −2,8 % qui ont déclenché la vente n'ont jamais existé là où la position se trouvait.
+À l'inverse sur JEANPHIL, les bougies de SA pool montraient bien le −12,9 % réel que la chaîne n'avait
+pas vu. **Lire la bonne pool donne la bonne réponse dans les trois cas.**
+
+**CORRIGÉ** : `prixPoolLP(poolAddress)` — bougies 1 min GeckoTerminal de `pos.live.poolAddress`,
+à la place de `dexInfo(tok)`.
+
+### Deux autres choses que ces cas ont invalidées
+
+- **« valeur identique = gel réel » ne discrimine rien.** Je comparais la lecture individuelle fraîche
+  à `rg`, qui est la valeur du lot **au même instant** : deux lectures du même moment sont évidemment
+  identiques, que la pool bouge ou non. Ça vérifie que deux sources concordent, pas qu'une valeur est
+  figée.
+- **Les fees n'accumulent pas en continu.** Je pariais qu'une position vivante voit sa `valueSol`
+  changer à chaque lecture. LinkedInu : 8,74 % → 8,75 % en 14 minutes. Sans swap dans les bins de la
+  position, la valeur ne bouge pas — donc « identique » n'a jamais signifié « gelé ».
+
+**Rappel de méthode, coûteux :** cette règle a été déployée en direct sans passer par une ombre, à la
+demande du user. Deux déclenchements, deux faux positifs. La règle « jamais de règle de fermeture sans
+ombre » aurait attrapé les deux avant qu'elles ne coupent une position.

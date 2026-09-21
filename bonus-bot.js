@@ -817,6 +817,25 @@ async function gtOhlcv(mint, gmgnRes, limit) {
         .map(k => [k[0], +k[1], +k[2], +k[3], +k[4], +k[5]]).sort((a, b) => a[0] - b[0]);
 }
 
+// ── (2026-09-21) PRIX DE **LA POOL DE LA POSITION**, pas du token ────────────────────────────────
+// Les deux faux positifs de la sortie sur gel (Aiden, LinkedInu) viennent de `dexInfo(tok)`, qui rend
+// le prix du token sur la paire la PLUS LIQUIDE — pas sur celle où le bot est LP. Mesuré sur
+// LinkedInu pendant son gel : la paire Raydium ($156k) oscillait de ±7 % sur des volumes de 3 à 14 $,
+// pendant que la pool Meteora du bot ($42k) ne suivait pas — 2 % d'écart entre les deux au même
+// instant. Les -2,8 % qui ont déclenché la vente n'ont jamais existé là où la position se trouvait.
+// À l'inverse sur JEANPHIL, les bougies de SA pool montraient bien le -12,9 % réel que la chaîne
+// n'avait pas vu. Lire la bonne pool donne la bonne réponse dans les trois cas.
+async function prixPoolLP(poolAddress) {
+    if (!poolAddress) return null;
+    try {
+        await gtThrottle();
+        const r = await axios.get(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/minute`,
+            { params: { aggregate: 1, limit: 3 }, headers: { Accept: 'application/json' }, timeout: 12000 });
+        const L = (r.data?.data?.attributes?.ohlcv_list || []).sort((a, b) => a[0] - b[0]);
+        return L.length ? +L[L.length - 1][4] : null;
+    } catch (_) { return null; }
+}
+
 // (2026-09-08) V3 D'ABORD, REPLI V1. Pendant la panne du 08/09 la v1 a rendu des réponses VIDES
 // (HTTP 200, 0 bougie) avec 29 % de quota restant et un débit de 0,4 RPS pour une limite à 1 RPS —
 // donc ni quota ni rate-limit. Les deux endpoints EXISTENT (401 sans clé, pas 404), c'est donc un
@@ -3172,10 +3191,10 @@ async function fastPositionCheck() {
                 if (!pos._gelPxAt || Date.now() - pos._gelPxAt > 15000) {
                     pos._gelPxAt = Date.now();
                     try {
-                        const di = await dexInfo(tok);
-                        if (di && di.price > 0) {
-                            if (pos._gelAnchor.px == null) pos._gelAnchor.px = di.price;
-                            const d = di.price / pos._gelAnchor.px - 1;
+                        const pxPool = await prixPoolLP(pos.live.poolAddress);
+                        if (pxPool > 0) {
+                            if (pos._gelAnchor.px == null) pos._gelAnchor.px = pxPool;
+                            const d = pxPool / pos._gelAnchor.px - 1;
                             const lpEst = pos._gelAnchor.rg + d * (d >= 0 ? PRIX_VERS_LP_HAUSSE : 0.44);
                             // (2026-09-20, demande user) PENDANT LE GEL, L'ESTIMATION FAIT LE PEAK.
                             // Sinon le bot traile depuis le dernier peak on-chain et rend tout ce qui
@@ -3192,7 +3211,7 @@ async function fastPositionCheck() {
                                 pos.peakGain = lpEst;
                             }
                             const seuil = pos.peakGain - TRAIL;
-                            console.log(`  🧊 ${pos.symbol} DexScreener: prix ${(d * 100).toFixed(1)}% depuis le gel`
+                            console.log(`  🧊 ${pos.symbol} pool ${String(pos.live.poolAddress).slice(0, 6)}…: prix ${(d * 100).toFixed(1)}% depuis le gel`
                                 + ` → LP estimé ${(lpEst * 100).toFixed(2)}% (seuil ${(seuil * 100).toFixed(2)}%)`);
                             if (lpEst <= seuil) {
                                 // ── (2026-09-21) LA CHAÎNE A LE DERNIER MOT ────────────────────────
@@ -3218,7 +3237,7 @@ async function fastPositionCheck() {
                                 // Opposer un veto systématique rendrait la sortie impossible dans le seul
                                 // cas qu'elle existe pour traiter — une valeur figée est toujours égale à
                                 // son propre peak, donc toujours au-dessus du seuil.
-                                let lpFinal = lpEst, via = 'DexScreener';
+                                let lpFinal = lpEst, via = 'bougies pool';
                                 if (live.positionValueAndBin) {
                                     try {
                                         const r = await live.positionValueAndBin(pos.live);
@@ -3241,7 +3260,7 @@ async function fastPositionCheck() {
                                 continue;
                             }
                         }
-                    } catch (e) { console.log(`  ⚠️ ${pos.symbol}: DexScreener KO (${String(e.message).slice(0, 40)}) — on garde la chaîne`); }
+                    } catch (e) { console.log(`  ⚠️ ${pos.symbol}: bougies pool KO (${String(e.message).slice(0, 40)}) — on garde la chaîne`); }
                 }
             } else if (pos._gelAnchor) { delete pos._gelAnchor; delete pos._gelPxAt; }
             // ── (2026-09-08) TRACE DE CADENCE SUR POSITION ARMÉE ────────────────────────────────
