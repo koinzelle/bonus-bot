@@ -2163,7 +2163,23 @@ pas séparer « le nœud sert du périmé » de « la pool dormait ». Pour tran
 `context.slot` de la lecture elle-même (`getAccountInfoAndContext`). À refaire si la question se
 repose — mais le cas Aiden suggère déjà la réponse : **la pool dormait vraiment.**
 
-**Ce que le cas Aiden dit du détecteur lui-même :** « bin identique 4 fois + prix bougé de 2 % » se
-déclenche sur des pools simplement calmes. Ce n'est pas grave maintenant que la chaîne a le dernier
-mot (le pire est un appel RPC de plus), mais ne pas en tirer de conclusion sur la fréquence des
-« vrais » gels.
+**Ce que le cas Aiden dit du détecteur lui-même :** le seuil à 4 lectures (32 s) était absurde — la
+pool d'Aiden avance d'UN bin toutes les 2-3 min, y rester 32 s est son comportement normal. Un seuil
+trop bas sur une règle de fermeture ne produit pas « un peu de bruit », **il fabrique des fermetures**.
+
+### CORRECTION IMPORTANTE (user, 21/09) — JEANPHIL : le LP BOUGEAIT VRAIMENT
+
+J'avais conclu « le prix a fait son plus haut à 20:43, il n'y avait pas de sommet plus haut à voir ».
+**Faux.** Le user a VU sur Meteora le PnL monter à **11 %** puis redescendre **10 → 8 → 7** pendant que
+le bot lisait 8,81 % figé. Mon raisonnement portait sur le PRIX ; le LP n'est pas le prix, il intègre
+les fees qui s'accumulent. Le bot a donc raté **le sommet ET la descente**. Avec une lecture correcte
+le trail se serait armé sur 11 %, seuil 10 %, et aurait fermé à 10 %.
+**Leçon : une observation directe du user sur Meteora prime sur ma déduction depuis les bougies.**
+
+### Réglage final (db91d30 puis 5e passe)
+
+`GEL_LECTURES = 15` (~2 min). 30 lectures (4 min) était trop lent — attendre 4 min sur le cas
+JEANPHIL, c'est rater la descente comme le sommet. **Le faux positif n'est PAS couvert par le seuil
+mais en aval** : une position vivante accumule des fees en continu, donc sa `valueSol` change à chaque
+lecture. La confirmation compare la lecture fraîche à la valeur figée — différente, même d'un iota de
+fees → la chaîne tourne, elle décide ; strictement identique → gel réel, l'estimation décide.

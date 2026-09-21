@@ -2531,12 +2531,15 @@ async function scan() {
 // QUE LE PRIX BOUGE. Pool réellement calme → le prix ne bouge pas non plus → aucun déclenchement et
 // aucun appel DexScreener. Pool qui bouge + bin figé → c'est le cas JEANPHIL, et on part tout de
 // suite. Le prix utilisé (`pos.lastPx`, bougies) est DÉJÀ en mémoire : ce test est gratuit.
-// (2026-09-21, 4e passe — cas Aiden) 4 lectures = 32 s : ABSURDE. Mesuré sur la pool d'Aiden, elle
-// avance d'UN bin toutes les 2-3 minutes ; rester 32 s dans le même bin est le comportement NORMAL
-// d'une pool qui respire. JEANPHIL, le vrai gel, c'était 76 lectures sur 10 minutes. On monte donc à
-// 30 lectures (~4 min à la cadence 8 s des armées) — JEANPHIL aurait déclenché à 4 min sur 10, Aiden
-// jamais. Un seuil trop bas ne produit pas « un peu de bruit » : il fabrique des fermetures.
-const GEL_LECTURES = parseInt(process.env.GEL_LECTURES || '30', 10);   // ~4 min à la cadence 8 s des armées
+// (2026-09-21, 5e passe — arbitrage user : 15 max). 4 lectures = 32 s était absurde (la pool d'Aiden
+// avance d'un bin toutes les 2-3 min, y rester 32 s est normal), mais 30 lectures = 4 min est trop
+// lent : le user a VU sur Meteora le PnL de JEANPHIL monter à 11 % puis redescendre 10 → 8 → 7
+// pendant que le bot lisait 8,81 % figé. Attendre 4 minutes, c'est rater la descente comme le sommet.
+// 15 lectures ≈ 2 min. Le risque de faux positif est couvert en aval, pas par le seuil : une position
+// VIVANTE accumule des fees en continu, donc sa `valueSol` change à chaque lecture. La confirmation
+// compare la lecture fraîche à la valeur figée — « différente » (même d'un iota de fees) = la chaîne
+// tourne, elle décide. Seul un gel VRAI rend une valeur strictement identique.
+const GEL_LECTURES = parseInt(process.env.GEL_LECTURES || '15', 10);   // ~2 min à la cadence 8 s des armées
 const GEL_PRIX_MIN = parseFloat(process.env.GEL_PRIX_MIN || '0.02');
 const GEL_PEAK_SUIVI = process.env.GEL_PEAK_SUIVI !== '0';   // pendant un gel, l'estimation DexScreener fait le peak (demande user 20/09)  // le prix a bougé ≥2 % pendant que le bin ne bougeait pas
 // Transfert prix→LP mesuré on-chain le 13/09 : à la HAUSSE le LP prend ~0,409 × la hausse du prix
