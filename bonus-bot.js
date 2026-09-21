@@ -147,7 +147,15 @@ rotateLogs();
 // compare les prises aux non-prises sur la même période.
 const REOPEN_HAUT_MS = parseInt(process.env.REOPEN_HAUT_MS || String(20 * 60 * 1000), 10);  // fenêtre de validité du laissez-passer
 const REOPEN_HAUT_MAX = parseInt(process.env.REOPEN_HAUT_MAX || '1', 10);                   // positions en mode test simultanées
-const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
+// (2026-09-21) 30 → 10 min. Mesuré sur 6 jours : les 35 épisodes refusés par ce verrou se comportent
+// comme les entrées RETENUES — +10,9 % de plus-haut à 6 h contre +12,9 %, 69 % touchent +6 % contre
+// 77 % — mais avec MOINS de casse : 6 % tombent à -35 % contre 9 % pour les entrées réelles. C'est le
+// seul refus de tout le funnel dont la population est comparable aux acceptés ET plus sûre.
+// Toutes les autres portes testées le même jour justifient leur existence : chop non mesurable -2,9 %
+// à 6 h, fees<3% -16,3 % de pire baisse, ATH-épuisé et pattern-KO de gros pics mais 16 et 23 % de
+// casse contre 9 %. Le verrou anti-boucle reste : 10 min suffisent à empêcher la ré-entrée sur le
+// même mouvement, et le token doit de toute façon re-remplir TOUT le cahier des charges.
+const REENTRY_COOLDOWN_MS = parseInt(process.env.REENTRY_COOLDOWN_MS || String(10 * 60 * 1000), 10);
 const MOU_LOCK_MS = parseInt(process.env.MOU_LOCK_H || "48", 10) * 3600 * 1000; // (2026-09-14) verrou après une sortie MOLLE (RSI2 > 3 h à < 3 % de LP) — réglable sans redéploiement
 // ── VERROU ANTI-COIN-MOURANT — TTL DÉSACTIVÉ PAR DÉFAUT (2026-08-27) ────────────────────────────────
 // J'avais proposé un TTL 48h pour débloquer les cycleurs verrouillés à vie (CYBERLEEK et ses 65 creux
@@ -1875,6 +1883,22 @@ async function scan() {
                 // trop haut, et comme le repli monte la valeur ET le peak ensemble, `rg <= peak - TRAIL`
                 // devient structurellement infaisable à l'instant du repli. Le peak est la référence
                 // d'une sortie : il n'accepte que ce que la chaîne a réellement mesuré.
+                // ── (2026-09-21) OMBRE « armement du rebond à -25% » ────────────────────────────
+                // Backtest sur 238 séries de LP RÉEL (logs 📊, 11→21/09) : armer l'attente du rebond
+                // à -25 % au lieu de -55 % donne +1,4530 SOL contre +1,1022 réel, soit +0,35 SOL.
+                // Contrôles : placebo (400 tirages) médiane -0,26, IC90 [-0,49 ; -0,06] → l'effet est
+                // HORS de la bande · hors échantillon positif sur les deux moitiés (+0,077 / +0,274) ·
+                // témoin à -95 % (inatteignable) exactement 0,0000 · sans les 3 meilleurs trades
+                // encore +0,0787. Seule réserve : le témoin « sortie sur RSI2>50 » rend +0,1146, donc
+                // une partie du gain vient de sortir plus tôt tout court.
+                // C'est une règle de FERMETURE → ombre d'abord, décision sur 30 déclenchements.
+                if (pos.live && realGain <= -0.25 && rsi2v != null && rsi2v > 90 && !pos._shCut25) {
+                    pos._shCut25 = true;
+                    recordShadow('cut25', { symbol: pos.symbol, tok, lpOmbre: +(realGain * 100).toFixed(2),
+                        peakPct: +((pos.peakGain || 0) * 100).toFixed(2), rsi2: rsi2v,
+                        mise: pos.live.openValueSol, ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
+                    console.log(`  🕯️ [OMBRE cut25] ${pos.symbol}: aurait fermé à ${(realGain * 100).toFixed(1)}% de LP (RSI2 ${rsi2v} > 90) — le réel continue`);
+                }
                 const srcLpReelle = lvSrc === 'lot' || lvSrc === 'indiv';
                 if (srcLpReelle) pos.peakGain = Math.max(pos.peakGain || 0, realGain);
                 else if (realGain > (pos.peakGain || 0)) {
