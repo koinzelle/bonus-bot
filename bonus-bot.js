@@ -3187,7 +3187,36 @@ async function fastPositionCheck() {
                             console.log(`  🧊 ${pos.symbol} DexScreener: prix ${(d * 100).toFixed(1)}% depuis le gel`
                                 + ` → LP estimé ${(lpEst * 100).toFixed(2)}% (seuil ${(seuil * 100).toFixed(2)}%)`);
                             if (lpEst <= seuil) {
-                                await closePaper(tok, pos, exitPx, `TRAIL LP ~${(lpEst * 100).toFixed(1)}% via DexScreener (peak +${(pos.peakGain * 100).toFixed(1)}%, lecture chaîne gelée ${pos._gelN}×)`);
+                                // ── (2026-09-21) LA CHAÎNE A LE DERNIER MOT ────────────────────────
+                                // Premier déclenchement réel, Aiden le 21/09 06:46 : FAUX POSITIF.
+                                // L'estimation donnait 6,52 % et a fermé ; le LP RÉEL au close était
+                                // **8,57 %**, soit exactement la valeur dite « gelée » — la chaîne ne
+                                // mentait pas, la pool n'avait pas bougé, et c'est DexScreener qui a
+                                // décroché (prix -4,6 % sans effet sur le LP, le cas « prix↓ / LP↑ »
+                                // qui touche 16,2 % des trades). Le seuil était à 8,09 % et le LP réel
+                                // à 8,57 % : le trail normal n'aurait PAS fermé.
+                                // On tente donc une lecture individuelle FRAÎCHE avant de couper. Si la
+                                // chaîne répond, elle décide — l'estimation n'est qu'un déclencheur
+                                // d'attention. On ne ferme sur l'estimation que si la chaîne est
+                                // réellement muette. Coût : 1 appel RPC par déclenchement.
+                                let lpFinal = lpEst, via = 'DexScreener';
+                                if (live.positionValueAndBin) {
+                                    try {
+                                        const r = await live.positionValueAndBin(pos.live);
+                                        if (r && r.valueSol != null) {
+                                            lpFinal = r.valueSol / pos.live.openValueSol - 1; via = 'chaîne';
+                                            recordLv(pos, lpFinal, r.activeBinId, r);
+                                            console.log(`  🧊 ${pos.symbol}: lecture individuelle → LP RÉEL ${(lpFinal * 100).toFixed(2)}%`
+                                                + ` (estimation ${(lpEst * 100).toFixed(2)}%, écart ${((lpFinal - lpEst) * 100).toFixed(2)} pt)`);
+                                        }
+                                    } catch (_) { /* chaîne muette → on garde l'estimation */ }
+                                }
+                                if (lpFinal > seuil) {
+                                    console.log(`  🧊 ${pos.symbol}: fermeture ANNULÉE — la chaîne dit ${(lpFinal * 100).toFixed(2)}% > seuil ${(seuil * 100).toFixed(2)}%`);
+                                    delete pos._gelAnchor; delete pos._gelPxAt;   // la lecture a répondu : plus de gel
+                                    continue;
+                                }
+                                await closePaper(tok, pos, exitPx, `TRAIL LP ${(lpFinal * 100).toFixed(1)}% via ${via} (peak +${(pos.peakGain * 100).toFixed(1)}%, lecture chaîne gelée ${pos._gelN}×)`);
                                 continue;
                             }
                         }
