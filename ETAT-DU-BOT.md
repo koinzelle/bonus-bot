@@ -1,4 +1,4 @@
-# État du bonus-bot — mis à jour le 20/09/2026
+# État du bonus-bot — mis à jour le 21/09/2026
 
 Document **vivant** : à relire au début de chaque session et à mettre à jour à la fin.
 Il existe pour éviter de re-dériver des conclusions qui ont coûté cher à établir, et
@@ -2129,3 +2129,41 @@ concernés.
 un accident isolé. Si elles apparaissent avec un slot qui avance, c'est le nœud — et il faut le
 second provider. Si elles apparaissent sur des pools à volume nul, c'est un faux positif et il faut
 durcir `GEL_MS`.
+
+
+---
+
+## 18. 21/09 — LA SORTIE VIA DEXSCREENER A TIRÉ, ET C'ÉTAIT UN FAUX POSITIF
+
+**Premier déclenchement réel, Aiden 06:46 :**
+
+```
+06:43:59  🧊 bin -455 identique sur 4 lectures, prix bougé de 7,5% | LP gelé 8,57%
+06:44:39  🧊 peak relevé 8,57% → 9,09%
+06:45:39  🧊 DexScreener : prix -4,6% depuis le gel → LP estimé 6,52% (seuil 8,09%)
+06:46:04  🛑 SORTIE — TRAIL LP ~6,5% via DexScreener
+```
+
+**LP RÉEL au close : +8,57 %** (`pnlSolLive +0,0233 SOL` sur 0,2718). Soit **exactement la valeur dite
+« gelée »**. La chaîne ne mentait pas, la pool n'avait pas bougé — c'est **DexScreener qui a décroché**
+(prix −4,6 % sans effet sur le LP : le cas « prix↓ / LP↑ », 16,2 % des trades, note du 05/09).
+Seuil 8,09 %, LP réel 8,57 % → **le trail normal n'aurait PAS fermé.**
+
+**Leçon :** une estimation prix→LP ne doit jamais être le DERNIER mot sur une fermeture, même ancrée
+et convertie. Elle est un **déclencheur d'attention**, pas une décision.
+
+**CORRIGÉ (aa52090)** : avant de couper, lecture individuelle FRAÎCHE. Si la chaîne répond, elle
+décide ; si elle dit « au-dessus du seuil », la fermeture est ANNULÉE et l'état de gel purgé. On ne
+ferme sur l'estimation que si la chaîne est réellement muette. 1 appel RPC par déclenchement, armées
+seulement.
+
+**⚠️ L'INSTRUMENTATION DU `slot` NE DISCRIMINE RIEN.** `getSlot()` est appelé au moment de la
+détection : il renvoie le slot COURANT, pas celui auquel le compte `lbPair` a été lu. Il ne peut donc
+pas séparer « le nœud sert du périmé » de « la pool dormait ». Pour trancher il faudrait le
+`context.slot` de la lecture elle-même (`getAccountInfoAndContext`). À refaire si la question se
+repose — mais le cas Aiden suggère déjà la réponse : **la pool dormait vraiment.**
+
+**Ce que le cas Aiden dit du détecteur lui-même :** « bin identique 4 fois + prix bougé de 2 % » se
+déclenche sur des pools simplement calmes. Ce n'est pas grave maintenant que la chaîne a le dernier
+mot (le pire est un appel RPC de plus), mais ne pas en tirer de conclusion sur la fréquence des
+« vrais » gels.
