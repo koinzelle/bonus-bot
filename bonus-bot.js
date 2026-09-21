@@ -130,6 +130,23 @@ rotateLogs();
 // TP TRAILING (2026-07-19, idée user + backtest : +247%/+239% total vs +84% en TP fixe +6%, WR 80% vs 85%,
 // pires pertes identiques) : une fois le high-water ≥ +5% depuis l'entrée, plus de plafond — on suit le
 // pump et on sort quand le prix retombe de 1.5% sous le plus-haut. Avant l'armement : SL flip ST inchangé.
+// ── (2026-09-21) RÉ-OUVERTURE APRÈS SORTIE DE RANGE PAR LE HAUT — règle d'Evil Panda ─────────────
+// Son livre (« The edge is the exit », porte UPSIDE) : « A range that price has climbed out of has
+// already sold its tokens for SOL. It closes, banks the fees, AND REOPENS AROUND THE NEW PRICE. »
+// Le bot faisait la première moitié seulement : `CUT hors-range HAUT` ferme et banke (+15,52 % de LP
+// médian sur 22 sorties depuis le 01/09, ses meilleures), puis reste dehors **136 min en médiane**
+// parce qu'il exige un nouveau dump ≥35 % et un RSI2 <50 — qu'un token qui vient de franchir le haut
+// ne remplit évidemment pas. Pendant cette attente : +25,4 % de hausse max en 6 h.
+// EP contourne l'entrée parce qu'elle n'est pas son edge (« the entry is close to a coin flip, and
+// the fees accrue either way »). On contourne donc dump et RSI2, RIEN d'autre.
+// UNIQUEMENT après une sortie par le HAUT. Jamais après un CUT bas, un stop ou une sortie molle —
+// EP l'interdit explicitement (« Re-enter after a stop because it looks cheap now » = ce qu'il NE
+// fait PAS). Et pas après un TRAIL : la position y détient encore 44 % de token (mesuré sur 18 265
+// relevés), la sortie est un choix de momentum, pas un franchissement.
+// UNE SEULE position en mode test à la fois ; les autres occasions partent en ombre pour qu'on
+// compare les prises aux non-prises sur la même période.
+const REOPEN_HAUT_MS = parseInt(process.env.REOPEN_HAUT_MS || String(20 * 60 * 1000), 10);  // fenêtre de validité du laissez-passer
+const REOPEN_HAUT_MAX = parseInt(process.env.REOPEN_HAUT_MAX || '1', 10);                   // positions en mode test simultanées
 const REENTRY_COOLDOWN_MS = 30 * 60 * 1000; // pas de ré-entrée sur un token < 30 min après une sortie (anti-boucle)
 const MOU_LOCK_MS = parseInt(process.env.MOU_LOCK_H || "48", 10) * 3600 * 1000; // (2026-09-14) verrou après une sortie MOLLE (RSI2 > 3 h à < 3 % de LP) — réglable sans redéploiement
 // ── VERROU ANTI-COIN-MOURANT — TTL DÉSACTIVÉ PAR DÉFAUT (2026-08-27) ────────────────────────────────
@@ -2125,7 +2142,9 @@ async function scan() {
             const dumpThr = (ATR_ENTRY === 'on' && dumpThrAtr != null) ? dumpThrAtr : dumpThrFixe;
             const recentHigh = Math.max(...cs.slice(-winN).map(c => c[2]));
             const dumpedFromHigh = recentHigh > 0 ? 1 - curPrice / recentHigh : 0;
-            const atDip = dumpedFromHigh >= dumpThr;
+            // (2026-09-21) laissez-passer UPSIDE : dump et RSI2 contournés, tout le reste maintenu.
+            const reopenHaut = !!(w.reopenUntil && now < w.reopenUntil);
+            const atDip = reopenHaut || dumpedFromHigh >= dumpThr;
             // SHADOW ATR (mode 'shadow') : on n'enregistre QUE les désaccords entre les deux règles, 1 par
             // token/heure → après quelques jours on sait, sur du forward réel, si l'ATR aurait mieux fait.
             if (ATR_ENTRY !== 'on' && dumpThrAtr != null && !inPos && (dumpedFromHigh >= dumpThrAtr) !== atDip
@@ -2186,7 +2205,7 @@ async function scan() {
             // du 17/08 reposait sur 7 trades ; ici la baseline en compte 173 (calibrée : 172 trades réels).
             // La tranche RSI2 40-44 reste la PLUS FAIBLE des marginales — d'où 50 et pas plus haut.
             const RSI_ENTRY_MAX = 50;
-            const rsiLow = rsiEntry != null && rsiEntry < RSI_ENTRY_MAX;   // survendu/pullback (pas en pump)
+            const rsiLow = reopenHaut || (rsiEntry != null && rsiEntry < RSI_ENTRY_MAX);   // survendu/pullback (pas en pump)
             // SHADOW anti-downtrend (2026-08-05) : lower highs = déclin terminal (dead-cat avant full dump).
             // Mesure ONLY : on tague l'entrée, on comparera l'issue downtrend vs range avant d'en faire un gate.
             const recentHigh12 = Math.max(...cs.slice(-12).map(c => c[2]));
@@ -2352,7 +2371,13 @@ async function scan() {
                 w.lastEntryPrice = entry; w.recovered = false;   // anti-mourant : ré-ouvre seulement s'il re-dépasse ce prix
                 const support = `chop${(cr * 100).toFixed(0)}%-dip${(dumpedFromHigh * 100).toFixed(0)}%`;
                 const athAgeHr = athAgeH != null ? +athAgeH.toFixed(1) : null;
-                state.positions[tok] = { symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
+                // (2026-09-21) marque la position ouverte via le laissez-passer UPSIDE, et CONSOMME le
+                // laissez-passer : il ne doit servir qu'une fois, sinon un token qui échoue à ouvrir
+                // le garderait 20 min et pourrait entrer plus tard sans creux ni survente.
+                const _reopenTest = !!(w.reopenUntil && now < w.reopenUntil);
+                if (w.reopenUntil) w.reopenUntil = 0;
+                if (_reopenTest) console.log(`  🔁 ${w.symbol}: RÉ-OUVERTURE après sortie par le haut (dump+RSI2 contournés) — position de TEST`);
+                state.positions[tok] = { _reopenTest, symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
                     // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
                     // (2026-09-18) INSTANTANÉ DE LIQUIDITÉ À L'ENTRÉE. Piste ouverte par le user le 18/09 :
                     // sur les 5 premières fermetures STAGNATION, ELON (qui a continué de chuter) brassait
@@ -2812,6 +2837,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
             ? +Math.max(...pos._tvlHist.filter(q => q.tvl > 0).map(q => q.v / q.tvl)).toFixed(2) : null,
         tvlPoints: (pos._tvlHist || []).length,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
+        reopenTest: pos._reopenTest || null,   // (2026-09-21) ouverte via le laissez-passer UPSIDE d'EP
         pnlPct: closeRate ? null : +(pnlPct * 100).toFixed(2), pnlSol: closeRate ? null : +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         closeRate: closeRate || null,   // (2026-09-20) la fermeture n'a rien vendu : position déjà absente on-chain
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
@@ -2862,6 +2888,19 @@ async function closePaper(tok, pos, exitPrice, reason) {
         if (sortieMolle) {
             state.watch[tok].mouUntil = Date.now() + verrou;
             console.log(`  🔒 ${pos.symbol}: sortie MOLLE (${trade.durMin} min pour ${trade.lpPct >= 0 ? '+' : ''}${trade.lpPct}% de LP) → verrouillé ${MOU_LOCK_MS / 3600000} h au lieu de ${REENTRY_COOLDOWN_MS / 60000} min`);
+        }
+        // (2026-09-21) PORTE UPSIDE D'EP : sortie par le HAUT → laissez-passer de ré-ouverture.
+        if (/hors-range HAUT|CYCLE ONE-SIDED COMPLET/.test(reason || '')) {
+            const dejaTest = Object.values(state.positions).filter(p => p._reopenTest).length;
+            if (dejaTest < REOPEN_HAUT_MAX) {
+                state.watch[tok].reopenUntil = Date.now() + REOPEN_HAUT_MS;
+                state.watch[tok].cooldownUntil = 0;                        // le cooldown anti-boucle ne s'applique pas ici
+                console.log(`  🔁 ${pos.symbol}: sortie par le HAUT (+${trade.lpPct != null ? trade.lpPct.toFixed(1) : '?'}% LP) → laissez-passer de ré-ouverture ${REOPEN_HAUT_MS / 60000} min (dump+RSI2 contournés)`);
+            } else {
+                recordShadow('reopenHaut', { symbol: pos.symbol, tok, lpSortie: trade.lpPct, prix: exitPrice,
+                    durMin: trade.durMin, motif: 'plafond test atteint' });
+                console.log(`  🕯️ ${pos.symbol}: sortie par le HAUT — ré-ouverture NON prise (déjà ${dejaTest}/${REOPEN_HAUT_MAX} en test) → ombre`);
+            }
         }
         state.watch[tok].lastExitTs = Date.now();                          // (2026-08-27) départ du TTL 48h anti-mourant
         state.mourantMints = state.mourantMints || {};
