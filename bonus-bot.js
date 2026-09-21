@@ -1843,8 +1843,17 @@ async function scan() {
                 // ne paiera aucune taxe de sortie. On garde la même action (banker) mais on exige
                 // ONESIDED_TOP_BUFFER bins au-dessus, sinon le bruit autour du prix d'entrée
                 // fermerait la position dans la seconde qui suit l'ouverture.
-                const topBuf = pos.live.oneSided ? ONESIDED_TOP_BUFFER : 0;
-                if (liveBinId != null && pos.live.upperBinId != null && liveBinId > pos.live.upperBinId + topBuf) {
+                // ── (2026-09-22) GARDE : UNE POSITION SANS `live` NE DOIT PAS TUER LE SCAN ─────────
+                // Cas GP, 21/09 22:08 : une position PAPIER (sans objet `live`) a survécu en mode
+                // live. `pos.live.oneSided` levait alors un TypeError attrapé par le garde-fou du
+                // scan, qui journalise « scan tick (survécu) » et ABANDONNE LE TICK ENTIER.
+                // Conséquence : plus aucune position n'était lue — CYPHERCAT n'a eu que 2 relevés en
+                // une heure, et un pic de LP à +6 % vu par le user n'a jamais atteint `peakGain`.
+                // Une seule position fantôme paralysait la surveillance de toutes les autres.
+                // Même motif que le bug du 16/09 (221 ticks perdus) : ce n'est pas le plantage qui
+                // coûte, c'est l'abandon silencieux du tick.
+                const topBuf = (pos.live && pos.live.oneSided) ? ONESIDED_TOP_BUFFER : 0;
+                if (pos.live && liveBinId != null && pos.live.upperBinId != null && liveBinId > pos.live.upperBinId + topBuf) {
                     await closePaper(tok, pos, px, pos.live.oneSided
                         ? `CYCLE ONE-SIDED COMPLET (banké +${(realGain * 100).toFixed(1)}% LP, 100% SOL → aucune taxe de sortie, bin ${liveBinId}>${pos.live.upperBinId}+${topBuf})`
                         : `CUT hors-range HAUT (banké +${(realGain * 100).toFixed(1)}% LP, bin ${liveBinId}>${pos.live.upperBinId})`);
@@ -1866,7 +1875,7 @@ async function scan() {
                 // la range EST le signal que la thèse est de nouveau vivante — on rend alors à la position
                 // sa sortie normale, plancher compris.
                 // Le test !deepDown évite le battement arm/désarm : sans lui la ligne suivante ré-arme aussitôt.
-                if (pos._awaitBounce && !deepDown && liveBinId != null && pos.live.lowerBinId != null
+                if (pos._awaitBounce && !deepDown && pos.live && liveBinId != null && pos.live.lowerBinId != null
                     && liveBinId >= pos.live.lowerBinId && liveBinId <= pos.live.upperBinId) {
                     pos._awaitBounce = false; save();
                     console.log(`  ↩️ ${pos.symbol}: revenue dans la range (bin ${liveBinId} dans [${pos.live.lowerBinId},${pos.live.upperBinId}], LP ${(realGain * 100).toFixed(1)}%) → attente de rebond DÉSARMÉE, plancher RSI2 rétabli`);
