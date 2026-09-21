@@ -2242,8 +2242,15 @@ async function scan() {
             // même logique que le cap ATH-épuisé, dans l'autre sens.
             // Volume attendu : ~11 tokens/jour, ce qui est l'ordre de grandeur du déficit constaté.
             // Réglable sans redéploiement : RSI_ATH_MAX=-1 désactive.
+            // (2026-09-21, 2e passe — demande user) PLAFOND RSI SUR LA TOLÉRANCE. Le segment global
+            // porte 7 % de casse contre 14 % pour les entrées réelles, mais il n'est pas homogène :
+            //   RSI2 50-59 → 4 % de casse (n=28) · 60-74 → 3 % (n=38) · ≥75 → 11 % (n=54)
+            // La sécurité vient de la bande 50-74 ; au-delà de 75 on rachète de l'euphorie et la casse
+            // triple. On tolère donc un RSI élevé, pas un RSI extrême. RSI_TOL_MAX=999 lève le plafond.
             const rsiAthMax = parseInt(process.env.RSI_ATH_MAX || '3', 10);
-            const rsiTolere = rsiAthMax >= 0 && (w.athBreaks || 0) <= rsiAthMax;
+            const rsiTolMax = parseInt(process.env.RSI_TOL_MAX || '75', 10);
+            const rsiTolere = rsiAthMax >= 0 && (w.athBreaks || 0) <= rsiAthMax
+                && rsiEntry != null && rsiEntry < rsiTolMax;
             const rsiLow = reopenHaut || rsiTolere || (rsiEntry != null && rsiEntry < RSI_ENTRY_MAX);   // survendu/pullback (pas en pump)
             // SHADOW anti-downtrend (2026-08-05) : lower highs = déclin terminal (dead-cat avant full dump).
             // Mesure ONLY : on tague l'entrée, on comparera l'issue downtrend vs range avant d'en faire un gate.
