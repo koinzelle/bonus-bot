@@ -2229,7 +2229,22 @@ async function scan() {
             // du 17/08 reposait sur 7 trades ; ici la baseline en compte 173 (calibrée : 172 trades réels).
             // La tranche RSI2 40-44 reste la PLUS FAIBLE des marginales — d'où 50 et pas plus haut.
             const RSI_ENTRY_MAX = 50;
-            const rsiLow = reopenHaut || (rsiEntry != null && rsiEntry < RSI_ENTRY_MAX);   // survendu/pullback (pas en pump)
+            // ── (2026-09-21) RSI > 50 TOLÉRÉ QUAND LE TOKEN N'A PAS ÉPUISÉ SES ATH ──────────────
+            // `RSI>50` est le 1er blocage du funnel (340 épisodes sur 11 jours) et, pris en bloc, il
+            // ne vaut rien : les refusés font -0,9 % à 6 h contre -0,0 % pour les entrées RETENUES,
+            // avec la même casse. Mais croisé avec `athBreaks <= 3` le segment devient le MEILLEUR du
+            // funnel : n=120, +0,3 % à 6 h, et surtout **7 % tombent à -35 % contre 14 % pour les
+            // entrées réelles**. Moitié moins de casse pour un rendement équivalent.
+            // Robuste : 7 % de casse dans CHACUNE des deux moitiés de la période (n=60 + n=60), et le
+            // gradient est propre — athBreaks 0 → 0 % de casse, 1 → 5 %, 2-3 → 11 %.
+            // Lecture : un token qui n'a pas encore multiplié les cassages d'ATH n'est pas en train de
+            // distribuer ; son RSI élevé est une reprise, pas une euphorie de fin de cycle. C'est la
+            // même logique que le cap ATH-épuisé, dans l'autre sens.
+            // Volume attendu : ~11 tokens/jour, ce qui est l'ordre de grandeur du déficit constaté.
+            // Réglable sans redéploiement : RSI_ATH_MAX=-1 désactive.
+            const rsiAthMax = parseInt(process.env.RSI_ATH_MAX || '3', 10);
+            const rsiTolere = rsiAthMax >= 0 && (w.athBreaks || 0) <= rsiAthMax;
+            const rsiLow = reopenHaut || rsiTolere || (rsiEntry != null && rsiEntry < RSI_ENTRY_MAX);   // survendu/pullback (pas en pump)
             // SHADOW anti-downtrend (2026-08-05) : lower highs = déclin terminal (dead-cat avant full dump).
             // Mesure ONLY : on tague l'entrée, on comparera l'issue downtrend vs range avant d'en faire un gate.
             const recentHigh12 = Math.max(...cs.slice(-12).map(c => c[2]));
