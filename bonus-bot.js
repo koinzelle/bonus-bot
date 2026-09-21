@@ -2043,6 +2043,19 @@ async function scan() {
                         recordShadow('planchrRsi2', { symbol: pos.symbol, tok, lp: +(realGain * 100).toFixed(2),
                             price: px, peakPct: +((pos.peakGain || 0) * 100).toFixed(1), ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
                     }
+                    // (2026-09-21) OMBRE RSI2_FLOOR_MULT. Le plancher du 13/09 exigeait un LP supérieur
+                    // à taxe × 2,078 × 1,05 pour sortir sur RSI2. Mis à 0 en stand-by : on journalise
+                    // les sorties qu'il aurait empêchées, pour savoir ce qu'il protégeait vraiment.
+                    if (rsi2 != null && rsi2 > 90 && !pos._awaitBounce && pos.live) {
+                        const _bps = (pos.live.transferFeeBps || 0);
+                        const _seuilAncien = _bps ? (_bps / 10000) * 2.078 * 1.05 : RSI2_FLOOR_LP;
+                        if (realGain <= _seuilAncien && !pos._shMou) {
+                            pos._shMou = true;
+                            recordShadow('sbRsi2Floor', { symbol: pos.symbol, tok, lp: +(realGain * 100).toFixed(2),
+                                seuilAncienPct: +(_seuilAncien * 100).toFixed(2), taxeBps: _bps, rsi2,
+                                ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
+                        }
+                    }
                     if (rsi2 != null && rsi2 > 90 && (pos._awaitBounce || realGain > rsi2FloorFor(pos))) {
                         // (2026-08-24) RSI2 = PLANCHER quand pas armé (< +6% LP). Sort les positions molles DANS LE
                         // VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue (cc
@@ -2475,10 +2488,16 @@ async function scan() {
                 // laissez-passer : il ne doit servir qu'une fois, sinon un token qui échoue à ouvrir
                 // le garderait 20 min et pourrait entrer plus tard sans creux ni survente.
                 const _chopInconnu = !!chopInconnu;   // (2026-09-21) marque les entrées que le filtre chop aurait bloquées
+                // (2026-09-21) OMBRE MOU_LOCK. `mouUntil` vaut exitTs + MOU_LOCK_MS ; on retrouve donc
+                // l'heure de la sortie molle et on regarde si le verrou de 48 h serait encore actif.
+                const _mouTs = w.mouUntil ? w.mouUntil - MOU_LOCK_MS : 0;
+                const _sousVerrou48 = !!(_mouTs && now - _mouTs < 48 * 3600e3);
+                if (_sousVerrou48) recordShadow('sbMouLock', { symbol: w.symbol, tok, price: entry,
+                    depuisSortieMolleMin: Math.round((now - _mouTs) / 60000) });
                 const _reopenTest = !!(w.reopenUntil && now < w.reopenUntil);
                 if (w.reopenUntil) w.reopenUntil = 0;
                 if (_reopenTest) console.log(`  🔁 ${w.symbol}: RÉ-OUVERTURE après sortie par le haut (dump+RSI2 contournés) — position de TEST`);
-                state.positions[tok] = { _reopenTest, _chopInconnu, symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
+                state.positions[tok] = { _reopenTest, _chopInconnu, _sousVerrou48, symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
                     // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
                     // (2026-09-18) INSTANTANÉ DE LIQUIDITÉ À L'ENTRÉE. Piste ouverte par le user le 18/09 :
                     // sur les 5 premières fermetures STAGNATION, ELON (qui a continué de chuter) brassait
@@ -2940,6 +2959,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         reopenTest: pos._reopenTest || null,   // (2026-09-21) ouverte via le laissez-passer UPSIDE d'EP
         chopInconnu: pos._chopInconnu || null, // (2026-09-21) le filtre chop de septembre l'aurait refusée
+        sousVerrou48: pos._sousVerrou48 || null, // (2026-09-21) le verrou 48 h du 14/09 l'aurait refusée
         pnlPct: closeRate ? null : +(pnlPct * 100).toFixed(2), pnlSol: closeRate ? null : +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         closeRate: closeRate || null,   // (2026-09-20) la fermeture n'a rien vendu : position déjà absente on-chain
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
