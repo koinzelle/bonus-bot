@@ -2226,3 +2226,65 @@ pas vu. **Lire la bonne pool donne la bonne réponse dans les trois cas.**
 **Rappel de méthode, coûteux :** cette règle a été déployée en direct sans passer par une ombre, à la
 demande du user. Deux déclenchements, deux faux positifs. La règle « jamais de règle de fermeture sans
 ombre » aurait attrapé les deux avant qu'elles ne coupent une position.
+
+## 20. 23/09 — COUPER PLUS TÔT PERD : le backtest `cut25` était un biais du survivant
+
+**Mesure, 624 trades avec série LP complète (26/08 → 22/09), réel +4,5512 SOL / 157,40 notionnel = 2,89 %/rot.**
+Simulation d'une coupe sèche au premier passage sous un seuil, **toutes positions confondues** :
+
+| seuil | touchées | ombre | vs réel |
+|---|---:|---:|---:|
+| −15 % | 103 | 2,4948 | **−2,0564 SOL** |
+| −20 % | 73 | 3,0579 | **−1,4933** |
+| −25 % | 53 | 3,5650 | **−0,9862** |
+| −30 % | 45 | 3,8066 | **−0,7446** |
+| −35 % | 37 | 3,9698 | **−0,5814** |
+
+Monotone : **plus on coupe haut, plus on perd.** Confirme le backtest du 23/08 (−55 % > −45 % > −35 %) et
+l'étend au seul cas qu'il n'avait pas couvert.
+
+**PIÈGE DE MÉTHODE — à ne jamais refaire.** Restreinte aux trades *qui ont fini coupés*, la même
+simulation à −20 % affiche **+1,10 SOL**. Même données, signe inversé. Il manquait les 73 positions qui
+ont touché −20 % et sont ressorties gagnantes contre 37 coupées. Le biais est dans l'ÉCHANTILLON, donc
+il survit au placebo et au hors-échantillon. **Toute ombre de fermeture doit être simulée sur l'univers
+complet, pas sur la population que la règle aurait attrapée.** C'est ce qui a produit le `cut25` du 21/09
+(+0,35 SOL annoncés) — ombre posée, **0 déclenchement réel en 2 jours**.
+
+**La règle actuelle ne coupe PAS au plus bas** (contrairement à l'intuition) : sur 37 coupes avec série
+LP, l'écart médian entre la sortie et le creux touché est de **+9,1 points**, et seules 7/37 sortent à
+moins de 3 points du creux. L'attente du rebond posée le 30/08 fait ce travail. Les 4 cas sortis SOUS le
+creux vu (LinkedInu −23,9, EMBER −10,8, TIGRINO −7,3, Tulip −5,8) sont des chutes plus rapides que la
+cadence de lecture → problème de fréquence de scan, pas de seuil.
+
+**Les positions qui plongent remontent souvent.** Sur 73 passées sous −20 % de LP : 44 non coupées
+finissent vertes **82 %** du temps (LP médian +2,9 %) ; les 29 coupées, **0 %** (−3,0641 SOL). Sous −30 % :
+18 non coupées, encore **61 %** de vertes.
+
+**Le vrai levier est la RÉ-ENTRÉE, pas le seuil.** Les 6 h suivant une coupe basse sont la meilleure
+fenêtre d'entrée du bot : **n=22, +7,74 %/rot, WR 95 %**, contre 3,40 %/rot toutes entrées confondues. Et
+le bot n'y court pas après un rebond : il re-rentre à un prix médian **4,3 % SOUS** celui de la coupe
+(11 fois sur 15). Ce qu'il gagne est une **range fraîche recentrée**, pas le rebond. Il ne le fait que
+**15 fois sur 76** coupes.
+
+## 21. 23/09 — OMBRE `sbAjoutBas` + FILET DE SÉCURITÉ SUR TOUTES LES OMBRES (déployé)
+
+**Idée user (méthode EP)** : hors range, ne pas couper — ouvrir une **2ᵉ position centrée plus bas**, et
+solder les deux quand l'ensemble repasse vert. Physiquement cohérent : hors range par le bas la position
+est 100 % en token, elle remonte 1:1 avec le prix mais **ne touche plus un seul frais** ; la seconde,
+centrée, monétise la même remontée.
+
+**Objection non levée** : le +7,74 %/rot mesure des ré-entrées que le bot a **choisi** de prendre (chop,
+pattern, SuperTrend, volume). Un ajout inconditionnel n'est pas la même population. Non transposable.
+
+`sbAjoutBas` **n'écrit aucun verdict** : à chaque sortie de range basse elle journalise les observables
+bruts (pool, prix, LP parent, bins, mise, taxe, TVL, vélocité de frais). La simulation se fait hors ligne
+sur les bougies GeckoTerminal de **cette** pool, où les coefficients sont révisables. Motif : la
+conversion prix→LP a déjà menti trois fois (plancher RSI2 : +0,274 annoncé, −0,357 réel).
+
+**Filet `ombre(label, fn)`** — trois incidents en deux semaines, tous le même mécanisme : une exception
+dans un bloc d'observation fait éclater le **tick de scan entier**, trail et coupes compris.
+16/09 objectif de prix (zone morte sur `realGain`) → 221 ticks ; 22/09 `cut25` (zone morte sur `rsi2v`)
+→ 33 ticks ; 21/09 position papier sans `.live` → 90 ticks. `node --check` n'en voit aucun.
+Cinq blocs enveloppés : `cut25`, `rangeBas`, `tf15`, `planchrRsi2`, `rsi2Floor`. Bornes vérifiées par
+comptage d'accolades, aucun `await`/`continue`/`return` à l'intérieur, filet testé sur les deux classes
+d'erreur. **Surveiller `grep '⚠️ OMBRE'` sur /logs/file — une ombre muette est une ombre à réparer.**

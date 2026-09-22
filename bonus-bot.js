@@ -593,6 +593,26 @@ function recordShadow(type, data) {
     }
 }
 
+// ── (2026-09-23) FILET DE SÉCURITÉ DES OMBRES ────────────────────────────────────────────
+// Trois incidents en deux semaines, tous le même mécanisme : une exception levée DANS un bloc
+// d'observation fait éclater le tick de scan ENTIER, donc le trail et les coupes avec.
+//   · 16/09  ombre `objectif de prix` : lisait `realGain` en zone morte → 221 ticks perdus.
+//   · 22/09  ombre `cut25` : lisait `rsi2v` avant son initialisation → 33 ticks perdus 05:07-05:33.
+//   · 21/09  position papier sans `.live` → 90 ticks perdus, un pic à +6 % jamais enregistré.
+// `node --check` ne voit aucun des trois (la zone morte temporelle est une erreur d'EXÉCUTION).
+// Une ombre ne décide RIEN : si elle casse, elle doit se taire, pas emporter la sortie des
+// positions. On enveloppe donc chaque bloc purement observationnel. La fonction fléchée garde
+// la portée englobante, donc aucune variable ne change de sens.
+// À surveiller : `grep '⚠️ OMBRE'` sur /logs/file — une ombre muette est une ombre à réparer.
+function ombre(label, fn) {
+    try { fn(); } catch (e) {
+        const s = (state && state.shadowStats) || {};   // le filet ne doit JAMAIS lever lui-même
+        s._erreurs = s._erreurs || {};
+        s._erreurs[label] = (s._erreurs[label] || 0) + 1;
+        console.log(`  ⚠️ OMBRE ${label} a levé (${s._erreurs[label]}×) : ${e && e.message} — le scan continue`);
+    }
+}
+
 async function tg(msg) {
     if (!TELEGRAM_TOKEN || !CHAT_ID) return;
     try {
@@ -2000,6 +2020,7 @@ async function scan() {
                 // encore +0,0787. Seule réserve : le témoin « sortie sur RSI2>50 » rend +0,1146, donc
                 // une partie du gain vient de sortir plus tôt tout court.
                 // C'est une règle de FERMETURE → ombre d'abord, décision sur 30 déclenchements.
+                ombre('cut25', () => {
                 if (pos.live && realGain <= -0.25 && rsi2v != null && rsi2v > 90 && !pos._shCut25) {
                     pos._shCut25 = true;
                     recordShadow('cut25', { symbol: pos.symbol, tok, lpOmbre: +(realGain * 100).toFixed(2),
@@ -2007,6 +2028,7 @@ async function scan() {
                         mise: pos.live.openValueSol, ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
                     console.log(`  🕯️ [OMBRE cut25] ${pos.symbol}: aurait fermé à ${(realGain * 100).toFixed(1)}% de LP (RSI2 ${rsi2v} > 90) — le réel continue`);
                 }
+                });
 
                 // ── (2026-09-21, demande user) OMBRE « rebond armé à la SORTIE DE RANGE » ──────────
                 // Variante proposée : au lieu d'attendre -55 % de LP pour armer, on arme dès que le
@@ -2015,11 +2037,39 @@ async function scan() {
                 // Mesurable, contrairement à l'attente actuelle : elle sort PLUS TÔT que la coupe
                 // sèche, donc la position est encore ouverte quand l'ombre se déclenche.
                 // On journalise le LP qu'elle aurait réalisé ; à la fermeture on comparera au réel.
+                ombre('rangeBas', () => {
                 if (pos.live && liveBinId != null && pos.live.lowerBinId != null) {
                     const horsRangeBas = liveBinId < pos.live.lowerBinId;
                     if (horsRangeBas && !pos._shRngArm) {
                         pos._shRngArm = true;
                         console.log(`  🕯️ [OMBRE rangeBas] ${pos.symbol}: sortie de range par le bas (bin ${liveBinId} < ${pos.live.lowerBinId}, LP ${(realGain * 100).toFixed(1)}%) → attente de rebond ARMÉE en ombre`);
+                        // ── (2026-09-23, idée user) OMBRE « AJOUT D'UNE 2e POSITION PLUS BAS » ──────
+                        // Méthode EP : hors range, on n'attend pas — on ouvre une seconde position
+                        // CENTRÉE sur le prix courant, et on solde les deux quand l'ensemble repasse
+                        // vert. Deux mesures le motivent (23/09, 624 trades) :
+                        //   · couper plus tôt PERD à tous les seuils une fois les positions qui
+                        //     replongent PUIS remontent comptées (-20 % coûte -1,49 SOL, -25 % -0,99,
+                        //     monotone). Restreint aux seules coupées, -20 % affichait +1,10 SOL :
+                        //     biais du survivant, même donnée, signe inversé.
+                        //   · sur 73 positions passées sous -20 % de LP, les 44 NON coupées finissent
+                        //     vertes 82 % du temps ; sous -30 %, encore 61 %.
+                        // Physiquement : hors range par le bas la position est 100 % en token, donc
+                        // elle remonte 1:1 avec le prix mais ne touche PLUS un seul frais. La seconde,
+                        // centrée, monétise la même remontée. C'est là qu'est le gain supposé.
+                        // ON N'ÉCRIT AUCUN VERDICT ICI. Le bot ne sait pas modéliser une position DLMM
+                        // sans se tromper, et la conversion prix→LP m'a déjà menti trois fois (plancher
+                        // RSI2 : +0,274 annoncé, -0,357 réel). On journalise donc les OBSERVABLES BRUTS
+                        // au moment de la sortie de range ; la simulation se fait hors ligne sur les
+                        // bougies GeckoTerminal de CETTE pool, où je peux réviser les coefficients.
+                        recordShadow('sbAjoutBas', { symbol: pos.symbol, tok,
+                            pool: pos.live.poolAddress || null,
+                            px: pos._raw && pos._raw.px != null ? pos._raw.px : null,
+                            pxBougie: px, lpParent: +(realGain * 100).toFixed(2),
+                            bin: liveBinId, lowerBin: pos.live.lowerBinId, upperBin: pos.live.upperBinId,
+                            miseParent: pos.live.openValueSol, taxeBps: pos.live.transferFeeBps || 0,
+                            tvl: pos._tvl != null ? Math.round(pos._tvl) : null,
+                            feeVel: pos._feeVel != null ? +(pos._feeVel * 1000).toFixed(3) : null,
+                            ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
                     } else if (!horsRangeBas && pos._shRngArm && !pos._shRngFait) {
                         pos._shRngArm = false;   // revenue dans la range → désarmée, comme la vraie règle
                         console.log(`  🕯️ [OMBRE rangeBas] ${pos.symbol}: revenue dans la range (LP ${(realGain * 100).toFixed(1)}%) → ombre DÉSARMÉE`);
@@ -2034,6 +2084,7 @@ async function scan() {
                         console.log(`  🕯️ [OMBRE rangeBas] ${pos.symbol}: aurait FERMÉ à ${pos._shRngLp}% de LP (RSI2 ${rsi2v} > 90) — le réel continue`);
                     }
                 }
+                });
 
                 const rsi14v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 14);
                 console.log(`📊 ${pos.symbol} | LP ${(realGain * 100).toFixed(1)}% | peak ${(pos.peakGain * 100).toFixed(1)}% | ${armed ? 'armé✓' : 'pas-armé'} | trail≤${((pos.peakGain - TRAIL) * 100).toFixed(1)}% | prix ${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}% | RSI2 ${rsi2v != null ? rsi2v.toFixed(0) : '—'} · RSI14 ${rsi14v != null ? rsi14v.toFixed(0) : '—'} | bin ${liveBinId != null ? liveBinId : '—'}→${pos.live?.upperBinId ?? '—'} | src:${realSource}${pos._raw ? ` px:${pos._raw.px != null ? pos._raw.px.toPrecision(6) : '?'} X:${pos._raw.x != null ? pos._raw.x.toPrecision(6) : '?'} Y:${pos._raw.y != null ? pos._raw.y.toFixed(4) : '?'} lu:${pos._raw.readTs ? ((Date.now() - pos._raw.readTs) / 1000).toFixed(0) : '?'}s${pos._feeVel != null ? ` 💰${(pos._fees * 1000).toFixed(2)}m (${(pos._feeVel * 1000).toFixed(2)}m/h${pos._feeVel1h != null ? ` · 1h ${(pos._feeVel1h * 1000).toFixed(2)}m/h` : ''}${pos._tvl != null ? ` 💧${Math.round(pos._tvl / 1000)}k${pos._volTvl != null ? ` v/t${pos._volTvl}` : ''}${pos._tvlVar1h != null ? ` 1h${pos._tvlVar1h > 0 ? '+' : ''}${pos._tvlVar1h}%` : ''}` : ''}${pos._feeHours != null && isFinite(pos._feeHours) ? `, paie en ${pos._feeHours.toFixed(0)}h` : ''})` : ''}` : ''} | ${(process.env.EXIT_TF_15M_ALL !== '0' || pos.established) ? '15m' : '5m'}`);
@@ -2082,6 +2133,7 @@ async function scan() {
                     // les cas où la règle de septembre aurait TENU la position que le 5 min ferme.
                     // C'est exactement la mesure qui manquait : le commit du 14/09 a fait passer les
                     // volatils de 47 à 112 minutes, sans qu'on sache jamais ce que ça rapportait.
+                    ombre('tf15', () => {
                     if (pcs !== cs && rsi2 != null && rsi2 > 90 && Array.isArray(cs) && cs.length >= 10) {
                         const rsi2_15 = calculateRSI(cs.slice(0, -1).map(c => c[4]), 2);
                         if (rsi2_15 != null && rsi2_15 <= 90 && !pos._shTf15) {
@@ -2093,6 +2145,7 @@ async function scan() {
                             console.log(`  🕯️ [OMBRE tf15] ${pos.symbol}: sortie RSI2 en 5 min (${rsi2.toFixed(0)}) — en 15 min le RSI2 est à ${rsi2_15.toFixed(0)}, la position aurait été TENUE (LP ${(realGain * 100).toFixed(1)}%)`);
                         }
                     }
+                    });
                     // en attente de rebond, le RSI2>90 sort QUEL QUE SOIT le signe : c'est la seule issue
                     // d'une position profondément négative (LP>0 exigerait un prix ×2,22).
                     // SHADOW PLANCHER RSI2 (2026-09-03) — mesure ce que coûterait/rapporterait d'autoriser
@@ -2105,6 +2158,7 @@ async function scan() {
                     // On enregistre donc le LP du PREMIER déclenchement qui ne sort pas aujourd'hui mais
                     // sortirait avec un plancher à -20%. Reporté sur le trade, il se compare directement à
                     // `lpPct` : « serait sorti à X% » contre « est sorti à Y% », sans reconstruction.
+                    ombre('planchrRsi2', () => {
                     if (rsi2 != null && rsi2 > 90 && !armed && !pos._awaitBounce
                         && realGain <= RSI2_FLOOR_LP && realGain > -0.20 && pos._rsiFloorLp == null) {
                         pos._rsiFloorLp = +(realGain * 100).toFixed(2);
@@ -2113,9 +2167,11 @@ async function scan() {
                         recordShadow('planchrRsi2', { symbol: pos.symbol, tok, lp: +(realGain * 100).toFixed(2),
                             price: px, peakPct: +((pos.peakGain || 0) * 100).toFixed(1), ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
                     }
+                    });
                     // (2026-09-21) OMBRE RSI2_FLOOR_MULT. Le plancher du 13/09 exigeait un LP supérieur
                     // à taxe × 2,078 × 1,05 pour sortir sur RSI2. Mis à 0 en stand-by : on journalise
                     // les sorties qu'il aurait empêchées, pour savoir ce qu'il protégeait vraiment.
+                    ombre('rsi2Floor', () => {
                     if (rsi2 != null && rsi2 > 90 && !pos._awaitBounce && pos.live) {
                         const _bps = (pos.live.transferFeeBps || 0);
                         const _seuilAncien = _bps ? (_bps / 10000) * 2.078 * 1.05 : RSI2_FLOOR_LP;
@@ -2126,6 +2182,7 @@ async function scan() {
                                 ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
                         }
                     }
+                    });
                     if (rsi2 != null && rsi2 > 90 && (pos._awaitBounce || realGain > rsi2FloorFor(pos))) {
                         // (2026-08-24) RSI2 = PLANCHER quand pas armé (< +6% LP). Sort les positions molles DANS LE
                         // VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue (cc
