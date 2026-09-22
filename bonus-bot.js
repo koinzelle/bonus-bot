@@ -1931,22 +1931,6 @@ async function scan() {
                 // trop haut, et comme le repli monte la valeur ET le peak ensemble, `rg <= peak - TRAIL`
                 // devient structurellement infaisable à l'instant du repli. Le peak est la référence
                 // d'une sortie : il n'accepte que ce que la chaîne a réellement mesuré.
-                // ── (2026-09-21) OMBRE « armement du rebond à -25% » ────────────────────────────
-                // Backtest sur 238 séries de LP RÉEL (logs 📊, 11→21/09) : armer l'attente du rebond
-                // à -25 % au lieu de -55 % donne +1,4530 SOL contre +1,1022 réel, soit +0,35 SOL.
-                // Contrôles : placebo (400 tirages) médiane -0,26, IC90 [-0,49 ; -0,06] → l'effet est
-                // HORS de la bande · hors échantillon positif sur les deux moitiés (+0,077 / +0,274) ·
-                // témoin à -95 % (inatteignable) exactement 0,0000 · sans les 3 meilleurs trades
-                // encore +0,0787. Seule réserve : le témoin « sortie sur RSI2>50 » rend +0,1146, donc
-                // une partie du gain vient de sortir plus tôt tout court.
-                // C'est une règle de FERMETURE → ombre d'abord, décision sur 30 déclenchements.
-                if (pos.live && realGain <= -0.25 && rsi2v != null && rsi2v > 90 && !pos._shCut25) {
-                    pos._shCut25 = true;
-                    recordShadow('cut25', { symbol: pos.symbol, tok, lpOmbre: +(realGain * 100).toFixed(2),
-                        peakPct: +((pos.peakGain || 0) * 100).toFixed(2), rsi2: rsi2v,
-                        mise: pos.live.openValueSol, ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
-                    console.log(`  🕯️ [OMBRE cut25] ${pos.symbol}: aurait fermé à ${(realGain * 100).toFixed(1)}% de LP (RSI2 ${rsi2v} > 90) — le réel continue`);
-                }
                 const srcLpReelle = lvSrc === 'lot' || lvSrc === 'indiv';
                 if (srcLpReelle) pos.peakGain = Math.max(pos.peakGain || 0, realGain);
                 else if (realGain > (pos.peakGain || 0)) {
@@ -2007,6 +1991,23 @@ async function scan() {
                 // cas bot 1 où notre RSI divergeait), bin actif→haut du range, source valeur, timeframe.
                 const realSource = lvSrc; // diagnostic gel valeur (2026-08-11) : lot / lot-FIGÉ / indiv / cacheXs / prix
                 const rsi2v = calculateRSI(pcs.slice(0, -1).map(c => c[4]), 2);
+                // ── (2026-09-21) OMBRE « armement du rebond à -25% » ────────────────────────────
+                // Backtest sur 238 séries de LP RÉEL (logs 📊, 11→21/09) : armer l'attente du rebond
+                // à -25 % au lieu de -55 % donne +1,4530 SOL contre +1,1022 réel, soit +0,35 SOL.
+                // Contrôles : placebo (400 tirages) médiane -0,26, IC90 [-0,49 ; -0,06] → l'effet est
+                // HORS de la bande · hors échantillon positif sur les deux moitiés (+0,077 / +0,274) ·
+                // témoin à -95 % (inatteignable) exactement 0,0000 · sans les 3 meilleurs trades
+                // encore +0,0787. Seule réserve : le témoin « sortie sur RSI2>50 » rend +0,1146, donc
+                // une partie du gain vient de sortir plus tôt tout court.
+                // C'est une règle de FERMETURE → ombre d'abord, décision sur 30 déclenchements.
+                if (pos.live && realGain <= -0.25 && rsi2v != null && rsi2v > 90 && !pos._shCut25) {
+                    pos._shCut25 = true;
+                    recordShadow('cut25', { symbol: pos.symbol, tok, lpOmbre: +(realGain * 100).toFixed(2),
+                        peakPct: +((pos.peakGain || 0) * 100).toFixed(2), rsi2: rsi2v,
+                        mise: pos.live.openValueSol, ageMin: Math.round((Date.now() - pos.openedAt) / 60000) });
+                    console.log(`  🕯️ [OMBRE cut25] ${pos.symbol}: aurait fermé à ${(realGain * 100).toFixed(1)}% de LP (RSI2 ${rsi2v} > 90) — le réel continue`);
+                }
+
                 // ── (2026-09-21, demande user) OMBRE « rebond armé à la SORTIE DE RANGE » ──────────
                 // Variante proposée : au lieu d'attendre -55 % de LP pour armer, on arme dès que le
                 // bin sort de la range par le bas (≈ -25/-30 % de LP), et on DÉSARME si la position
