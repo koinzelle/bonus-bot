@@ -2,3 +2,7 @@ node_modules/
 bonus_paper.json
 .env
 data/
+
+# caches de backtest (régénérables, 12 Mo) — ne jamais committer
+backtest-cache/
+logs/
