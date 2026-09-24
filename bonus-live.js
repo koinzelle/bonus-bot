@@ -171,7 +171,7 @@ async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
     // Priorité SCALP (2026-08-04) : fee la plus BASSE (viable ≥0.5%), puis la plus PROFONDE, puis bin
     // step 100. ⚠️ ATTENTION À LA JUSTIFICATION D'ORIGINE — CORRIGÉE LE 08/09/2026.
     // Le commentaire d'origine disait « notre 5% = 0% car le swap round-trip du scalp mange la grosse
-    // fee ». C'est FAUX : le bot swappe via JUPITER (jupSwapOnce, lite-api.jup.ag), qui route par le
+    // fee ». C'est FAUX : le bot swappe via JUPITER (jupSwapOnce, api.jup.ag), qui route par le
     // chemin le moins cher de tout Solana et n'emprunte donc pas la pool Meteora où l'on dépose. À la
     // sortie, closeVerified RETIRE la liquidité (aucun swap dans la pool) et ne reswappe que le résidu,
     // encore via Jupiter. **Le fee de la pool n'est JAMAIS payé par le bot : c'est du revenu pur.**
@@ -337,14 +337,21 @@ async function jupSwap(inputMint, outputMint, rawAmount, tries = 3) {
         }
     }
 }
+// (2026-09-24) lite-api.jup.ag est en cours de retrait : Jupiter y baisse la limite progressivement,
+// et depuis Railway 100 % des swaps prenaient un 429 (5 ouvertures ratées en 10 min). Nouvelle base
+// api.jup.ag ; avec JUP_API_KEY (portail développeur Jupiter) la limite passe à 60 req/min par clé
+// au lieu de 30 req/min sans clé.
+const JUP_BASE = 'https://api.jup.ag/swap/v1';
+const JUP_HEADERS = process.env.JUP_API_KEY ? { 'x-api-key': process.env.JUP_API_KEY } : {};
 async function jupSwapOnce(inputMint, outputMint, rawAmount) {
-    const quote = await axios.get('https://lite-api.jup.ag/swap/v1/quote', {
+    const quote = await axios.get(`${JUP_BASE}/quote`, {
         params: { inputMint, outputMint, amount: rawAmount.toString(), slippageBps: 1000 }, timeout: 12000, // 10% (EP: "so your transaction doesn't hang") — tokens volatils, avant 3%
+        headers: JUP_HEADERS,
     });
-    const swap = await axios.post('https://lite-api.jup.ag/swap/v1/swap', {
+    const swap = await axios.post(`${JUP_BASE}/swap`, {
         quoteResponse: quote.data, userPublicKey: keypair.publicKey.toString(), wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true, prioritizationFeeLamports: 'auto',
-    }, { timeout: 12000 });
+    }, { timeout: 12000, headers: JUP_HEADERS });
     const tx = VersionedTransaction.deserialize(Buffer.from(swap.data.swapTransaction, 'base64'));
     tx.sign([keypair]);
     const h = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });

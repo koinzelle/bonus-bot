@@ -2288,3 +2288,21 @@ dans un bloc d'observation fait éclater le **tick de scan entier**, trail et co
 Cinq blocs enveloppés : `cut25`, `rangeBas`, `tf15`, `planchrRsi2`, `rsi2Floor`. Bornes vérifiées par
 comptage d'accolades, aucun `await`/`continue`/`return` à l'intérieur, filet testé sur les deux classes
 d'erreur. **Surveiller `grep '⚠️ OMBRE'` sur /logs/file — une ombre muette est une ombre à réparer.**
+
+## 22. 24/09 — JUPITER : `lite-api.jup.ag` en retrait → `api.jup.ag` (+ `JUP_API_KEY`) (déployé)
+
+À partir de 20:45 le 24/09, **100 % des swaps** prenaient `429 Rate limit exceeded` depuis Railway (5 ouvertures
+réelles ratées en 10 min, passées en papier ; sweep bloqué). Un redémarrage n'a rien changé. Jupiter retire
+`lite-api.jup.ag` et y **baisse la limite progressivement** ; la nouvelle base est `api.jup.ag` : 30 req/min sans
+clé, **60 req/min avec clé gratuite** (en-tête `x-api-key`, portail développeur Jupiter, clés rattachées à une
+« team »). `bonus-live.js` lit `JUP_API_KEY` sur Railway ; sans elle, il marche en keyless.
+
+## 23. 24/09 — TROIS CONSTATS DU JOUR (à relire avant toute analyse de rentabilité)
+
+1. **Rentabilité = ligne `🏦 WALLET`, jamais la somme des `pnlSolLive`.** Du gel (21/09 23:16) au 24/09 18:26 :
+   wallet **+0,05 SOL** contre **+0,33** affiché. « En position » de cette ligne = coût d'ouverture (vérifié).
+2. **Taxe Token-2022 à 1 % ≈ 3 % de la mise par trade** (on-chain, 62 trades appariés), pas 0,7 % comme le
+   suppose le commentaire l.~380. Tokens propres : écart wallet/affiché 0,07 % (swaps + rent ≈ gratuits).
+   Les 1 % restent rentables en sortie 15 min (+0,0034/trade après taxe le 14-21/09) — NE PAS les bloquer.
+3. **`EXIT_TF_15M_ALL=0` (stand-by du 21/09) coûtait cher** : volatils en RSI2 5 min → TRAIL 59→20 %,
+   €/pos +0,0095→+0,0026, témoin établis (15 min inchangé) stable. **Remis à 1 par le user le 24/09 ~20h.**
