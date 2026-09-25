@@ -2306,3 +2306,15 @@ clé, **60 req/min avec clé gratuite** (en-tête `x-api-key`, portail développ
    Les 1 % restent rentables en sortie 15 min (+0,0034/trade après taxe le 14-21/09) — NE PAS les bloquer.
 3. **`EXIT_TF_15M_ALL=0` (stand-by du 21/09) coûtait cher** : volatils en RSI2 5 min → TRAIL 59→20 %,
    €/pos +0,0095→+0,0026, témoin établis (15 min inchangé) stable. **Remis à 1 par le user le 24/09 ~20h.**
+
+## 24. 25/09 — OMBRE `sbRefusPlein` : ce que coûte un slot mort (déployé, n'agit pas)
+
+Constat : sur 44 h (24-25/09), **23 h à 7/7** → 601 lignes « en papier seulement » = **28 épisodes sur 9 tokens**
+(GO, familiars, goon, NPC… ceux-là mêmes qui ont fait +13 à +17 % dès qu'un slot s'est libéré), pendant que
+PAID (~86 h, −20 %), RAWR (~74 h, hors range, −44 %) et MET (~52 h, ~0 frais) tenaient 3 slots. Les positions
+papier étant supprimées en live (04/09), le manque à gagner n'était mesuré nulle part.
+L'ombre journalise **une ligne par épisode** (même mint, 30 min) : candidat refusé (px, pool, noteTri) + les
+7 occupants (LP, âge, feeVel, armé). Lecture : `grep 'SHADOW sbRefusPlein' /logs/file`. Issue du candidat à
+lire hors ligne — de préférence par une **vraie entrée ultérieure** sur le même mint, pas par simulation LP.
+Ne rien conclure avant ~30 épisodes. Question qu'elle doit trancher : faut-il une sortie des slots morts
+(hors range longtemps, ou feeVel ≈ 0) — qui serait une règle de FERMETURE, donc elle-même en ombre d'abord.

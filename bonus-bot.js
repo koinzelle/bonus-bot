@@ -604,6 +604,7 @@ function recordShadow(type, data) {
 // positions. On enveloppe donc chaque bloc purement observationnel. La fonction fléchée garde
 // la portée englobante, donc aucune variable ne change de sens.
 // À surveiller : `grep '⚠️ OMBRE'` sur /logs/file — une ombre muette est une ombre à réparer.
+const _refusPleinDernier = new Map();   // ombre sbRefusPlein : dernier refus journalisé par mint
 function ombre(label, fn) {
     try { fn(); } catch (e) {
         const s = (state && state.shadowStats) || {};   // le filet ne doit JAMAIS lever lui-même
@@ -2757,6 +2758,26 @@ async function scan() {
                 const liveOpenCount = Object.values(state.positions).filter(p => p.live).length;
                 if (live.enabled && liveOpenCount >= MAX_LIVE_POSITIONS) {
                     console.log(`  ⏸️ LIVE: ${liveOpenCount}/${MAX_LIVE_POSITIONS} position(s) réelle(s) déjà ouverte(s) — ${w.symbol} en papier seulement`);
+                    // ── (2026-09-25, demande user) OMBRE sbRefusPlein — ce que coûte un slot mort ──────
+                    // Sur 44 h (24-25/09), 23 h à 7/7 : 601 lignes de refus = 28 épisodes sur 9 tokens,
+                    // pendant que PAID/RAWR (hors range depuis 3-4 j) et MET (~0 frais) tenaient 3 slots.
+                    // La position papier étant supprimée en live (04/09), rien ne mesurait le manque à
+                    // gagner. On journalise UNE ligne par épisode (même token, 30 min) : le candidat
+                    // refusé ET l'état des 7 occupants. Aucun verdict ici ; l'issue du candidat se lit
+                    // hors ligne (vraie entrée ultérieure sur le même mint, ou prix de sa pool).
+                    ombre('sbRefusPlein', () => {
+                        const der = _refusPleinDernier.get(tok) || 0;
+                        if (Date.now() - der < 30 * 60 * 1000) return;
+                        _refusPleinDernier.set(tok, Date.now());
+                        recordShadow('sbRefusPlein', { symbol: w.symbol, tok, px: entry,
+                            pool: (feeTvlMap.get(tok) || {}).pool || null, noteTri,
+                            occupants: Object.entries(state.positions).filter(([, q]) => q.live).map(([m, q]) => ({
+                                s: q.symbol, tok: m,
+                                lp: q._lv && q._lv.rg != null ? +(q._lv.rg * 100).toFixed(1) : null,
+                                h: +((Date.now() - q.openedAt) / 3600000).toFixed(1),
+                                feeVel: q._feeVel != null ? +(q._feeVel * 1000).toFixed(3) : null,
+                                armed: (q.peakGain || 0) >= TP_PCT })) });
+                    });
                 } else if (live.enabled) {
                     try {
                         const poolAddr = await live.findMeteoraPool(tok, (feeTvlMap.get(tok) || {}).pool, w.metPools);   // (2026-08-30) préfère la pool que la datapi a désignée comme la plus rémunératrice
