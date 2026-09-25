@@ -1164,7 +1164,8 @@ function superTrend(cs) {
 // 0-3 : 17-25 % de perdantes à 0, 50-67 % à 3 (n=39-67, choisies sur les mêmes données → à
 // reconfirmer sur des cas NEUFS). On journalise aussi ce qui manque le plus : flux d'ordres de la
 // pool sur 1 h (GeckoTerminal /trades), liquidité et frais, prix du SOL. UNE ligne par position
-// et par seuil (-30 %, -40 % de LP). N'agit sur rien ; ne bloque jamais la boucle (non attendue).
+// et par seuil (-20/-30/-40 % de LP), plus une ligne TÉMOIN à l'entrée (seuil 0) : si le score
+// est déjà haut à l'entrée, il ne signale rien de spécial pendant la chute. N'agit sur rien ; ne bloque jamais la boucle (non attendue).
 async function _ombreChute(pos, tok, seuil, realGain) {
     try {
         const [c15, c1h] = await Promise.all([candles15(tok), candles1h(tok)]);
@@ -1188,10 +1189,24 @@ async function _ombreChute(pos, tok, seuil, realGain) {
         d.score = (d.casseLow24 ? 1 : 0) + (d.st1h === -1 ? 1 : 0) + (d.casseFib786 ? 1 : 0);
         const GT = 'https://api.geckoterminal.com/api/v2/networks/solana';
         const pool = pos.live && pos.live.poolAddress;
-        const [tr, sol] = await Promise.all([
-            pool ? axios.get(`${GT}/pools/${pool}/trades`, { timeout: 8000 }).catch(() => null) : null,
-            axios.get(`${GT}/simple/networks/solana/token_price/So11111111111111111111111111111111111111112`, { timeout: 8000 }).catch(() => null)]);
+        // (26/09) 1re ligne RAWR sans flux ni SOL : on réessaie une fois sur 429 et on journalise la raison.
+        const gtGet = async (u, cle) => {
+            for (let i = 0; i < 2; i++) {
+                try { return await axios.get(u, { timeout: 8000 }); }
+                catch (e) {
+                    const st = e.response && e.response.status;
+                    d[cle] = st || String(e.code || e.message).slice(0, 40);
+                    if (st === 429 && i === 0) { await new Promise(r => setTimeout(r, 4000)); continue; }
+                    return null;
+                }
+            }
+            return null;
+        };
+        const tr = pool ? await gtGet(`${GT}/pools/${pool}/trades`, 'fluxErr') : (d.fluxErr = 'pas de pool', null);
+        const sol = await gtGet(`${GT}/simple/networks/solana/token_price/So11111111111111111111111111111111111111112`, 'solErr');
+        if (tr) delete d.fluxErr; if (sol) delete d.solErr;
         const lst = tr && tr.data && tr.data.data;
+        if (tr && !Array.isArray(lst)) d.fluxErr = 'format';
         if (Array.isArray(lst)) {
             const t0 = Date.now() - 3600000, h = lst.map(x => x.attributes).filter(a => new Date(a.block_timestamp).getTime() >= t0);
             const sells = h.filter(a => a.kind === 'sell'), buys = h.filter(a => a.kind === 'buy');
@@ -2090,7 +2105,7 @@ async function scan() {
                 // On journalise le LP qu'elle aurait réalisé ; à la fermeture on comparera au réel.
                 ombre('sbChute', () => {
                     if (!pos.live) return;
-                    for (const sl of [30, 40]) {
+                    for (const sl of [20, 30, 40]) {
                         const k = '_shChute' + sl;
                         if (realGain <= -sl / 100 && !pos[k]) { pos[k] = true; _ombreChute(pos, tok, -sl, realGain); }
                     }
@@ -2844,7 +2859,7 @@ async function scan() {
                             // entre la 1re et la 8e position, pour des setups équivalents).
                             const deployedSol = Object.values(state.positions).reduce((x, q) => x + ((q.live && q.live.openValueSol) || 0), 0);
                             const lp = await live.openBidAsk(poolAddr, deployedSol, oneSided, liveOpenCount === MAX_LIVE_POSITIONS - 1);   // (2026-09-16) dernier slot → mise variable
-                            if (lp) { lp.transferFeeBps = feeBpsEntree; state.positions[tok].live = lp; save(); tg(`${msg}\n🟢 RÉEL ouvert: ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); } // notif Telegram = uniquement l'entrée RÉELLE (avec tous les détails)
+                            if (lp) { lp.transferFeeBps = feeBpsEntree; state.positions[tok].live = lp; save(); _ombreChute(state.positions[tok], tok, 0, 0); /* (26/09) témoin sbChute à l entrée */ tg(`${msg}\n🟢 RÉEL ouvert: ${lp.depositedSol.toFixed(3)} SOL, bins [${lp.lowerBinId}→${lp.upperBinId}]`); } // notif Telegram = uniquement l'entrée RÉELLE (avec tous les détails)
                         } else { console.log('  ⚠️ LIVE: aucune pool DLMM viable — trade papier seulement'); } // pas de notif Telegram pour le papier
                     } catch (e) { console.log(`  ⚠️ LIVE open échoué: ${String(e.message).slice(0, 80)} — papier seulement`); tg(`⚠️ LIVE ${w.symbol}: open échoué (${String(e.message).slice(0, 50)})`); }
                 }

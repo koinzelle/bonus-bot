@@ -2332,3 +2332,6 @@ Ne rien conclure avant ~30 épisodes. Question qu'elle doit trancher : faut-il u
 - **Ombre `sbChute`** (n'agit pas) : une ligne par position à −30 % et à −40 % de LP : les 3 pistes + score,
   liquidité/frais, **flux d'ordres 1 h** de la pool (GeckoTerminal `/trades` : ventes, vendeurs distincts, USD,
   plus grosse vente), prix du SOL. Lecture : `grep 'SHADOW sbChute' /logs/file`. Il faut ~60 perdantes.
+- (26/09, complément) `sbChute` tire aussi à **−20 %** (cas 2× plus nombreux) et à **l'entrée** (`seuil: 0`,
+  groupe TÉMOIN : si le score est déjà haut à l'entrée, il ne signale rien de la chute). Le flux d'ordres
+  manquait sur la 1re ligne (RAWR) : un nouvel essai sur 429 et la raison de l'échec dans `fluxErr` / `solErr`.
