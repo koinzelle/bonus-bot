@@ -2318,3 +2318,17 @@ L'ombre journalise **une ligne par épisode** (même mint, 30 min) : candidat re
 lire hors ligne — de préférence par une **vraie entrée ultérieure** sur le même mint, pas par simulation LP.
 Ne rien conclure avant ~30 épisodes. Question qu'elle doit trancher : faut-il une sortie des slots morts
 (hors range longtemps, ou feeVel ≈ 0) — qui serait une règle de FERMETURE, donc elle-même en ombre d'abord.
+
+## 25. 26/09 — RECHERCHE DE SIGNAL « mèche ou vraie perte » : rien, sauf trois pistes faibles → OMBRE `sbChute`
+
+- Agent « signal » : ~485 variantes graphiques (RSI, Stoch, SuperTrend, EMA 9-200, VWAP, Bollinger, ATR, OBV,
+  Fibo, vitesse de chute, mèches…) au passage de −20/−30/−40 % de LP, n=44-85 → **aucune** au-dessus du placebo
+  de famille (0,73-0,79) ; combinaisons hors-échantillon 0,29-0,53. Agent « rotation » : ~200 variantes,
+  EMA/Fibo/frais/range/filtres d'entrée rejetés ; **cassure Fibo 100 % = 34/35 vertes**. Jev (graphe avant
+  entrée, ~500 trades) : AUC 0,46/0,50. Seule la **profondeur** sépare (AUC ~0,75), déjà utilisée par la coupe.
+- Trois pistes faibles combinées (cassure du plus bas 24 h en 15 min + SuperTrend 1 h baissier + cassure
+  Fibo 78,6 % 1 h) → score 0 : 17-25 % de perdantes, score 3 : 50-67 % (n=39-67). **Choisies sur les mêmes
+  données** : à reconfirmer sur des cas neufs.
+- **Ombre `sbChute`** (n'agit pas) : une ligne par position à −30 % et à −40 % de LP : les 3 pistes + score,
+  liquidité/frais, **flux d'ordres 1 h** de la pool (GeckoTerminal `/trades` : ventes, vendeurs distincts, USD,
+  plus grosse vente), prix du SOL. Lecture : `grep 'SHADOW sbChute' /logs/file`. Il faut ~60 perdantes.

@@ -1157,6 +1157,56 @@ function superTrend(cs) {
     return out;
 }
 
+// ── (2026-09-26, demande user) OMBRE sbChute — ce que montre le graphe QUAND la position plonge ──
+// L'agent « signal » (485 variantes, 26/09) n'a trouvé aucun indicateur graphique qui sépare une
+// mèche d'une vraie perte, mais trois pistes vont dans le même sens aux trois seuils : cassure du
+// plus bas 24 h (15 min), SuperTrend 1 h baissier, cassure du 78,6 % Fibo 1 h. Combinées en score
+// 0-3 : 17-25 % de perdantes à 0, 50-67 % à 3 (n=39-67, choisies sur les mêmes données → à
+// reconfirmer sur des cas NEUFS). On journalise aussi ce qui manque le plus : flux d'ordres de la
+// pool sur 1 h (GeckoTerminal /trades), liquidité et frais, prix du SOL. UNE ligne par position
+// et par seuil (-30 %, -40 % de LP). N'agit sur rien ; ne bloque jamais la boucle (non attendue).
+async function _ombreChute(pos, tok, seuil, realGain) {
+    try {
+        const [c15, c1h] = await Promise.all([candles15(tok), candles1h(tok)]);
+        const d = { symbol: pos.symbol, tok, seuil, lp: +(realGain * 100).toFixed(1),
+            peak: +((pos.peakGain || 0) * 100).toFixed(1), ageH: +((Date.now() - pos.openedAt) / 3600000).toFixed(1),
+            tvl: pos._tvl != null ? Math.round(pos._tvl) : null, tvlVar1h: pos._tvlVar1h ?? null,
+            feeVel: pos._feeVel != null ? +(pos._feeVel * 1000).toFixed(3) : null,
+            feeVel1h: pos._feeVel1h != null ? +(pos._feeVel1h * 1000).toFixed(3) : null,
+            taxeBps: (pos.live && pos.live.transferFeeBps) || 0 };
+        if (c15 && c15.length > 20) {
+            const last = c15[c15.length - 1][4], prev = c15.slice(-97, -1);
+            const low24 = Math.min(...prev.map(c => c[3]));
+            d.distLow24 = +((last / low24 - 1) * 100).toFixed(2); d.casseLow24 = last < low24;
+        }
+        if (c1h && c1h.length > 30) {
+            const st = superTrend(c1h); d.st1h = st.length ? st[st.length - 1].trend : null;
+            const w = c1h.slice(-48), iHi = w.reduce((b, c, i) => c[2] > w[b][2] ? i : b, 0);
+            const lo = Math.min(...w.slice(0, iHi + 1).map(c => c[3])), hi = w[iHi][2], last = w[w.length - 1][4];
+            d.fibRetr = hi > lo ? +((hi - last) / (hi - lo)).toFixed(3) : null; d.casseFib786 = d.fibRetr != null && d.fibRetr > 0.786;
+        }
+        d.score = (d.casseLow24 ? 1 : 0) + (d.st1h === -1 ? 1 : 0) + (d.casseFib786 ? 1 : 0);
+        const GT = 'https://api.geckoterminal.com/api/v2/networks/solana';
+        const pool = pos.live && pos.live.poolAddress;
+        const [tr, sol] = await Promise.all([
+            pool ? axios.get(`${GT}/pools/${pool}/trades`, { timeout: 8000 }).catch(() => null) : null,
+            axios.get(`${GT}/simple/networks/solana/token_price/So11111111111111111111111111111111111111112`, { timeout: 8000 }).catch(() => null)]);
+        const lst = tr && tr.data && tr.data.data;
+        if (Array.isArray(lst)) {
+            const t0 = Date.now() - 3600000, h = lst.map(x => x.attributes).filter(a => new Date(a.block_timestamp).getTime() >= t0);
+            const sells = h.filter(a => a.kind === 'sell'), buys = h.filter(a => a.kind === 'buy');
+            d.flux1h = { n: h.length, ventes: sells.length, achats: buys.length,
+                vendeurs: new Set(sells.map(a => a.tx_from_address)).size, acheteurs: new Set(buys.map(a => a.tx_from_address)).size,
+                venteUsd: Math.round(sells.reduce((x, a) => x + (+a.volume_in_usd || 0), 0)),
+                achatUsd: Math.round(buys.reduce((x, a) => x + (+a.volume_in_usd || 0), 0)),
+                plusGrosseVenteUsd: Math.round(Math.max(0, ...sells.map(a => +a.volume_in_usd || 0))) };
+        }
+        const sp = sol && sol.data && sol.data.data && sol.data.data.attributes && sol.data.data.attributes.token_prices;
+        if (sp) d.solUsd = +(+Object.values(sp)[0]).toFixed(2);
+        recordShadow('sbChute', d);
+    } catch (e) { console.log(`  ⚠️ OMBRE sbChute a levé : ${e && e.message} — le scan continue`); }
+}
+
 // ── Pattern de sélection EP (transcript live 2h, 2026-07-22) — SHADOW, ne bloque RIEN ──────────────
 // "break up la SuperTrend → 1er break down (là où snipers/bundlers/insiders/devs dumpent) → nouvel ATH
 // APRÈS" = ruggers sortis, holders restants sérieux → coin safe pour bonus stage. On mesure sur l'univers
@@ -2038,6 +2088,13 @@ async function scan() {
                 // Mesurable, contrairement à l'attente actuelle : elle sort PLUS TÔT que la coupe
                 // sèche, donc la position est encore ouverte quand l'ombre se déclenche.
                 // On journalise le LP qu'elle aurait réalisé ; à la fermeture on comparera au réel.
+                ombre('sbChute', () => {
+                    if (!pos.live) return;
+                    for (const sl of [30, 40]) {
+                        const k = '_shChute' + sl;
+                        if (realGain <= -sl / 100 && !pos[k]) { pos[k] = true; _ombreChute(pos, tok, -sl, realGain); }
+                    }
+                });
                 ombre('rangeBas', () => {
                 if (pos.live && liveBinId != null && pos.live.lowerBinId != null) {
                     const horsRangeBas = liveBinId < pos.live.lowerBinId;
