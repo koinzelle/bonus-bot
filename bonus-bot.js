@@ -1962,7 +1962,14 @@ async function scan() {
                 // CUT HORS-RANGE : prix sorti par le bas du ±34 → close (plus de fees hors range).
                 // ATTENTE DU REBOND (2026-08-30) : à -55% on n'ferme plus, on arme ; la sortie se fera au
                 // premier RSI2>90 quel que soit le signe (plus bas dans cette même fonction).
-                const deepDown = dropFromEntry >= RANGE_DOWN || realGain <= -RANGE_DOWN;
+                // (2026-09-26, GO user) COUPE SÈCHE SUR LA LP SEULE. Le déclencheur PRIX (−55 %) coupait
+                // alors que la LP était encore à −29/−47 % : 6 CUT SEC depuis le 21/09, tous dans ce cas,
+                // −0,698 SOL, le coût des coupes passé à −0,33 SOL/jour contre −0,07 à −0,18 avant.
+                // Rejeu sur les bougies 15 min (hors range = 1:1, gain plafonné à +5 %) : LP seule ≈ +0,30
+                // SOL sur les 6 (3 reviennent au vert seules), mais porté par 2 cas → à SURVEILLER.
+                // Et le 23/09 : 57 % des positions de la bande −40/−55 % de LP finissent vertes.
+                // Le plancher dur CUT_HARD garde son déclencheur prix (anti-rug), inchangé.
+                const deepDown = realGain <= -RANGE_DOWN;
                 // (2026-09-14) DÉSARMEMENT DE L'ATTENTE DE REBOND — le drapeau était COLLANT : posé une
                 // fois, jamais retiré. Trois endroits le mettaient à true, aucun ne le remettait à false.
                 // Cas YOYO du 14/09 : sortie de range par le bas, armement, puis RETOUR dans la range

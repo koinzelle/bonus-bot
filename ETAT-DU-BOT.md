@@ -2335,3 +2335,14 @@ Ne rien conclure avant ~30 épisodes. Question qu'elle doit trancher : faut-il u
 - (26/09, complément) `sbChute` tire aussi à **−20 %** (cas 2× plus nombreux) et à **l'entrée** (`seuil: 0`,
   groupe TÉMOIN : si le score est déjà haut à l'entrée, il ne signale rien de la chute). Le flux d'ordres
   manquait sur la 1re ligne (RAWR) : un nouvel essai sur 429 et la raison de l'échec dans `fluxErr` / `solErr`.
+
+## 26. 26/09 — COUPE SÈCHE SUR LA LP SEULE (déployé, GO user, avant la fin du gel)
+
+`deepDown` était `prix −55 % OU LP −55 %`. Depuis le 21/09 (`AWAIT_BOUNCE=0`), les **6 CUT SEC ont tous été
+déclenchés par le PRIX avec une LP à −29/−47 %** : −0,698 SOL, et le coût des coupes est passé à −0,33 SOL/jour
+(−0,07 à −0,18 début septembre) pendant que les gains hors coupes restaient stables (+0,40 à +0,47/jour).
+Rejeu 15 min sur les 6 (hors range = 1:1, gain plafonné à +5 %, ré-entrées perdues et loyer déduits) :
+**LP seule ≈ +0,30 SOL** (LinkedInu, wifout, SI reviennent au vert seules ; familiars 25/09 et NPC coupées à
+−55 %), `AWAIT_BOUNCE=1` ≈ +0,09. **Réserve : +0,30 porté par 2 cas (LinkedInu, SI) ; sans eux ≈ +0,02.**
+Plancher dur `CUT_HARD` (−75 %) garde son déclencheur prix (anti-rug). **À surveiller : positions qui passent
+−55 % de prix sans être coupées — leur issue réelle, et le coût des coupes par jour vs −0,33.**
