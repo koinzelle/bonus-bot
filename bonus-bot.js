@@ -1203,8 +1203,9 @@ async function _ombreChute(pos, tok, seuil, realGain) {
             return null;
         };
         const tr = pool ? await gtGet(`${GT}/pools/${pool}/trades`, 'fluxErr') : (d.fluxErr = 'pas de pool', null);
-        const sol = await gtGet(`${GT}/simple/networks/solana/token_price/So11111111111111111111111111111111111111112`, 'solErr');
-        if (tr) delete d.fluxErr; if (sol) delete d.solErr;
+        // (26/09) prix du SOL retiré : 20/20 échecs (404/429) et il consommait le quota GT du flux
+        // d'ordres ; l'historique du SOL se retrouve hors ligne sur les bougies.
+        if (tr) delete d.fluxErr;
         const lst = tr && tr.data && tr.data.data;
         if (tr && !Array.isArray(lst)) d.fluxErr = 'format';
         if (Array.isArray(lst)) {
@@ -1216,8 +1217,6 @@ async function _ombreChute(pos, tok, seuil, realGain) {
                 achatUsd: Math.round(buys.reduce((x, a) => x + (+a.volume_in_usd || 0), 0)),
                 plusGrosseVenteUsd: Math.round(Math.max(0, ...sells.map(a => +a.volume_in_usd || 0))) };
         }
-        const sp = sol && sol.data && sol.data.data && sol.data.data.attributes && sol.data.data.attributes.token_prices;
-        if (sp) d.solUsd = +(+Object.values(sp)[0]).toFixed(2);
         recordShadow('sbChute', d);
     } catch (e) { console.log(`  ⚠️ OMBRE sbChute a levé : ${e && e.message} — le scan continue`); }
 }
