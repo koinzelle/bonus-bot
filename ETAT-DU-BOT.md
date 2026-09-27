@@ -2377,4 +2377,5 @@ issue, cas cc +1,2 % → −11,5 %) : l'ombre doit battre ce précédent, pas le
 - **Caution** : garde-fou de cash avant le swap (0,12 SOL ≤140 bins, 0,25 au-delà, estimation) ; échec d'ouverture étendue →
   compte vide refermé (caution rendue) + token revendu ; à la fermeture, contrôle que le compte est fermé sinon `closePosition`.
   Chaque trade porte `nBins`, `binStep`, `wide`, `depotHorsMise` (caution + gas réellement déposés hors mise).
+- **Plancher bs≥100 du choix de pool LEVÉ** quand la fourchette large est active (bs80 = 290 bins ≈ −68 %, la plus protectrice ; commit 2d3783b).
 - **À vérifier sur les premières ouvertures** : TX étendue OK, valeur LP lue, fermeture multi-TX OK, caution rendue au wallet.
