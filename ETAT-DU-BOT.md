@@ -2372,7 +2372,7 @@ issue, cas cc +1,2 % → −11,5 %) : l'ombre doit battre ce précédent, pas le
   `WIDE_BINS_80`, `WIDE_BINS_200`. Au-delà de 70 bins : `createExtendedEmptyPosition` + `addLiquidityByStrategyChunkable` (BidAsk).
   Pas d'A/B : décision user (« trop de pertes, ça mange tout le bénéfice »). Mesure = avant/après, au WALLET.
 - **RÈGLE ABSOLUE (user)** : on ne paie JAMAIS la création d'un bin array (caution jamais rendue). Vérification on-chain de
-  TOUS les bin arrays de la fourchette AVANT le swap ; s'il en manque → pool exclue 6 h (`_poolRefus`), pool suivante au
+  TOUS les bin arrays de la fourchette AVANT le swap ; s'il en manque → pool exclue 2 h (`POOL_REFUS_H`, `_poolRefus`), pool suivante au
   prochain scan, puis token suivant. **Pas de repli sur 69 bins.**
 - **Caution** : garde-fou de cash avant le swap (0,12 SOL ≤140 bins, 0,25 au-delà, estimation) ; échec d'ouverture étendue →
   compte vide refermé (caution rendue) + token revendu ; à la fermeture, contrôle que le compte est fermé sinon `closePosition`.

@@ -109,8 +109,9 @@ const RENT_RESERVE_SOL = 0.06;
 // WIDE_MODE : 'all' (défaut) · 'off' · 'next' = la PROCHAINE ouverture seulement (étape 1 : valider la
 // technique et le retour de la caution) · 'ab' = tirage à pile ou face (WIDE_AB_P) à chaque ouverture.
 const WIDE_MODE = (process.env.WIDE_MODE || 'all').toLowerCase();   // (27/09, GO user) 'all' par défaut : large pour TOUTES les ouvertures
-// Pools refusées faute de bin arrays : exclues 6 h, pour que le bot passe à la pool suivante puis au token suivant.
+// Pools refusées faute de bin arrays : exclues POOL_REFUS_H (2 h), pour que le bot passe à la pool suivante puis au token suivant.
 const _poolRefus = new Map();   // poolAddress -> jusqu'à (ms)
+const POOL_REFUS_MS = parseFloat(process.env.POOL_REFUS_H || '2') * 3600e3;   // (27/09, user) exclusion 2 h (6 h trop strict)
 const WIDE_AB_P = parseFloat(process.env.WIDE_AB_P || '0.5');
 let _wideNextUsed = false;
 function wideBinsFor(binStep) {
@@ -516,18 +517,18 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
         const chk = await binArraysManquants(dlmmPool, wMin, wMax);
         if (chk.manquants === 0) { minBinId = wMin; maxBinId = wMax; }
         else {   // (GO user) PAS de repli sur 69 bins : pool suivante, puis token suivant
-            _poolRefus.set(poolAddress, Date.now() + 6 * 3600e3);
+            _poolRefus.set(poolAddress, Date.now() + POOL_REFUS_MS);
             for (const [k, v] of _poolCache) if (v.addr === poolAddress) _poolCache.delete(k);
-            console.log(`  🧱 ${chk.manquants}/${chk.total} bin array(s) à créer sur [${wMin}→${wMax}] — on ne paie jamais leur création → pool exclue 6 h, pool suivante au prochain scan`);
+            console.log(`  🧱 ${chk.manquants}/${chk.total} bin array(s) à créer sur [${wMin}→${wMax}] — on ne paie jamais leur création → pool exclue ${POOL_REFUS_MS / 3600e3} h, pool suivante au prochain scan`);
             return null;
         }
     }
     {   // RÈGLE ABSOLUE pour TOUTES les ouvertures, fourchette actuelle comprise
         const chk = await binArraysManquants(dlmmPool, minBinId, maxBinId);
         if (chk.manquants > 0) {
-            _poolRefus.set(poolAddress, Date.now() + 6 * 3600e3);
+            _poolRefus.set(poolAddress, Date.now() + POOL_REFUS_MS);
             for (const [k, v] of _poolCache) if (v.addr === poolAddress) _poolCache.delete(k);
-            console.log(`  🧱 ${chk.manquants}/${chk.total} bin array(s) à créer sur [${minBinId}→${maxBinId}] — on ne paie jamais leur création → pool exclue 6 h`); return null;
+            console.log(`  🧱 ${chk.manquants}/${chk.total} bin array(s) à créer sur [${minBinId}→${maxBinId}] — on ne paie jamais leur création → pool exclue ${POOL_REFUS_MS / 3600e3} h`); return null;
         }
     }
     const nBins = maxBinId - minBinId + 1;
