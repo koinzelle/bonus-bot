@@ -116,7 +116,7 @@ const WIDE_AB_P = parseFloat(process.env.WIDE_AB_P || '0.5');
 const BS80_ALT_RATIO = parseFloat(process.env.BS80_ALT_RATIO || '0.5');   // (27/09) seuil de rendement pour préférer une pool bs≥100 à une bs80
 let _wideNextUsed = false;
 function wideBinsFor(binStep) {
-    if (binStep <= 80) return parseInt(process.env.WIDE_BINS_80 || '141', 10);   // (27/09) 290 → 141 : à 290 bins, frais réels ≈ 0 (ELON 0,3 %/j, PAID 0,0 %/j)
+    if (binStep <= 80) return parseInt(process.env.WIDE_BINS_80 || '200', 10);   // (27/09, user) 200 bins ≈ −55 %/+122 % : protection du capital prioritaire (290 = frais ≈ 0, 141 jugé trop court)
     if (binStep <= 250) return parseInt(process.env.WIDE_BINS_200 || '81', 10);
     return 69;
 }
