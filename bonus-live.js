@@ -537,7 +537,9 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
     const nBins = maxBinId - minBinId + 1;
     // (27/09) la caution d'une position étendue grandit avec la largeur (estimation prudente,
     // mesurée ensuite dans depotHorsMise). Pas assez de cash → on n'ouvre pas, rien n'est engagé.
-    const cautionEst = nBins <= 70 ? RENT_RESERVE_SOL : nBins <= 140 ? 0.12 : 0.25;
+    // Mesuré 27/09 (YAP, 81 bins) : 0,3297 déposés pour 0,2769 en LP → ~0,053 SOL de caution + gas.
+    // L'estimation initiale (0,12) a bloqué 9 ouvertures à tort (05:52-06:15). 290 bins : à mesurer.
+    const cautionEst = nBins <= 70 ? RENT_RESERVE_SOL : nBins <= 140 ? 0.07 : 0.15;
     if (balSol - amountSol < cautionEst + TX_RESERVE_SOL) {
         _cashShortUntil = Date.now() + 5 * 60 * 1000;
         console.log(`❌ cash insuffisant pour ${nBins} bins (libre ${balSol.toFixed(3)} − mise ${amountSol.toFixed(3)} < caution ~${cautionEst} + réserve) — on attend un close`);
