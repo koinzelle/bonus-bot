@@ -202,7 +202,10 @@ async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
     // complet, 168 contenaient une pool bs<100, et 155 (92 %) avaient une alternative bs>=100.
     // REPLI : si aucune pool bs>=100 n'existe, on garde les bs<100 plutôt que de rater l'entrée —
     // 13 cas sur 987, soit 1,3 %.
-    const largeEnough = candidates.filter(c => c.binStep >= 100);
+    // (27/09, GO user) Avec la fourchette large, un bs80 prend 290 bins ≈ −68 % : la raison du plancher
+    // (« protection −24 % ») disparaît — c'est même la plus protectrice, celle qu'EP utilise. Plancher levé.
+    const BS_MIN = (WIDE_MODE !== 'off' && wideBinsFor(80) > 100) ? 0 : 100;
+    const largeEnough = candidates.filter(c => c.binStep >= BS_MIN);
     if (largeEnough.length) {
         if (largeEnough.length < candidates.length) console.log(`  🧱 ${candidates.length - largeEnough.length} pool(s) bs<100 écartée(s) (protection -24% insuffisante) — ${largeEnough.length} candidate(s) restante(s)`);
         candidates = largeEnough;
@@ -258,7 +261,7 @@ async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
     let parRendement = null;
     if (Array.isArray(metPools) && metPools.length) {
         const eligibles = candidates
-            .filter(c => c.binStep >= 100)
+            .filter(c => c.binStep >= BS_MIN)
             .map(c => {
                 const m = metPools.find(p => p.addr === c.addr);
                 const tvl = m ? m.tvl : 0, vol = m ? m.vol24h : 0;
