@@ -488,6 +488,21 @@ const POSITION_SIZE_SOL = 1.0;    // taille papier (pour les stats en SOL)
 
 let state = { positions: {}, trades: [], watch: {} };
 try { if (fs.existsSync(STATE_FILE)) state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (_) {}
+// (2026-09-27) VERROUS RECONSTRUITS depuis l'historique : toute sortie MOLLE (RSI2 hors REBOND, > 3 h,
+// < 3 % de LP) des 48 dernières heures re-verrouille son mint jusqu'à son terme. Rattrape les verrous
+// effacés par la purge de la watch avant le correctif (PAID 27/09 06:16) et ceux posés avant lui.
+try {
+    state.mouLocks = state.mouLocks || {};
+    const _lockH = parseInt(process.env.MOU_LOCK_H || '48', 10);
+    for (const t of state.trades || []) {
+        if (!t.tok || !t.closedAt || !/RSI/i.test(t.reason || '') || /REBOND/i.test(t.reason || '')) continue;
+        if (t.lpPct == null || t.lpPct >= 3 || !(t.durMin > 180)) continue;
+        const fin = new Date(t.closedAt).getTime() + _lockH * 3600e3;
+        if (fin > Date.now()) state.mouLocks[t.tok] = Math.max(state.mouLocks[t.tok] || 0, fin);
+    }
+    const _n = Object.keys(state.mouLocks).length;
+    if (_n) console.log(`🔒 ${_n} verrou(s) de sortie molle actif(s) : ${Object.entries(state.mouLocks).map(([m, f]) => `${((state.watch[m] || {}).symbol) || m.slice(0, 6)} jusqu'à ${new Date(f).toISOString().slice(5, 16)}`).join(' · ')}`);
+} catch (e) { console.log('⚠️ reconstruction des verrous:', e.message); }
 // (A/B "TP fixe vs trailing" RETIRÉ 2026-07-22, code mort supprimé le 2026-08-27 : closeFixedShadow
 // n'était plus appelé nulle part et l'ombre n'a jamais dépassé 3 trades de juillet.)
 // reset des compteurs de l'ancien funnel (refonte EP 2026-07-22) — sinon /status mélange 2 logiques
