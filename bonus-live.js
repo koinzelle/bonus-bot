@@ -149,7 +149,7 @@ const DLMM_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const LBPAIR_DISCRIMINATOR = Buffer.from([33, 11, 49, 98, 181, 101, 177, 13]);
 const TOKEN_X_OFFSET = 88;
 const TOKEN_Y_OFFSET = 120;
-const OK_BIN_STEPS = [80, 100, 125, 160, 200, 250]; // canonique EP = 100 (préféré au tri)
+const OK_BIN_STEPS = [80, 100, 125, 160, 200, 250, 400]; // canonique EP = 100 (préféré au tri) ; (27/09, GO user) + 400 : EP l’utilise en 69 bins ≈ −74 %/+287 %, caution ~0,05 SOL
 
 // Trouve la meilleure pool DLMM token/SOL : bin step 100 d'abord, puis base fee la plus haute,
 // puis réserve SOL la plus profonde. Retourne l'adresse (string) ou null.
