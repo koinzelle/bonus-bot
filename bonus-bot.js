@@ -555,13 +555,19 @@ async function instantaneWallet() {
         const cout = Object.values(state.positions || {})
             .reduce((a, p) => a + ((p.live && p.live.openValueSol) || 0), 0);
         const n = Object.values(state.positions || {}).filter(p => p.live).length;
+        // (27/09) caution RÉELLE de chaque position (déposé − valeur d'ouverture), et non 0,06 forfaitaire :
+        // une position de 290 bins bloque 0,167 SOL — la ligne sous-estimait le wallet de ~0,11 par position.
+        const rent = Object.values(state.positions || {}).filter(p => p.live).reduce((a, p) => {
+            const d = p.live.depositedSol, o = p.live.openValueSol;
+            return a + ((d != null && o != null && d - o > 0 && d - o < 0.5) ? d - o : 0.06);
+        }, 0);
         state.walletHist = state.walletHist || [];
-        state.walletHist.push({ t: Date.now(), sol: +(lam / 1e9).toFixed(4), cout: +cout.toFixed(4), n });
+        state.walletHist.push({ t: Date.now(), sol: +(lam / 1e9).toFixed(4), cout: +cout.toFixed(4), n, rent: +rent.toFixed(4) });
         if (state.walletHist.length > 720) state.walletHist.shift();
-        const tot = lam / 1e9 + cout + n * 0.06;
+        const tot = lam / 1e9 + cout + rent;
         const prem = state.walletHist[0];
-        const ref = prem ? prem.sol + prem.cout + prem.n * 0.06 : null;
-        console.log(`  🏦 WALLET: ${(lam / 1e9).toFixed(4)} liquide + ${cout.toFixed(4)} en position + ${(n * 0.06).toFixed(2)} rent = ${tot.toFixed(4)} SOL`
+        const ref = prem ? prem.sol + prem.cout + (prem.rent != null ? prem.rent : prem.n * 0.06) : null;
+        console.log(`  🏦 WALLET: ${(lam / 1e9).toFixed(4)} liquide + ${cout.toFixed(4)} en position + ${rent.toFixed(2)} rent = ${tot.toFixed(4)} SOL`
             + (ref != null && state.walletHist.length > 2
                 ? ` | depuis ${new Date(prem.t).toISOString().slice(5, 16).replace('T', ' ')} : ${tot - ref >= 0 ? '+' : ''}${(tot - ref).toFixed(4)} SOL` : ''));
         save();
