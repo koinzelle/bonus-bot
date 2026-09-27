@@ -575,16 +575,34 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
             const ch = await connection.sendTransaction(ctx, [keypair, positionKeypair]);
             await confirmTx(ch); cree = true;
             console.log(`  ✅ TX position étendue (${nBins} bins): https://solscan.io/tx/${ch}`);
-            await dlmmPool.refetchStates();
-            const addTxs = await dlmmPool.addLiquidityByStrategyChunkable({
-                positionPubKey: positionKeypair.publicKey, user: keypair.publicKey,
-                totalXAmount: new BN(tokenRaw.toString()), totalYAmount: new BN(halfLamports),
-                strategy: { minBinId, maxBinId, strategyType: DLMM.StrategyType.BidAsk }, slippage: 100,
-            });
-            for (const t of Array.isArray(addTxs) ? addTxs : [addTxs]) {
-                const h = await connection.sendTransaction(t, [keypair]);
-                await confirmTx(h);
-                console.log(`  ✅ TX liquidité: https://solscan.io/tx/${h}`);
+            // (27/09) 1re ouverture réelle (suit) : 1er morceau passé, 2e « Simulation failed » → dépôt
+            // partiel (0,22/0,28). On retente donc avec CE QUI RESTE au wallet (token lu on-chain, SOL
+            // déduit du solde), jusqu'à 3 fois, en relisant l'état de la pool entre deux essais.
+            const solAvant = await solBalance();
+            let xReste = tokenRaw, yReste = BigInt(halfLamports);
+            for (let essai = 1; essai <= 3 && (xReste > 0n || yReste > 5_000_000n); essai++) {
+                try {
+                    await dlmmPool.refetchStates();
+                    const addTxs = await dlmmPool.addLiquidityByStrategyChunkable({
+                        positionPubKey: positionKeypair.publicKey, user: keypair.publicKey,
+                        totalXAmount: new BN(xReste.toString()), totalYAmount: new BN(yReste.toString()),
+                        strategy: { minBinId, maxBinId, strategyType: DLMM.StrategyType.BidAsk }, slippage: 100,
+                    });
+                    for (const t of Array.isArray(addTxs) ? addTxs : [addTxs]) {
+                        const h = await connection.sendTransaction(t, [keypair]);
+                        await confirmTx(h);
+                        console.log(`  ✅ TX liquidité (essai ${essai}): https://solscan.io/tx/${h}`);
+                    }
+                    xReste = 0n; yReste = 0n;
+                } catch (ae) {
+                    const logs = (ae && (ae.logs || ae.transactionLogs)) || [];
+                    console.log(`  ⚠️ liquidité essai ${essai}/3 : ${String(ae.message).slice(0, 70)} ${logs.filter(l => /Error|error|failed/.test(l)).slice(0, 2).join(' | ').slice(0, 200)}`);
+                    await new Promise(r => setTimeout(r, 3000));
+                    xReste = await tokenBalanceRaw(xMint);
+                    const solMaint = await solBalance();
+                    yReste = BigInt(Math.max(0, halfLamports - Math.max(0, solAvant - solMaint - 10_000_000)));
+                    if (essai === 3) throw ae;
+                }
             }
         } catch (e) {
             console.log(`  ⚠️ ouverture étendue échouée (${String(e.message).slice(0, 80)})`);
