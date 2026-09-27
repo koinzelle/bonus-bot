@@ -134,6 +134,9 @@ async function binArraysManquants(dlmmPool, minBinId, maxBinId) {
             dlmmPool.program.programId);
         pdas.push(pda);
     }
+    // Hors du bitmap par défaut (index de bin array < −512 ou > 511), la pool a besoin d'un compte
+    // « bitmap extension » dont la création se paie aussi → on refuse par principe.
+    if (lo < -512 || hi > 511) return { manquants: 1, total: pdas.length, bitmap: true };
     const infos = await connection.getMultipleAccountsInfo(pdas);
     return { manquants: infos.filter(x => !x).length, total: pdas.length };
 }
