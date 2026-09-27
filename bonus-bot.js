@@ -3195,7 +3195,9 @@ async function closePaper(tok, pos, exitPrice, reason) {
             ? +Math.max(...pos._tvlHist.filter(q => q.tvl > 0).map(q => q.v / q.tvl)).toFixed(2) : null,
         tvlPoints: (pos._tvlHist || []).length,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
-        reopenTest: pos._reopenTest || null,   // (2026-09-21) ouverte via le laissez-passer UPSIDE d'EP
+        reopenTest: pos._reopenTest || null,
+        nBins: (pos.live && pos.live.nBins) || null, binStep: (pos.live && pos.live.binStep) || null, wide: pos.live ? !!pos.live.wide : null,   // (27/09) A/B fourchette large
+        depotHorsMise: (pos.live && pos.live.depotHorsMise) ?? null,   // (2026-09-21) ouverte via le laissez-passer UPSIDE d'EP
         chopInconnu: pos._chopInconnu || null, // (2026-09-21) le filtre chop de septembre l'aurait refusée
         sousVerrou48: pos._sousVerrou48 || null, // (2026-09-21) le verrou 48 h du 14/09 l'aurait refusée
         rebondRangeLp: pos._shRngLp ?? null,   // (2026-09-21) LP qu'aurait réalisé l'armement à la sortie de range

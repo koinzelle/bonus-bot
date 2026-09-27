@@ -2364,3 +2364,17 @@ sélection de pool, ou élargir au-delà de 69 bins (limite historique d'une pos
 **Ombre `sbTrailSeul`** : chaque sortie RSI2 EN GAIN (non REBOND) journalise pool, px, LP, pic, bins → reconstruire hors
 ligne ce qu'aurait fait le trail seul. ⚠️ Le « trail-only » a DÉJÀ été déployé le 24/08 et retiré (hold rouge sans
 issue, cas cc +1,2 % → −11,5 %) : l'ombre doit battre ce précédent, pas le réinventer.
+
+## 28. 27/09 — FOURCHETTE LARGE « à la EP » POUR TOUTES LES POSITIONS + RÈGLE ABSOLUE BIN ARRAYS (déployé, GO user)
+
+- **Largeur** (`bonus-live.js`, `wideBinsFor`) : bs≤80 → **290 bins** (~−68/+217 %), bs100-250 → **81 bins** (bs100 −33/+50 %,
+  bs200 −55/+123 %). Réglages EP relevés par le user sur ses cartes. `WIDE_MODE=all` par défaut (`off`/`next`/`ab` possibles),
+  `WIDE_BINS_80`, `WIDE_BINS_200`. Au-delà de 70 bins : `createExtendedEmptyPosition` + `addLiquidityByStrategyChunkable` (BidAsk).
+  Pas d'A/B : décision user (« trop de pertes, ça mange tout le bénéfice »). Mesure = avant/après, au WALLET.
+- **RÈGLE ABSOLUE (user)** : on ne paie JAMAIS la création d'un bin array (caution jamais rendue). Vérification on-chain de
+  TOUS les bin arrays de la fourchette AVANT le swap ; s'il en manque → pool exclue 6 h (`_poolRefus`), pool suivante au
+  prochain scan, puis token suivant. **Pas de repli sur 69 bins.**
+- **Caution** : garde-fou de cash avant le swap (0,12 SOL ≤140 bins, 0,25 au-delà, estimation) ; échec d'ouverture étendue →
+  compte vide refermé (caution rendue) + token revendu ; à la fermeture, contrôle que le compte est fermé sinon `closePosition`.
+  Chaque trade porte `nBins`, `binStep`, `wide`, `depotHorsMise` (caution + gas réellement déposés hors mise).
+- **À vérifier sur les premières ouvertures** : TX étendue OK, valeur LP lue, fermeture multi-TX OK, caution rendue au wallet.

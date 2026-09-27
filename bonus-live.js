@@ -102,6 +102,42 @@ const TX_RESERVE_SOL = 0.02;      // gas
 // PAS un coût, juste une avance. On le réserve À CÔTÉ de la mise (2026-07-24, demande user) : la mise LP
 // = les X% du capital, le rent ne la rogne pas.
 const RENT_RESERVE_SOL = 0.06;
+// ── (2026-09-27, demande user) FOURCHETTE LARGE « à la EP » + RÈGLE ABSOLUE BIN ARRAYS ────────────
+// EP (cartes de position, 27/09) : bs≤80 → 141 à 290 bins, bs100/200 → 81 bins, bs400 → 69 bins —
+// il vise un bas de fourchette vers −55/−75 % quand nous sommes à −29 % sur bs100. Vrais trades :
+// plus la fourchette est large, moins de coupes (10 → 8 → 6 %) et plus de TRAIL (28 → 42 → 60 %).
+// WIDE_MODE : 'all' (défaut) · 'off' · 'next' = la PROCHAINE ouverture seulement (étape 1 : valider la
+// technique et le retour de la caution) · 'ab' = tirage à pile ou face (WIDE_AB_P) à chaque ouverture.
+const WIDE_MODE = (process.env.WIDE_MODE || 'all').toLowerCase();   // (27/09, GO user) 'all' par défaut : large pour TOUTES les ouvertures
+// Pools refusées faute de bin arrays : exclues 6 h, pour que le bot passe à la pool suivante puis au token suivant.
+const _poolRefus = new Map();   // poolAddress -> jusqu'à (ms)
+const WIDE_AB_P = parseFloat(process.env.WIDE_AB_P || '0.5');
+let _wideNextUsed = false;
+function wideBinsFor(binStep) {
+    if (binStep <= 80) return parseInt(process.env.WIDE_BINS_80 || '290', 10);
+    if (binStep <= 250) return parseInt(process.env.WIDE_BINS_200 || '81', 10);
+    return 69;
+}
+function _binArrayIndex(binId) {   // repris du bot 1 (trading-bot/bot.js), éprouvé en prod
+    const q = Math.trunc(binId / 70), r = binId - q * 70;
+    return (binId < 0 && r !== 0) ? q - 1 : q;
+}
+// RÈGLE ABSOLUE (user, 27/09) : on ne paie JAMAIS la création d'un bin array — sa caution reste dans
+// la pool et n'est jamais rendue. On vérifie on-chain que TOUS les bin arrays de la fourchette
+// existent AVANT toute transaction (et avant le swap, pour ne pas laisser de token orphelin).
+async function binArraysManquants(dlmmPool, minBinId, maxBinId) {
+    const lo = _binArrayIndex(minBinId), hi = Math.max(_binArrayIndex(maxBinId), lo + 1);
+    const pdas = [];
+    for (let i = lo; i <= hi; i++) {
+        const [pda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('bin_array'), dlmmPool.pubkey.toBuffer(), new BN(i).toTwos(64).toArrayLike(Buffer, 'le', 8)],
+            dlmmPool.program.programId);
+        pdas.push(pda);
+    }
+    const infos = await connection.getMultipleAccountsInfo(pdas);
+    return { manquants: infos.filter(x => !x).length, total: pdas.length };
+}
+
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // ── Découverte de pool Meteora DLMM on-chain (méthode bot 1 : getProgramAccounts + memcmp) ──
@@ -116,7 +152,7 @@ const OK_BIN_STEPS = [80, 100, 125, 160, 200, 250]; // canonique EP = 100 (préf
 const _poolCache = new Map(); // (2026-08-26) tokenAddress -> { addr, ts } : évite de refaire 2× getProgramAccounts (gros drain RPC Helius) pour un même mint
 async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
     const _pc = _poolCache.get(tokenAddress);
-    if (_pc && Date.now() - _pc.ts < 30 * 60 * 1000) return _pc.addr;
+    if (_pc && Date.now() - _pc.ts < 30 * 60 * 1000 && !(_pc.addr && (_poolRefus.get(_pc.addr) || 0) > Date.now())) return _pc.addr;
     const programId = new PublicKey(DLMM_PROGRAM_ID);
     const disc = bs58.encode(LBPAIR_DISCRIMINATOR);
     const [p1, p2] = await Promise.all([
@@ -130,6 +166,7 @@ async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
         try {
             const pool = await DLMM.create(connection, addr);
             if (pool.tokenY.publicKey.toString() !== SOL_MINT) continue; // openBidAsk exige SOL en Y
+            if ((_poolRefus.get(addr.toString()) || 0) > Date.now()) continue;   // (27/09) bin arrays manquants → pool suivante
             const binStep = pool.lbPair.binStep;
             if (!OK_BIN_STEPS.includes(binStep)) continue;
             let baseFeePct = 0;
@@ -460,8 +497,46 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
     // épisodes : les plongeons ont une médiane de -6,7 % (p25 -17 %, p10 -27 %), donc -28,7 %
     // (34 bins à bs100) garde 92 % des épisodes en range ; passer à 68 bins n'en gagne que 7 de
     // plus mais divise la densité par deux. 61 % du mouvement de prix tient dans ces 34 bins.
-    const minBinId = activeBin.binId - BIN_RANGE;
-    const maxBinId = activeBin.binId + (oneSided ? 0 : BIN_RANGE);
+    let minBinId = activeBin.binId - BIN_RANGE;
+    let maxBinId = activeBin.binId + (oneSided ? 0 : BIN_RANGE);
+    // (27/09) bras de l'A/B « fourchette large » — jamais en one-sided
+    const binStep = dlmmPool.lbPair.binStep;
+    let wide = false;
+    if (!oneSided && WIDE_MODE !== 'off' && wideBinsFor(binStep) > 69) {
+        if (WIDE_MODE === 'all') wide = true;
+        else if (WIDE_MODE === 'next') { if (!_wideNextUsed) wide = true; }
+        else if (WIDE_MODE === 'ab') wide = Math.random() < WIDE_AB_P;
+    }
+    if (wide) {
+        const n = wideBinsFor(binStep), bas = Math.floor(n / 2);
+        const wMin = activeBin.binId - bas, wMax = activeBin.binId + (n - 1 - bas);
+        const chk = await binArraysManquants(dlmmPool, wMin, wMax);
+        if (chk.manquants === 0) { minBinId = wMin; maxBinId = wMax; }
+        else {   // (GO user) PAS de repli sur 69 bins : pool suivante, puis token suivant
+            _poolRefus.set(poolAddress, Date.now() + 6 * 3600e3);
+            for (const [k, v] of _poolCache) if (v.addr === poolAddress) _poolCache.delete(k);
+            console.log(`  🧱 ${chk.manquants}/${chk.total} bin array(s) à créer sur [${wMin}→${wMax}] — on ne paie jamais leur création → pool exclue 6 h, pool suivante au prochain scan`);
+            return null;
+        }
+    }
+    {   // RÈGLE ABSOLUE pour TOUTES les ouvertures, fourchette actuelle comprise
+        const chk = await binArraysManquants(dlmmPool, minBinId, maxBinId);
+        if (chk.manquants > 0) {
+            _poolRefus.set(poolAddress, Date.now() + 6 * 3600e3);
+            for (const [k, v] of _poolCache) if (v.addr === poolAddress) _poolCache.delete(k);
+            console.log(`  🧱 ${chk.manquants}/${chk.total} bin array(s) à créer sur [${minBinId}→${maxBinId}] — on ne paie jamais leur création → pool exclue 6 h`); return null;
+        }
+    }
+    const nBins = maxBinId - minBinId + 1;
+    // (27/09) la caution d'une position étendue grandit avec la largeur (estimation prudente,
+    // mesurée ensuite dans depotHorsMise). Pas assez de cash → on n'ouvre pas, rien n'est engagé.
+    const cautionEst = nBins <= 70 ? RENT_RESERVE_SOL : nBins <= 140 ? 0.12 : 0.25;
+    if (balSol - amountSol < cautionEst + TX_RESERVE_SOL) {
+        _cashShortUntil = Date.now() + 5 * 60 * 1000;
+        console.log(`❌ cash insuffisant pour ${nBins} bins (libre ${balSol.toFixed(3)} − mise ${amountSol.toFixed(3)} < caution ~${cautionEst} + réserve) — on attend un close`);
+        return null;
+    }
+    if (wide) console.log(`  📐 FOURCHETTE LARGE (${WIDE_MODE}) : ${nBins} bins en bs${binStep} [${minBinId}→${maxBinId}] ≈ −${((1 - Math.pow(1 + binStep / 10000, -(activeBin.binId - minBinId))) * 100).toFixed(0)} % / +${((Math.pow(1 + binStep / 10000, maxBinId - activeBin.binId) - 1) * 100).toFixed(0)} %`);
 
     let tokenRaw = 0n, halfLamports;
     if (oneSided) {
@@ -483,7 +558,49 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
     }
 
     const positionKeypair = Keypair.generate();
-    try {
+    if (nBins > 70) {
+        // (27/09) POSITION ÉTENDUE : compte créé seul (sa caution est rendue au close par
+        // removeLiquidity shouldClaimAndClose), puis liquidité Bid-Ask ajoutée en morceaux.
+        if (wide && WIDE_MODE === 'next') _wideNextUsed = true;
+        let cree = false;
+        try {
+            const ctx = await dlmmPool.createExtendedEmptyPosition(minBinId, maxBinId, positionKeypair.publicKey, keypair.publicKey);
+            const ch = await connection.sendTransaction(ctx, [keypair, positionKeypair]);
+            await confirmTx(ch); cree = true;
+            console.log(`  ✅ TX position étendue (${nBins} bins): https://solscan.io/tx/${ch}`);
+            await dlmmPool.refetchStates();
+            const addTxs = await dlmmPool.addLiquidityByStrategyChunkable({
+                positionPubKey: positionKeypair.publicKey, user: keypair.publicKey,
+                totalXAmount: new BN(tokenRaw.toString()), totalYAmount: new BN(halfLamports),
+                strategy: { minBinId, maxBinId, strategyType: DLMM.StrategyType.BidAsk }, slippage: 100,
+            });
+            for (const t of Array.isArray(addTxs) ? addTxs : [addTxs]) {
+                const h = await connection.sendTransaction(t, [keypair]);
+                await confirmTx(h);
+                console.log(`  ✅ TX liquidité: https://solscan.io/tx/${h}`);
+            }
+        } catch (e) {
+            console.log(`  ⚠️ ouverture étendue échouée (${String(e.message).slice(0, 80)})`);
+            const posRef = { poolAddress, positionKeypairPub: positionKeypair.publicKey.toString() };
+            let recup = null;
+            if (cree) { try { recup = await positionValueSol(posRef, dlmmPool); } catch (_) {} }
+            if (recup != null && recup > 0.001) {
+                console.log(`  ✅ liquidité partiellement/entièrement déposée — position gardée (valeur ${recup.toFixed(4)} SOL)`);
+            } else {
+                if (cree) {   // compte vide : on le ferme pour RÉCUPÉRER la caution
+                    try {
+                        const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(keypair.publicKey);
+                        const vide = userPositions.find(u => u.publicKey.toString() === positionKeypair.publicKey.toString());
+                        if (vide) { const ct = await dlmmPool.closePosition({ owner: keypair.publicKey, position: vide });
+                            const hh = await connection.sendTransaction(ct, [keypair]); await confirmTx(hh);
+                            console.log(`  🧹 compte vide fermé, caution rendue: https://solscan.io/tx/${hh}`); }
+                    } catch (ce) { console.log(`  ⚠️ fermeture du compte vide: ${String(ce.message).slice(0, 60)} — sweepOrphans le rattrapera`); }
+                }
+                if (!oneSided) await sweepToken(xMint);
+                return null;
+            }
+        }
+    } else try {
         const tx = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
             positionPubKey: positionKeypair.publicKey,
             user: keypair.publicKey,
@@ -535,8 +652,9 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
         if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
         try { openValueSol = await positionValueSol(posRef, dlmmPool); } catch (_) {}
     }
-    console.log(`  💰 Déposé: ${depositedSol.toFixed(4)} SOL (rent+gas inclus) | valeur LP: ${openValueSol != null ? openValueSol.toFixed(4) : '?'} SOL | bins [${minBinId}→${maxBinId}] (±${BIN_RANGE})`);
-    return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, openValueSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint, oneSided };
+    console.log(`  💰 Déposé: ${depositedSol.toFixed(4)} SOL (rent+gas inclus) | valeur LP: ${openValueSol != null ? openValueSol.toFixed(4) : '?'} SOL | bins [${minBinId}→${maxBinId}] (${nBins} bins, bs${binStep}${wide ? ', LARGE' : ''})`);
+    return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, openValueSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint, oneSided,
+        nBins, binStep, wide, depotHorsMise: openValueSol != null ? +(depositedSol - openValueSol).toFixed(5) : null };
 }
 
 // ── Valeur de position en SOL (X + Y + fees) — LECTURE ON-CHAIN DIRECTE ──────────────────────────
@@ -766,6 +884,18 @@ async function closeVerified(pos) {
                     console.log(`  ✅ TX fermeture: https://solscan.io/tx/${h}`);
                 }
             }
+            // (27/09) CAUTION : le compte de position doit être FERMÉ, sinon sa caution (plus grosse pour une
+            // position étendue) reste bloquée. On vérifie et on ferme s'il subsiste.
+            try {
+                const encore = await connection.getAccountInfo(new PublicKey(pos.positionKeypairPub));
+                if (encore) {
+                    const { userPositions: up2 } = await dlmmPool.getPositionsByUserAndLbPair(keypair.publicKey);
+                    const p2 = up2.find(u => u.publicKey.toString() === pos.positionKeypairPub);
+                    if (p2) { const ct = await dlmmPool.closePosition({ owner: keypair.publicKey, position: p2 });
+                        const hc = await connection.sendTransaction(ct, [keypair]); await confirmTx(hc);
+                        console.log(`  🧹 compte de position encore ouvert → fermé, caution rendue: https://solscan.io/tx/${hc}`); }
+                } else if (pos.nBins > 70) console.log(`  ✓ compte de position étendue (${pos.nBins} bins) fermé — caution rendue`);
+            } catch (ce) { console.log(`  ⚠️ contrôle de fermeture du compte: ${String(ce.message).slice(0, 60)}`); }
             // re-swap du token récupéré → SOL (sinon PnL faussé + poussière qui traîne)
             if (pos.tokenMint) {
                 try {
