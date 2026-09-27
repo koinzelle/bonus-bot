@@ -2378,4 +2378,5 @@ issue, cas cc +1,2 % → −11,5 %) : l'ombre doit battre ce précédent, pas le
   compte vide refermé (caution rendue) + token revendu ; à la fermeture, contrôle que le compte est fermé sinon `closePosition`.
   Chaque trade porte `nBins`, `binStep`, `wide`, `depotHorsMise` (caution + gas réellement déposés hors mise).
 - **Plancher bs≥100 du choix de pool LEVÉ** quand la fourchette large est active (bs80 = 290 bins ≈ −68 %, la plus protectrice ; commit 2d3783b).
+- **Pools bin step 400 autorisées** (69 bins ≈ −74 %/+287 %, caution ~0,05 ; commit 7696381). Caution mesurée : 81 bins ≈ 0,05 SOL, **290 bins 0,1671 SOL** (on-chain, rendue au close).
 - **À vérifier sur les premières ouvertures** : TX étendue OK, valeur LP lue, fermeture multi-TX OK, caution rendue au wallet.
