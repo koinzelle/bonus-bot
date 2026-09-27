@@ -156,7 +156,8 @@ const REOPEN_HAUT_MAX = parseInt(process.env.REOPEN_HAUT_MAX || '1', 10);       
 // casse contre 9 %. Le verrou anti-boucle reste : 10 min suffisent à empêcher la ré-entrée sur le
 // même mouvement, et le token doit de toute façon re-remplir TOUT le cahier des charges.
 const REENTRY_COOLDOWN_MS = parseInt(process.env.REENTRY_COOLDOWN_MS || String(10 * 60 * 1000), 10);
-const MOU_LOCK_MS = parseInt(process.env.MOU_LOCK_H || "48", 10) * 3600 * 1000; // (2026-09-14) verrou après une sortie MOLLE (RSI2 > 3 h à < 3 % de LP) — réglable sans redéploiement
+const MOU_LOCK_MS = parseInt(process.env.MOU_LOCK_H || "48", 10) * 3600 * 1000;
+const MOU_LOCK_MIN_POS = parseInt(process.env.MOU_LOCK_MIN_POS || '6', 10);   // (27/09) verrou mou actif seulement à partir de N positions réelles // (2026-09-14) verrou après une sortie MOLLE (RSI2 > 3 h à < 3 % de LP) — réglable sans redéploiement
 // ── VERROU ANTI-COIN-MOURANT — TTL DÉSACTIVÉ PAR DÉFAUT (2026-08-27) ────────────────────────────────
 // J'avais proposé un TTL 48h pour débloquer les cycleurs verrouillés à vie (CYBERLEEK et ses 65 creux
 // refusés en 9h). Le backtest complet dit NON, et la remarque du user était la bonne :
@@ -2394,7 +2395,17 @@ async function scan() {
             const atSupport = nearST || nearEMA34 || nearBBlo;
             const _mouLock = state.mouLocks && state.mouLocks[tok];
             if (_mouLock && _mouLock <= now) delete state.mouLocks[tok];
-            const onCooldown = (w.cooldownUntil && now < w.cooldownUntil) || (_mouLock > now) || (w.mouUntil && now < w.mouUntil);
+            // (27/09, critère user « si on ne remonte pas à 7 on assouplit » : 4/7 et ALLINU/SI/CALI bloqués
+            // AU CREUX, 130 refus) → verrou CONDITIONNEL : il ne joue que si le bot est presque plein
+            // (≥ MOU_LOCK_MIN_POS positions réelles), là où le slot a un autre usage. Sinon délai normal.
+            const _mouActif = (_mouLock > now) || (w.mouUntil && now < w.mouUntil);
+            const _nbLive = Object.values(state.positions).filter(p => p.live).length;
+            const _mouJoue = _mouActif && _nbLive >= MOU_LOCK_MIN_POS;
+            const _finMou = Math.max(_mouLock || 0, w.mouUntil || 0);
+            const _cdNormal = _mouActif
+                ? (now - (_finMou - MOU_LOCK_MS)) < REENTRY_COOLDOWN_MS          // les 30 min anti-boucle restent
+                : !!(w.cooldownUntil && now < w.cooldownUntil);
+            const onCooldown = _cdNormal || _mouJoue;
             const athAgeH = athTs > 0 ? (now / 1000 - (athTs > 1e12 ? athTs / 1000 : athTs)) / 3600 : null;
             // ATH RÉCENT ≤14j (2026-07-22, remplace le cap d'âge) : on n'entre que sur le retrace d'un TOP
             // RÉCENT (EP entre après le dip d'un sommet frais, cas FOMO). Sans ça, un coin qualifié il y a
