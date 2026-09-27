@@ -2266,6 +2266,18 @@ async function scan() {
                         // (2026-08-24) RSI2 = PLANCHER quand pas armé (< +6% LP). Sort les positions molles DANS LE
                         // VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue (cc
                         // aurait fermé +1.2%, s'est retrouvé -11.5% live). Au-dessus de l'arm, le trail ride les runners.
+                        // (2026-09-27, demande user) OMBRE sbTrailSeul — la sortie RSI2 coupe-t-elle nos gains trop tôt ?
+                        // EP : 74,9 % de gagnantes mais de gros gains ; nous : ~90 % mais des sorties RSI2 à +1/+4 %.
+                        // On journalise l'instant et le prix de chaque sortie RSI2 EN GAIN ; ce que le trail seul
+                        // aurait fait (armement +6 % LP, 1 pt sous le pic) se reconstruit hors ligne sur les bougies
+                        // de CETTE pool, et se recoupe avec les vraies ré-entrées sur le même mint. N'agit pas.
+                        ombre('sbTrailSeul', () => {
+                            if (!pos._awaitBounce && realGain > 0) recordShadow('sbTrailSeul', { symbol: pos.symbol, tok,
+                                pool: (pos.live && pos.live.poolAddress) || null, px, pxEntree: pos.entry,
+                                lp: +(realGain * 100).toFixed(2), peak: +((pos.peakGain || 0) * 100).toFixed(2), rsi2: +rsi2.toFixed(0),
+                                bin: liveBinId, lowerBin: pos.live && pos.live.lowerBinId, upperBin: pos.live && pos.live.upperBinId,
+                                ageMin: Math.round((Date.now() - pos.openedAt) / 60000), taxeBps: (pos.live && pos.live.transferFeeBps) || 0 });
+                        });
                         await closePaper(tok, pos, px, `${pos._awaitBounce ? 'REBOND ' : ''}RSI2 ${rsi2.toFixed(0)}>90 (LP ${realGain >= 0 ? '+' : ''}${(realGain * 100).toFixed(1)}%)`);
                         continue;
                     }

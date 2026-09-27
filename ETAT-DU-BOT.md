@@ -2346,3 +2346,21 @@ Rejeu 15 min sur les 6 (hors range = 1:1, gain plafonné à +5 %, ré-entrées p
 −55 %), `AWAIT_BOUNCE=1` ≈ +0,09. **Réserve : +0,30 porté par 2 cas (LinkedInu, SI) ; sans eux ≈ +0,02.**
 Plancher dur `CUT_HARD` (−75 %) garde son déclencheur prix (anti-rug). **À surveiller : positions qui passent
 −55 % de prix sans être coupées — leur issue réelle, et le coût des coupes par jour vs −0,33.**
+
+## 27. 27/09 — LARGEUR DE FOURCHETTE (vrais trades) + OMBRE `sbTrailSeul`
+
+EP (carte STONK10) : bin step 200, **81 bins**, ≈ **−55 % / +120 %** autour de l'entrée. Nous : ±34 bins → −29/+40 %
+en bs100, −49/+96 % en bs200. Vrais trades depuis le 08/09 appariés à leur pool (`SHADOW rendement … PRISE`, 361/541) :
+
+| range | n | moy/trade | coupes | gain hors coupes | TRAIL |
+|---|---|---|---|---|---|
+| −24 % (bs80) | 29 | −0,0019 | 10,3 % | +0,0093 | 28 % |
+| −29 % (bs100) | 206 | +0,0056 | 7,8 % | +0,0148 | 42 % |
+| −49 % (bs200) | 106 | **+0,0093** | **5,7 %** | +0,0158 | **60 %** |
+
+Monotone : plus large = moins de coupes, plus de trails, et les frais ne baissent PAS (gain hors coupes égal).
+**Confondu** (tokens/pools différents, frais 1 % vs 2 %) → pas encore une règle ; pistes : préférer bs200 dans la
+sélection de pool, ou élargir au-delà de 69 bins (limite historique d'une position DLMM ?).
+**Ombre `sbTrailSeul`** : chaque sortie RSI2 EN GAIN (non REBOND) journalise pool, px, LP, pic, bins → reconstruire hors
+ligne ce qu'aurait fait le trail seul. ⚠️ Le « trail-only » a DÉJÀ été déployé le 24/08 et retiré (hold rouge sans
+issue, cas cc +1,2 % → −11,5 %) : l'ombre doit battre ce précédent, pas le réinventer.
