@@ -1663,11 +1663,12 @@ async function scan() {
         // comme avant) ; impair = UNIQUEMENT tokens chauds (4/5 conditions) + positions → réactivité 30s
         // là où ça compte, sans doubler la charge GT.
         const hotOnly = (scanTick++ % 2) === 1;
+        const _t0 = Date.now(); let _tDisc = 0, _tRecon = 0, _nFetch = 0, _tFetch = 0, _tWatch0 = Date.now();   // (27/09) chronométrage par étape
         // Réconciliation on-chain des positions live (ticks complets seulement) — détecte les coupes manuelles
-        if (!hotOnly) { try { await reconcileLivePositions(); } catch (e) { console.log('reconcile:', e.message); } }
+        { const _a = Date.now(); if (!hotOnly) { try { await reconcileLivePositions(); } catch (e) { console.log('reconcile:', e.message); } } _tRecon = Date.now() - _a; }
         // 1. découverte : nouveaux candidats < 48h (ticks complets uniquement)
         let discovered = [];
-        if (!hotOnly) { try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); } }
+        { const _a = Date.now(); if (!hotOnly) { try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); } } _tDisc = Date.now() - _a; }
         let replaceBudget = 3; // remplacements watch max/scan (2026-08-14) : la watch se rafraîchit progressivement, pas de thrashing
         for (const { tok, gtPool } of discovered.slice(0, 60)) { // 4-6 sources fusionnées (GT p1-3 + 1h + new + DexScreener) — trending d'abord
             if (state.watch[tok] || state.positions[tok]) continue;
@@ -1729,7 +1730,11 @@ async function scan() {
         // None depuis des heures). Départ tournant : chaque token passe en tête à tour de rôle.
         const watchEntries = Object.entries(state.watch);
         scanOffset = (scanOffset + 1) % Math.max(watchEntries.length, 1);
-        const rotated = [...watchEntries.slice(scanOffset), ...watchEntries.slice(0, scanOffset)];
+        const _rot = [...watchEntries.slice(scanOffset), ...watchEntries.slice(0, scanOffset)];
+        // (27/09, GO user) les tokens JAMAIS évalués passent en tête : un token neuf attendait sa 1re analyse
+        // 20 min en médiane (p90 80 min) derrière les mêmes tokens re-vérifiés en boucle.
+        const rotated = [..._rot.filter(([t, w]) => !w.diag && !state.positions[t]), ..._rot.filter(([t, w]) => w.diag || state.positions[t])];
+        _tWatch0 = Date.now();
         for (const [tok, w] of rotated) {
             const inPos = !!state.positions[tok];
             // FRÉQUENCE ADAPTATIVE (2026-07-27, idée user) : un token LOIN de l'entrée (-35%) n'a pas besoin
@@ -1747,13 +1752,15 @@ async function scan() {
             // CACHE ADAPTATIF NEAR-ENTRY (2026-08-17) : un token proche de l'entrée (w.nearEntry, dipProx≥0.85 au
             // dernier tick) doit voir un prix FRAIS → cache 45s ; le reste → 300s. Le cache 300s défaisait les
             // checks 60s (entrée sur prix périmé 5 min, cas LAYOOO). Near-entry jamais gaté par le budget.
-            const ttl15 = w.nearEntry ? 45 * 1000 : 300 * 1000;
+            // (27/09, GO user) loin du creux (< 29 % du chemin vers le seuil) les bougies peuvent vieillir 10 min :
+            // ~moitié moins d'appels sur la majorité de la watch ; dès qu'il se rapproche, retour au cache court.
+            const ttl15 = w.nearEntry ? 45 * 1000 : (w.dipProx != null && w.dipProx < 0.29 ? 600 * 1000 : 300 * 1000);
             const cacheFresh15 = (() => { const cc = candleCache.get(tok + '15m'); return !!(cc && Date.now() - cc.ts < ttl15); })();
             if (!inPos && !w.nearEntry && !cacheFresh15 && fetchBudget <= 0) { if (!w.diag) w.lastSkip = 'budget-fetch-épuisé'; continue; }
             let cs;
             // Birdeye TOKEN-LEVEL (tok = mint) : 192×15m=48h pour support/sortie. Suit la migration
             // nativement → plus de bricolage pool (poolAlt/origine supprimé). Le throttle est global.
-            try { cs = await candles15(tok, 192, ttl15); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); }
+            { const _a = Date.now(); try { cs = await candles15(tok, 192, ttl15); } catch (e) { cs = null; w.lastFetchErr = (e.message || '').slice(0, 60); } if (!cacheFresh15) { _nFetch++; _tFetch += Date.now() - _a; } }
             if (!inPos && !cacheFresh15) fetchBudget--;
             // Purge fetch cassé (2026-07-19) : après 8 échecs consécutifs, on libère le slot — MAIS un 429
             // (rate-limit) n'est PAS une pool morte (2026-07-22 : les purges 429 tuaient des tokens
@@ -2478,6 +2485,7 @@ async function scan() {
                 // dump-sous-haut-récent / seuil) → s'ADAPTE aux gros coins (seuil 12%) comme aux volatils (35%) :
                 // proche ATH 5min · ~-10% 3min · ~-20% 2min · ~-25%+ 1min. Borne la latence (max 5min vs 10min avant).
                 const dipProx = dumpThr > 0 ? dumpedFromHigh / dumpThr : 0;
+                w.dipProx = dipProx;
                 w.nextCheckAt = now + (dipProx >= 0.71 ? 60e3 : dipProx >= 0.57 ? 120e3 : dipProx >= 0.29 ? 180e3 : 300e3);
                 w.nearEntry = dipProx >= 0.71; // dès ~-25% → cache frais 45s (les checks 1min voient enfin le vrai prix)
             }
@@ -2933,6 +2941,7 @@ async function scan() {
             }
         }
         console.log(`🔍 Scan ${hotOnly ? 'HOT' : 'complet'} | watch ${Object.keys(state.watch).length} | pos ${Object.keys(state.positions).length} | bougies OK ${cOk}/vide ${cKo}${rl429 ? `/429×${rl429}` : ''}${cOk === 0 && (cKo + rl429) > 0 ? ' ⚠️ SOURCE BOUGIES DOWN' : ''}`);
+        console.log(`  ⏲️ scan ${((Date.now() - _t0) / 1000).toFixed(0)} s = réconciliation ${(_tRecon / 1000).toFixed(0)} s · découverte ${(_tDisc / 1000).toFixed(0)} s · watch+positions ${((Date.now() - _tWatch0) / 1000).toFixed(0)} s (dont ${_nFetch} téléchargement(s) de bougies ${(_tFetch / 1000).toFixed(0)} s) · jamais évalués ${Object.values(state.watch).filter(w => !w.diag).length}`);
         // DIAG (2026-08-15) : pourquoi des tokens restent JAMAIS évalués (None) — raison du dernier skip + âge en watch.
         if (!hotOnly) {
             const nones = Object.entries(state.watch)
