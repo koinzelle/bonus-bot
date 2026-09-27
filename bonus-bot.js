@@ -2377,7 +2377,9 @@ async function scan() {
             const bbNow = bollinger(cs.map(c => c[4]));
             const nearBBlo = bbNow != null && curPrice <= bbNow.lower * 1.02;  // à/sous la bande basse = survente
             const atSupport = nearST || nearEMA34 || nearBBlo;
-            const onCooldown = w.cooldownUntil && now < w.cooldownUntil;
+            const _mouLock = state.mouLocks && state.mouLocks[tok];
+            if (_mouLock && _mouLock <= now) delete state.mouLocks[tok];
+            const onCooldown = (w.cooldownUntil && now < w.cooldownUntil) || (_mouLock > now) || (w.mouUntil && now < w.mouUntil);
             const athAgeH = athTs > 0 ? (now / 1000 - (athTs > 1e12 ? athTs / 1000 : athTs)) / 3600 : null;
             // ATH RÉCENT ≤14j (2026-07-22, remplace le cap d'âge) : on n'entre que sur le retrace d'un TOP
             // RÉCENT (EP entre après le dip d'un sommet frais, cas FOMO). Sans ça, un coin qualifié il y a
@@ -3250,6 +3252,9 @@ async function closePaper(tok, pos, exitPrice, reason) {
         state.watch[tok].cooldownUntil = Date.now() + verrou;               // anti-boucle : pas de ré-entrée immédiate sur le même mouvement
         if (sortieMolle) {
             state.watch[tok].mouUntil = Date.now() + verrou;
+            // (2026-09-27) le verrou vit AUSSI hors de la watch : la purge supprimait la fiche du token et
+            // le verrou avec (PAID : verrouillé 06:16, purgé 07:29, re-suivi 07:59, ré-ouvert 09:00).
+            state.mouLocks = state.mouLocks || {}; state.mouLocks[tok] = Date.now() + verrou;
             console.log(`  🔒 ${pos.symbol}: sortie MOLLE (${trade.durMin} min pour ${trade.lpPct >= 0 ? '+' : ''}${trade.lpPct}% de LP) → verrouillé ${MOU_LOCK_MS / 3600000} h au lieu de ${REENTRY_COOLDOWN_MS / 60000} min`);
         }
         // (2026-09-21) PORTE UPSIDE D'EP : sortie par le HAUT → laissez-passer de ré-ouverture.
