@@ -113,9 +113,10 @@ const WIDE_MODE = (process.env.WIDE_MODE || 'all').toLowerCase();   // (27/09, G
 const _poolRefus = new Map();   // poolAddress -> jusqu'à (ms)
 const POOL_REFUS_MS = parseFloat(process.env.POOL_REFUS_H || '2') * 3600e3;   // (27/09, user) exclusion 2 h (6 h trop strict)
 const WIDE_AB_P = parseFloat(process.env.WIDE_AB_P || '0.5');
+const BS80_ALT_RATIO = parseFloat(process.env.BS80_ALT_RATIO || '0.5');   // (27/09) seuil de rendement pour préférer une pool bs≥100 à une bs80
 let _wideNextUsed = false;
 function wideBinsFor(binStep) {
-    if (binStep <= 80) return parseInt(process.env.WIDE_BINS_80 || '290', 10);
+    if (binStep <= 80) return parseInt(process.env.WIDE_BINS_80 || '141', 10);   // (27/09) 290 → 141 : à 290 bins, frais réels ≈ 0 (ELON 0,3 %/j, PAID 0,0 %/j)
     if (binStep <= 250) return parseInt(process.env.WIDE_BINS_200 || '81', 10);
     return 69;
 }
@@ -274,7 +275,22 @@ async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
         }
     }
     const wanted = preferredPool ? candidates.find(c => c.addr === preferredPool) : null;
-    const best = wanted || (parRendement ? parRendement.c : candidates[0]);
+    let best = wanted || (parRendement ? parRendement.c : candidates[0]);
+    // (27/09, GO user) ÉVITER LE bs80 QUAND UNE POOL À GRAND PAS SUFFIT. En fourchette large, un bs80 prend
+    // 141-290 bins : liquidité diluée → frais RÉELS quasi nuls (ELON 0,3 %/j, PAID 0,0 %/j mesurés, contre
+    // 17,3 et 5,6 %/j affichés pour la pool) et caution 0,17 SOL. On prend une pool bs≥100 (81 ou 69 bins,
+    // caution ~0,05) si elle a ≥ 10 k$ de TVL et ≥ BS80_ALT_RATIO (50 %) des frais/TVL de la bs80.
+    if (best && best.binStep <= 80 && WIDE_MODE !== 'off' && Array.isArray(metPools) && metPools.length) {
+        const ftvOf = c => { const m = metPools.find(p => p.addr === c.addr); return m && m.tvl > 0 ? { ftv: (m.vol24h * (c.baseFeePct / 100)) / m.tvl * 100, tvl: m.tvl } : null; };
+        const ref = ftvOf(best);
+        const alts = candidates.filter(c => c.binStep >= 100).map(c => ({ c, r: ftvOf(c) }))
+            .filter(a => a.r && a.r.tvl >= 10000 && (!ref || a.r.ftv >= BS80_ALT_RATIO * ref.ftv))
+            .sort((a, b) => b.r.ftv - a.r.ftv);
+        if (alts.length) {
+            console.log(`  🔀 bs80 évité : ${alts[0].c.addr.slice(0, 8)} bs${alts[0].c.binStep} fee${alts[0].c.baseFeePct}% ${alts[0].r.ftv.toFixed(1)}%/j (TVL ${Math.round(alts[0].r.tvl / 1000)}k$) au lieu de ${best.addr.slice(0, 8)} bs${best.binStep} ${ref ? ref.ftv.toFixed(1) + '%/j' : '?'}`);
+            best = alts[0].c;
+        }
+    }
     if (!wanted && parRendement && parRendement.c.addr !== candidates[0].addr) {
         console.log(`  📈 Pool choisie au RENDEMENT: ${parRendement.c.addr.slice(0, 8)} bs${parRendement.c.binStep} fee${parRendement.c.baseFeePct}% ${parRendement.ftv.toFixed(1)}%/j — au lieu de ${candidates[0].addr.slice(0, 8)} bs${candidates[0].binStep} fee${candidates[0].baseFeePct}% (tri fee)`);
     }
