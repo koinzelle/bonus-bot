@@ -596,7 +596,6 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
             // (27/09) 1re ouverture réelle (suit) : 1er morceau passé, 2e « Simulation failed » → dépôt
             // partiel (0,22/0,28). On retente donc avec CE QUI RESTE au wallet (token lu on-chain, SOL
             // déduit du solde), jusqu'à 3 fois, en relisant l'état de la pool entre deux essais.
-            const solAvant = await solBalance();
             let xReste = tokenRaw, yReste = BigInt(halfLamports);
             for (let essai = 1; essai <= 3 && (xReste > 0n || yReste > 5_000_000n); essai++) {
                 try {
@@ -616,9 +615,19 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
                     const logs = (ae && (ae.logs || ae.transactionLogs)) || [];
                     console.log(`  ⚠️ liquidité essai ${essai}/3 : ${String(ae.message).slice(0, 70)} ${logs.filter(l => /Error|error|failed/.test(l)).slice(0, 2).join(' | ').slice(0, 200)}`);
                     await new Promise(r => setTimeout(r, 3000));
-                    xReste = await tokenBalanceRaw(xMint);
-                    const solMaint = await solBalance();
-                    yReste = BigInt(Math.max(0, halfLamports - Math.max(0, solAvant - solMaint - 10_000_000)));
+                    // (29/09) BUG CORRIGÉ : le reste était déduit du SOLDE du wallet. Un close concurrent
+                    // (BOB, +0,33 SOL) l'a gonflé → SI déposée à 0,552 au lieu de 0,28, PAID à 0,355.
+                    // On lit désormais ce que la POSITION contient déjà, et on plafonne à la cible.
+                    try {
+                        const pd = (await dlmmPool.getPosition(positionKeypair.publicKey)).positionData;
+                        const xIn = BigInt((pd.totalXAmount ?? 0).toString().split('.')[0] || '0');
+                        const yIn = BigInt((pd.totalYAmount ?? 0).toString().split('.')[0] || '0');
+                        const xWallet = await tokenBalanceRaw(xMint);
+                        xReste = tokenRaw > xIn ? tokenRaw - xIn : 0n;
+                        if (xReste > xWallet) xReste = xWallet;
+                        yReste = BigInt(halfLamports) > yIn ? BigInt(halfLamports) - yIn : 0n;
+                        console.log(`  🧮 déjà en position : X ${xIn} / ${tokenRaw} · Y ${yIn} / ${halfLamports} → reste X ${xReste} · Y ${yReste}`);
+                    } catch (le) { console.log(`  ⚠️ lecture de la position impossible (${String(le.message).slice(0, 50)}) — on n'ajoute rien de plus`); xReste = 0n; yReste = 0n; }
                     if (essai === 3) throw ae;
                 }
             }
@@ -903,6 +912,12 @@ async function closeVerified(pos) {
             // valeur ON-CHAIN avant remove (X+Y+fees en SOL) = base du PnL réel
             let closeValueSol = null;
             try { closeValueSol = await positionValueSol(pos, dlmmPool); } catch (_) {}
+            // (29/09) BUG CORRIGÉ : une position étendue se ferme en plusieurs TX ; si la 1re tentative
+            // expire à mi-chemin, la suivante mesurait le RESTE (ELON : −0,141 enregistré, ≈ +0,04 réel).
+            // La valeur lue avant la PREMIÈRE tentative fait foi, même après un nouvel essai.
+            // Valable 15 min seulement : une fermeture ratée puis reprise des heures plus tard se re-mesure.
+            if (pos._closeValue0 != null && Date.now() - (pos._closeValue0Ts || 0) < 15 * 60e3) closeValueSol = pos._closeValue0;
+            else if (closeValueSol != null) { pos._closeValue0 = closeValueSol; pos._closeValue0Ts = Date.now(); }
             const fromBinId = Number(p.positionData.lowerBinId);
             const toBinId = Number(p.positionData.upperBinId);
             let removeTxs;
