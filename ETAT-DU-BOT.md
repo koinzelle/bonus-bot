@@ -2380,3 +2380,6 @@ issue, cas cc +1,2 % → −11,5 %) : l'ombre doit battre ce précédent, pas le
 - **Plancher bs≥100 du choix de pool LEVÉ** quand la fourchette large est active (bs80 = 290 bins ≈ −68 %, la plus protectrice ; commit 2d3783b).
 - **Pools bin step 400 autorisées** (69 bins ≈ −74 %/+287 %, caution ~0,05 ; commit 7696381). Caution mesurée : 81 bins ≈ 0,05 SOL, **290 bins 0,1671 SOL** (on-chain, rendue au close).
 - **À vérifier sur les premières ouvertures** : TX étendue OK, valeur LP lue, fermeture multi-TX OK, caution rendue au wallet.
+
+## 29. 01/10 — OMBRE `sbReentreeFlux` (n'agit pas)
+COLLECT : ré-entrée 2 h après sa coupe, juste après une vague de ~46 k$ de ventes en 30 min (dont 15,5 k$ d'un seul wallet), recoupée en 65 min (−0,167). Sur 108 entrées, une forte vente nette avant l'entrée est NORMALE et gagnante (≥0,1 % MC : 36/38 gagnantes) → pas de filtre général. Pour les seules ré-entrées dans les 48 h après une coupe, l'ombre enregistre au moment de la décision le flux d'ordres de la pool coupée (1 h et 30 min : ventes, vendeurs, USD, plus grosse vente) + ce qu'une règle « vente nette 1 h ≥ 1 % MC » aurait fait. Coupes mémorisées dans `state.cutInfo`. Lecture : `grep 'SHADOW sbReentreeFlux'`. Interdiction après 2 coupes et blocage : NON décidés (user).

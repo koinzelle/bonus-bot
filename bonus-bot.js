@@ -2881,6 +2881,33 @@ async function scan() {
                     + ` | ${liveOpenCountPre >= MAX_LIVE_POSITIONS ? 'refusé faute de place' : 'entre'}`
                     + ` | ${liveOpenCountPre}/${MAX_LIVE_POSITIONS} places prises`);
 
+                // (01/10, GO user) OMBRE sbReentreeFlux — n'agit PAS. Cas COLLECT : ré-entrée 2 h après sa coupe,
+                // juste après ~46 k$ de ventes en 30 min (dont 15,5 k$ d'un seul wallet) → recoupée en 65 min.
+                // On enregistre le flux d'ordres AU MOMENT de la décision (1 h et 30 min), pour toute ré-entrée
+                // dans les 48 h suivant une coupe, avec ce qu'une règle « vente nette 1 h ≥ 1 % de la MC » aurait fait.
+                ombre('sbReentreeFlux', () => {
+                    const ci = state.cutInfo && state.cutInfo[tok];
+                    if (!ci || now - ci.ts > 48 * 3600e3 || !live.enabled) return;
+                    const k = '_rfLog' + ci.ts; if (w[k]) return; w[k] = true;   // une ligne par ré-entrée
+                    const pool = ci.pool, mcUsd = curMc;
+                    (async () => {
+                        try {
+                            if (!pool) { recordShadow('sbReentreeFlux', { symbol: w.symbol, tok, err: 'pool inconnue' }); return; }
+                            const r = await axios.get(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/trades`, { timeout: 8000 });
+                            const lst = ((r.data && r.data.data) || []).map(x => x.attributes);
+                            const agg = ms => { const h = lst.filter(a => new Date(a.block_timestamp).getTime() >= Date.now() - ms);
+                                const v = h.filter(a => a.kind === 'sell'), b = h.filter(a => a.kind === 'buy');
+                                return { ventes: v.length, achats: b.length, vendeurs: new Set(v.map(a => a.tx_from_address)).size,
+                                    venteUsd: Math.round(v.reduce((x, a) => x + (+a.volume_in_usd || 0), 0)),
+                                    achatUsd: Math.round(b.reduce((x, a) => x + (+a.volume_in_usd || 0), 0)),
+                                    plusGrosseVenteUsd: Math.round(Math.max(0, ...v.map(a => +a.volume_in_usd || 0))) }; };
+                            const f1h = agg(3600e3), f30 = agg(1800e3);
+                            const netPctMc = mcUsd ? +((f1h.venteUsd - f1h.achatUsd) / mcUsd * 100).toFixed(2) : null;
+                            recordShadow('sbReentreeFlux', { symbol: w.symbol, tok, pool, minDepuisCoupe: Math.round((now - ci.ts) / 60000),
+                                lpCoupe: ci.lp, mcUsd: Math.round(mcUsd || 0), f1h, f30, netPctMc, aurait_bloque_1pct: netPctMc != null && netPctMc >= 1 });
+                        } catch (e) { recordShadow('sbReentreeFlux', { symbol: w.symbol, tok, err: String(e.response ? e.response.status : e.message).slice(0, 40) }); }
+                    })();
+                });
                 const msg = `🎯 ENTRÉE ${w.symbol} (chop-cycle${downtrend ? ' ⚠️downtrend' : ''})\nprix: $${entry.toFixed(8)} | chop ${(cr * 100).toFixed(0)}% | dumpé -${(dumpedFromHigh * 100).toFixed(0)}% sous le haut récent\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: TP +6% OU RSI(2)>90 | cut hors-range -35% | on cycle`;
                 console.log(msg.replace(/\n/g, ' | '));   // Telegram RÉEL uniquement (2026-08-11) : la notif part seulement si l'ouverture live réussit (voir plus bas)
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
@@ -3287,6 +3314,11 @@ async function closePaper(tok, pos, exitPrice, reason) {
         // Coût : 14 sorties TRAIL à +5,91 % qu'on n'aura pas sur ces tokens — mais qu'on aura
         // ailleurs, les candidats refusés valant les retenus (+13,8 % de plus-haut médian en 6 h
         // contre +10,3 % réalisés sur les pris).
+        // (01/10, GO user) mémorise chaque COUPE pour l'ombre sbReentreeFlux (ré-entrée après coupe)
+        if (/^(CUT SEC|CUT PLANCHER|CUT hors-range \(|CUT valeur|REBOND)/.test(reason || '')) {
+            state.cutInfo = state.cutInfo || {};
+            state.cutInfo[tok] = { ts: Date.now(), pool: (pos.live && pos.live.poolAddress) || null, lp: trade.lpPct ?? null };
+        }
         const sortieMolle = /RSI/i.test(reason || '') && !/REBOND/i.test(reason || '')
             && trade.lpPct != null && trade.lpPct < 3 && trade.durMin > 180;
         const verrou = sortieMolle ? MOU_LOCK_MS : REENTRY_COOLDOWN_MS;
