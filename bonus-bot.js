@@ -1067,6 +1067,7 @@ async function paprikaOhlcv(mint, gmgnRes, limit, intervalSec) {
     const pool = await gtPoolFor(mint); if (!pool) return [];
     try {
         let m = _ppMeta.get(pool);
+        if (m && m.bad && Date.now() - m.ts < 24 * 3600e3) return [];   // pool inconnue de DexPaprika → pas de crédit gaspillé
         if (!m || Date.now() - m.ts > 24 * 3600e3) {
             const r = await _ppGet(`https://api.dexpaprika.com/networks/solana/pools/${pool}`);
             const t0 = r.data?.tokens?.[0]?.id;
@@ -1082,6 +1083,7 @@ async function paprikaOhlcv(mint, gmgnRes, limit, intervalSec) {
             .filter(c => c[0] && isFinite(c[4]) && c[4] > 0).sort((a, b) => a[0] - b[0]);
     } catch (e) {
         const st = e && e.response && e.response.status;
+        if (st === 404) { _ppMeta.set(pool, { bad: true, ts: Date.now() }); return []; }   // (04/10) 25 % de 404 au tableau de bord
         if (st === 402) { _ppOffUntil = Date.now() + 6 * 3600e3; console.log('  🌶️ DexPaprika : crédits épuisés (402) — coupé 6 h, repli Birdeye/GeckoTerminal'); }
         else if (st === 429) _ppOffUntil = Date.now() + 60e3;
         else if (st === 401 || st === 403) { _ppOffUntil = Date.now() + 3600e3; console.log(`  🌶️ DexPaprika refuse (${st}) : ${String(e.response?.data?.message || '').slice(0, 120)} — coupé 1 h`); }

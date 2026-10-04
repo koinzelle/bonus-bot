@@ -2414,3 +2414,14 @@ COLLECT : ré-entrée 2 h après sa coupe, juste après une vague de ~46 k$ de v
   GMGN → GeckoTerminal. Budget `PAPRIKA_MAX_H` (défaut 120/h ≈ 2 900/j), espacement 2,1 s ; 402 → coupé 6 h, 429 → 60 s,
   401/403 → 1 h. 5m, 1h et 1d inchangés (GT/Birdeye). Écart mesuré vs GT sur la même bougie ≈ 3 %.
 - **Compteur** : ligne `📊 bougies/h` (une par heure) → mesurer la vraie consommation et ajuster le budget.
+- (04/10, 21:55) Pools inconnues de DexPaprika (404, 25 % des appels au tableau de bord) mémorisées 24 h → plus de crédit gaspillé.
+  Scan mesuré après branchement : 131 / 101 / 99 s (cache froid 625 s) vs médiane 90 s avant → **pas de gain de vitesse** :
+  le goulot est le nombre de téléchargements (~26-34/scan) et l'espacement GeckoTerminal, pas Birdeye.
+
+## 33. REVUE PRÉVUE ~14/10 (demande user)
+Toutes les ombres : `sbAthUse` (le filtre ATH usé tient-il ?), `patternKO` (+ décider du test 1 slot sur 7 en réel, 30 trades),
+`sbRebondProfond`, `sbReentreeFlux`, `sbAjoutBas`, `sbChute`, `sbRefusPlein`, `sbTrailSeul` ; bs100 à 121 bins avant/après au wallet ;
+conso DexPaprika (`📊 bougies/h`). État au 04/10 : sbAjoutBas 43 épisodes = comme une entrée normale (75 %/23 %) → rien à
+gagner ; sbChute aucun signal stable (seule la profondeur compte : −20 → 30 % coupées, −30 → 41 %, −40 → 63 %) ; sbRefusPlein
+refusés 68 %/32 % (pire que nos entrées 75/24) → le remplacement ne se justifie pas, mais l'occupant le plus vieux non armé a
+médiane −36 % LP et 87 h ; sbTrailSeul 29 % font +10 % avant −10 % après la sortie RSI2 → la sortie RSI2 a raison (71 %).
