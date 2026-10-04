@@ -2438,3 +2438,8 @@ doubler l'appel. Appels DexPaprika sérialisés (≤ ~28/min). Mesure : ligne `�
 - `BIRDEYE_CU_DAY` (défaut 900) PAR CLÉ et par jour UTC ; coût compté par appel (12 ≤100 bougies, 25 ≤300, 35 au-delà ; un 200 vide
   est facturé) ; une clé au plafond passe la main à la 2e. 2 clés = 1 800 CU/j ≈ 50 appels 1H/1D. v3 abandonnée (v1 seule).
 - Ligne `📊 bougies/h` : + compteur 1h/1d GeckoTerminal (`gtHtf`) et crédits Birdeye du jour par clé. Clés : reset 08/10 et 17/10.
+
+## 36. 05/10 — CACHES 1H ET DAILY ALLONGÉS (demande user)
+1H : 20 min → **2 h** (`HTF_1H_TTL_MIN`, défaut 120) ; daily : 60 min → **6 h** (`HTF_1D_TTL_MIN`, défaut 360). Pour ne jamais rater un ATH
+récent, l'ATH fusionne désormais les plus hauts des bougies 15m (48 h, fraîches) avec la série 1H/daily ; le pattern reste calculé sur
+la série HTF seule (et il est mémorisé 14 j une fois validé). Effet attendu : ~6× moins d'appels 1H/daily → scan plus court.

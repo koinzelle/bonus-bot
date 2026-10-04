@@ -1242,8 +1242,12 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
 // TTL longs = moins d'appels : 15m→120s (support/exit) ; 1H→20min ; daily→60min (macro = lent).
 const candles5 = (mint, limit = 200) => candlesTF(mint, '5m', '5m', limit, 300, 120 * 1000);   // cache 60s→120s (charge Birdeye)
 const candles15 = (mint, limit = 192, ttl = 450 * 1000) => candlesTF(mint, '15m', '15m', limit, 900, ttl); // cache 300s (45s pour les tokens near-entry, cf w.nearEntry)
-const candles1h = (mint, limit = 720, force = false) => candlesTF(mint, '1h', '1H', limit, 3600, 20 * 60 * 1000, force);
-const candlesDay = (mint, limit = 1000, force = false) => candlesTF(mint, '1d', '1D', limit, 86400, 60 * 60 * 1000, force);
+// (05/10, demande user) caches HTF allongés : 1H 20 min → 2 h, daily 60 min → 6 h (réglables). Un pattern ou un ATH ne
+// change pas en 20 min, et la fraîcheur est assurée par la fusion des bougies 15m (48 h, toujours fraîches) dans l'ATH.
+const HTF_1H_TTL_MS = parseInt(process.env.HTF_1H_TTL_MIN || '120', 10) * 60 * 1000;
+const HTF_1D_TTL_MS = parseInt(process.env.HTF_1D_TTL_MIN || '360', 10) * 60 * 1000;
+const candles1h = (mint, limit = 720, force = false) => candlesTF(mint, '1h', '1H', limit, 3600, HTF_1H_TTL_MS, force);
+const candlesDay = (mint, limit = 1000, force = false) => candlesTF(mint, '1d', '1D', limit, 86400, HTF_1D_TTL_MS, force);
 
 // chop-rate (2026-08-03) : sur les bougies récentes, quelle fraction des dumps REBONDIT (+8% avant -30%)
 // vs continue à mourir (-30% = hors range). Chopper (NEEGY ~88%) → on cycle ; dumper (breadcat bas) → on
@@ -2480,6 +2484,9 @@ async function scan() {
             // sur les vieux coins). Le gate ATH-récent ≤14j gère les zombies : ATH ancien = bloqué.
             let ath = 0, athTs = 0;
             for (const c of ms) if (c[2] > ath) { ath = c[2]; athTs = c[0]; }
+            // (05/10) la série 1H/daily peut avoir jusqu'à 2 h / 6 h de cache : on y ajoute les plus hauts des bougies 15m
+            // (fraîches, 48 h) pour ne JAMAIS rater un ATH récent. Le pattern, lui, reste calculé sur la série HTF seule.
+            if (ms !== cs && cs) for (const c of cs) if (c[2] > ath) { ath = c[2]; athTs = c[0]; }
             const athMc = ath * w.supply;
             const armed = athMc > MC_MIN_ATH;                       // a fait un ATH > 250K dans sa vie
             // GATE DUR pattern EP — qualification COLLANTE (2026-07-22) : une fois validé (ruggers sortis),
