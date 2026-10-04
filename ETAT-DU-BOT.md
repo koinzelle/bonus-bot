@@ -2452,3 +2452,25 @@ la série HTF seule (et il est mémorisé 14 j une fois validé). Effet attendu 
 écart de RSI2 et accord sur « RSI2 < 50 ». Critère proposé pour basculer (décision user) : écart médian de clôture < 1 % et accord
 RSI2<50 ≥ 95 %. Basculer voudrait dire : historique téléchargé une fois à l'ajout (GeckoTerminal), puis direct DexScreener.
 Limites : mèches < 15 s invisibles ; la fréquence de mise à jour du prix DexScreener reste à vérifier ; bougies perdues au redémarrage.
+
+## 38. 05/10 — ANALYSE EVIL PANDA : SES RÈGLES TESTÉES SUR NOS DONNÉES (rien de déployé, décisions user en attente)
+Source : 52 captures (`~/ep`), dont son règlement « The edge is the exit » (IMG_4081). Données : vraie LP des logs 📊 26/08→04/10
+(246 826 lectures), vitesse de frais 💰 depuis 17/09, bougies 1h GeckoTerminal. Simulateur Meteora exact (bid-ask centré, frais
+0,3 %/h) CALÉ sur nos 1 088 vraies entrées : simulé +2,92 % de LP moyenne vs réel +2,95 %.
+- **EP gagne ~4× plus par position en %** (≈ +3 % vs ≈ +0,75 % ; positions ≈ 1 000 $ ≈ 8 SOL vs 0,28).
+- **Coupe sur tendance HTF (sa porte « bas ») : NON.** 44 variantes (SuperTrend 1h/4h, EMA, cassures de plus bas, plancher de MC,
+  avec/sans filtre de LP) : toutes celles à ≥15 cas perdent ; son blocage des ré-entrées perd aussi chez nous. Couper plus tôt
+  sur la LP perd à TOUS les seuils, encore plus depuis la fourchette large (depuis 27/09 : 82 % des positions passées sous −15 %
+  ont fini VERTES ; couper à −15 % = −1,11 SOL en 8 jours). −55 % reste juste.
+- **Sortie « ennui » : NON** (= notre RSI2 plancher 0 + verrou des sorties molles, en mieux ; ses sorties tomberaient 1-2 pts
+  plus bas, aucune de ces positions n'a fini coupée).
+- **Réouverture immédiate après sortie par le HAUT (sa porte « haut ») : PISTE N°1.** 33 cas : +5,2 % LP moyen (81 bins) et
+  **+8,0 % avec 121 bins** (IC 95 % [+1,1 ; +12,9]), 2 moitiés positives, 3 coupes sur 33 ; témoin « creux −20 % puis +49 % »
+  au hasard : +2,3 % ; nos entrées normales simulées : +2,9 %. Gain attendu ≈ +0,15 à +0,3 SOL/mois (≈ 0,8 cas/jour).
+  Aujourd'hui la fenêtre de 20 min ne rouvre presque jamais (3/39) : filtres d'entrée (ATH usé, pattern…).
+- **Frais de base de la pool : mécanisme réel, résultat non prouvé.** Frais encaissés médians 0,15 %/h (≤1,5 %) · 0,43 %/h (2 %) ·
+  0,66 %/h (3-5 %) de la mise ; à token égal la pool chère encaisse plus 7 fois sur 10. Mais le résultat net par trade ne suit pas
+  à bin step égal (bs100 : 3-5 % +0,0038 vs ≤1,5 % +0,0053) → A/B à proposer, pas d'ombre possible (frais d'une pool non prise).
+- **Taxe 1 % : marginale.** 147 trades depuis 11/09 : net entre −0,09 (écart wallet mesuré 3 %) et +0,31 SOL (taxe selon la
+  composition à la sortie, 1,9 % de la mise) ; sorties RSI2 = −0,19 SOL net, TRAIL +1,03. Garder au-delà du RSI2 ne sauve rien
+  (simulé −0,15 à −0,63 vs −0,18). Option simple et réversible : `MAX_TRANSFER_FEE_BPS=100` (refuser dès 1 %) une semaine, mesure wallet.
