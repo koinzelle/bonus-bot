@@ -2393,3 +2393,13 @@ COLLECT : ré-entrée 2 h après sa coupe, juste après une vague de ~46 k$ de v
 - **Alerte Telegram + ombre `sbRebondProfond` (n'agit pas)** : position passée sous −40 % qui fait RSI2>90 en restant
   négative → message au user (stop-loss humain), ré-alerte seulement si la LP gagne encore 10 pts. Rejeu vrais LP/RSI2
   25/09→04/10 : sortir là ≈ +0,17 PnL + 0,17 slot, 9 cas dont 3 contre → pas automatisé.
+
+## 31. 04/10 — bs100 : 81 → 121 BINS (GO user)
+- `wideBinsFor(100)` = `WIDE_BINS_100` (défaut **121**) ≈ **−45 %/+82 %** au lieu de −33 %/+49 %. Les autres bin steps ne changent pas
+  (bs≤80 : 200 · bs125-250 : 81 · bs400 : 69). Déclencheur : HOOKED sorti par le haut à +48,5 % de prix (+18,2 % LP banké) ;
+  réglage EP relevé sur ses bs100 récents (SWARM, OP, SI, TACZ, BLUEPRINT = 121 bins).
+- Garde-fou caution : ≤100 bins 0,07 · 101-140 bins **0,08** (estimation ~0,07 pour 121 bins, rendue au close).
+- Indice avant changement (81 bins, depuis 27/09, confondu avec le token) : bs100 +0,0062/trade (104 trades, 4,8 % coupes) ·
+  bs125 (−39/+64 %) +0,0222 (20) · bs200 (−55/+121 %) +0,0081 (36). Mesure = avant/après sur les bs100, au wallet.
+- Coût attendu : liquidité par bin −33 % → moins de fees tant que le prix reste près de l'entrée ; plus de pools refusées
+  (bin arrays manquants, jamais payés). Revert : `WIDE_BINS_100=81` sur Railway.

@@ -117,6 +117,9 @@ const BS80_ALT_RATIO = parseFloat(process.env.BS80_ALT_RATIO || '0.5');   // (27
 let _wideNextUsed = false;
 function wideBinsFor(binStep) {
     if (binStep <= 80) return parseInt(process.env.WIDE_BINS_80 || '200', 10);   // (27/09, user) 200 bins ≈ −55 %/+122 % : protection du capital prioritaire (290 = frais ≈ 0, 141 jugé trop court)
+    // (04/10, GO user) bs100 : 81 → 121 bins ≈ −45 %/+82 % (81 = −33 %/+49 %) comme EP sur ses bs100 récents
+    // (SWARM, OP, SI, TACZ, BLUEPRINT) — le CUT haut tombait à +49 % de prix (HOOKED, +18 % LP banké).
+    if (binStep === 100) return parseInt(process.env.WIDE_BINS_100 || '121', 10);
     if (binStep <= 250) return parseInt(process.env.WIDE_BINS_200 || '81', 10);
     return 69;
 }
@@ -555,7 +558,7 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
     // mesurée ensuite dans depotHorsMise). Pas assez de cash → on n'ouvre pas, rien n'est engagé.
     // Mesuré 27/09 (YAP, 81 bins) : 0,3297 déposés pour 0,2769 en LP → ~0,053 SOL de caution + gas.
     // L'estimation initiale (0,12) a bloqué 9 ouvertures à tort (05:52-06:15). 290 bins : à mesurer.
-    const cautionEst = nBins <= 70 ? RENT_RESERVE_SOL : nBins <= 140 ? 0.07 : nBins <= 150 ? 0.10 : 0.18;   // 290 bins mesuré : 0,1671 SOL (PAID, 32 760 octets)
+    const cautionEst = nBins <= 70 ? RENT_RESERVE_SOL : nBins <= 100 ? 0.07 : nBins <= 140 ? 0.08 : nBins <= 150 ? 0.10 : 0.18;   // 290 bins mesuré : 0,1671 SOL (PAID, 32 760 octets)
     if (balSol - amountSol < cautionEst + TX_RESERVE_SOL) {
         _cashShortUntil = Date.now() + 5 * 60 * 1000;
         console.log(`❌ cash insuffisant pour ${nBins} bins (libre ${balSol.toFixed(3)} − mise ${amountSol.toFixed(3)} < caution ~${cautionEst} + réserve) — on attend un close`);
