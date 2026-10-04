@@ -837,12 +837,21 @@ if (BIRDEYE_KEYS.length) {
         (uniques < BIRDEYE_KEYS.length ? `  ⚠️ ATTENTION : seulement ${uniques} clé(s) DISTINCTE(S) — doublon dans BIRDEYE_API_KEY` : ''));
 } else console.log('🔑 Birdeye: AUCUNE clé configurée');
 const BE_DEAD_MS = 6 * 3600 * 1000;
-function _beKey() {
+// (2026-10-05, GO user) BUDGET JOURNALIER PAR CLÉ. Le gratuit = 30 000 CU/mois et `/defi/ohlcv` coûte
+// 12 CU (≤100 bougies), 25 (≤300) ou 35 (au-delà) : sans plafond, une clé réinitialisée a été vidée en
+// 75 min le 25/09. BIRDEYE_CU_DAY (défaut 900 ≈ 30 000/30 j avec marge) PAR CLÉ et par jour UTC — avec
+// 2 clés, 1 800 CU/jour ≈ 50 appels 1H/1D. Une clé au plafond passe la main à la suivante, puis GT seul.
+const BE_CU_DAY = parseInt(process.env.BIRDEYE_CU_DAY || '900', 10);
+const _beSpent = new Map();          // index de clé -> { day, cu }
+const _beCost = limit => limit <= 100 ? 12 : limit <= 300 ? 25 : 35;
+function _beSpentToday(i) { const d = new Date().toISOString().slice(0, 10), e = _beSpent.get(i); return e && e.day === d ? e.cu : 0; }
+function _beCharge(i, cu) { const d = new Date().toISOString().slice(0, 10); _beSpent.set(i, { day: d, cu: _beSpentToday(i) + cu }); }
+function _beKey(cost = 0) {
     for (let i = 0; i < BIRDEYE_KEYS.length; i++) {
         const mort = _beDead.get(i) || 0;
-        if (Date.now() >= mort) return { key: BIRDEYE_KEYS[i], idx: i };
+        if (Date.now() >= mort && _beSpentToday(i) + cost <= BE_CU_DAY) return { key: BIRDEYE_KEYS[i], idx: i };
     }
-    return null;                     // toutes épuisées
+    return null;                     // toutes épuisées ou au plafond du jour
 }
 const _beEmpreinte = i => (BIRDEYE_KEYS[i] || '').slice(0, 6) + '…' + (BIRDEYE_KEYS[i] || '').slice(-4);
 function _beMarkDead(idx, why) {
@@ -956,8 +965,8 @@ function _beParse(d) {
         +(k.o ?? k.open), +(k.h ?? k.high), +(k.l ?? k.low), +(k.c ?? k.close), +(k.v ?? k.volume ?? 0),
     ]).filter(c => c[0] && isFinite(c[4])).sort((a, b) => a[0] - b[0]);
 }
-async function _beCall(path, mint, type, from, to) {
-    const k = _beKey();
+async function _beCall(path, mint, type, from, to, cost = 35) {
+    const k = _beKey(cost);
     if (!k) throw new Error('Birdeye: toutes les clés épuisées');
     // (2026-09-08) PARAMÈTRES OPTIONNELS EXPLICITES. Les 4 obligatoires (address, type, time_from,
     // time_to) étaient déjà envoyés — la requête du bot était donc valide. Mais Birdeye a migré sa doc
@@ -991,17 +1000,19 @@ async function _beCall(path, mint, type, from, to) {
         const msg = (e && e.response && e.response.data && e.response.data.message) || '';
         if (quotaKO(msg)) {
             _beMarkDead(k.idx, msg);
-            const suivant = _beKey();
+            const suivant = _beKey(cost);
             if (suivant && suivant.idx !== k.idx) {   // une autre clé est dispo → on réessaie TOUT DE SUITE
                 const r2 = await axios.get(`https://public-api.birdeye.so/${path}`, {
                     params: p, headers: { 'X-API-KEY': suivant.key, 'x-chain': 'solana' }, timeout: 12000,
                 });
+                _beCharge(suivant.idx, cost);
                 return _beParse(r2.data);
             }
         }
         throw e;
     }
     if (r.data && r.data.success === false && quotaKO(r.data.message)) _beMarkDead(k.idx, r.data.message);
+    else _beCharge(k.idx, cost);   // un 200 (même vide) est facturé
     return _beParse(r.data);
 }
 async function birdeyeOhlcv(mint, type, limit, intervalSec) {
@@ -1015,11 +1026,12 @@ async function birdeyeOhlcv(mint, type, limit, intervalSec) {
     // fait payer cher. Avoir mis la v3 en tête ce matin (37dd979) a brûlé les 30 000 CU d'un compte
     // NEUF en ~4 heures. On repasse donc la v1 en priorité — elle est marquée « deprecated » mais
     // reste servie, et son coût est prévisible. La v3 n'est qu'un repli si la v1 ne répond pas.
-    const ordre = _beVer === 'v3' ? ['defi/v3/ohlcv', 'defi/ohlcv'] : ['defi/ohlcv', 'defi/v3/ohlcv'];
+    // (05/10) v1 SEULEMENT : la v3 est facturée selon la profondeur (compte vidé en 4 h le 08/09).
+    const ordre = ['defi/ohlcv'];
     let derr = null;
     for (const p of ordre) {
         try {
-            const cs = await _beCall(p, mint, type, from, to);
+            const cs = await _beCall(p, mint, type, from, to, _beCost(limit));
             if (cs.length) {
                 const v = p.includes('v3') ? 'v3' : 'v1';
                 if (_beVer !== v) { _beVer = v; console.log(`  ✅ Birdeye répond sur ${p} (${cs.length} bougies) — endpoint retenu`); }
@@ -1050,7 +1062,7 @@ const PAPRIKA_KEY = (process.env.DEXPAPRIKA_API_KEY || '').trim();
 const PAPRIKA_MAX_H = parseInt(process.env.PAPRIKA_MAX_H || '120', 10);
 const _ppMeta = new Map();          // pool -> { inv, ts }
 let _ppHour = 0, _ppCount = 0, _ppOffUntil = 0, _ppLastTs = 0, _ppWarned = false;
-const candleSrcCount = { paprika: 0, birdeye: 0, gmgn: 0, gt: 0 }; let _candleSrcTs = Date.now();
+const candleSrcCount = { paprika: 0, birdeye: 0, gmgn: 0, gt: 0, gtHtf: 0 }; let _candleSrcTs = Date.now();
 function _ppBudgetOk() {
     const h = Math.floor(Date.now() / 3600e3);
     if (h !== _ppHour) { _ppHour = h; _ppCount = 0; }
@@ -1127,7 +1139,7 @@ async function prefetch15(mints) {
 // d'appels. Sans ça, le bot re-tape 13×/scan et ENTRETIENT le throttle (jamais de récup).
 async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, force = false) {
     if (Date.now() - _candleSrcTs >= 3600e3) {   // (04/10) compteur d'appels de bougies par source, 1 ligne/heure
-        console.log(`  📊 bougies/h : DexPaprika ${candleSrcCount.paprika} · Birdeye ${candleSrcCount.birdeye} · GMGN ${candleSrcCount.gmgn} · GeckoTerminal ${candleSrcCount.gt} (+ 1h/1d GT en direct)`);
+        console.log(`  📊 bougies/h : DexPaprika ${candleSrcCount.paprika} · Birdeye ${candleSrcCount.birdeye} · GMGN ${candleSrcCount.gmgn} · GeckoTerminal ${candleSrcCount.gt} · 1h/1d GeckoTerminal ${candleSrcCount.gtHtf} | crédits Birdeye aujourd'hui : ${BIRDEYE_KEYS.map((_, i) => `#${i + 1} ${_beSpentToday(i)}/${BE_CU_DAY}`).join(' · ')}`);
         for (const k in candleSrcCount) candleSrcCount[k] = 0; _candleSrcTs = Date.now();
     }
     const key = mint + gmgnRes;
@@ -1155,14 +1167,14 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
     const chersEnV3 = gmgnRes === '1h' || gmgnRes === '1d';
     if (chersEnV3) {
         try { cs = await gtOhlcv(mint, gmgnRes, limit); } catch (_) {}
-        if (cs.length >= 15) { candleCache.set(key, { cs, ts: Date.now() }); return cs; }
+        if (cs.length >= 15) { candleSrcCount.gtHtf++; candleCache.set(key, { cs, ts: Date.now() }); return cs; }
     }
     if (gmgnRes === '15m') {
         try { cs = await paprikaOhlcv(mint, gmgnRes, limit, intervalSec); } catch (_) { cs = []; }
         if (cs.length >= 15) { candleSrcCount.paprika++; candleCache.set(key, { cs, ts: Date.now() }); return cs; }
         cs = [];
     }
-    if (force || Date.now() >= birdeyeBackoffUntil) { // pas en backoff (ou FORCÉ : fetch HTF pattern, victime sinon du backoff partagé → faux pattern-KO)
+    if ((gmgnRes === '1h' || gmgnRes === '1d') && (force || Date.now() >= birdeyeBackoffUntil)) { // (05/10) Birdeye = secours 1H/1D seulement ; pas en backoff (ou FORCÉ : fetch HTF pattern, victime sinon du backoff partagé → faux pattern-KO)
         try {
             cs = await throttled(() => birdeyeOhlcv(mint, birdeyeType, limit, intervalSec));
             // (2026-09-08) UN 200 VIDE N'EST PAS UNE ERREUR — et c'est le pire cas. Crédits Birdeye à zéro

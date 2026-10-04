@@ -2431,3 +2431,10 @@ Au début de chaque scan, `prefetch15()` (sans await) télécharge chez DexPapri
 principale avance (GeckoTerminal 5m/1h/1d, lectures LP). Requête en vol partagée (`_pfInflight`) : la boucle l'attend au lieu de
 doubler l'appel. Appels DexPaprika sérialisés (≤ ~28/min). Mesure : ligne `⏲️ scan` (référence avant DexPaprika : 89 s médiane,
 28 téléchargements, 2,8 s chacun ; avec DexPaprika en série : 99 s sur 3 scans à cache froid).
+
+## 35. 05/10 — BIRDEYE = SECOURS 1H/1D SEULEMENT, PLAFOND JOURNALIER PAR CLÉ (GO user)
+- Plus de Birdeye pour 15m/5m (DexPaprika puis GeckoTerminal). Pour 1H/1D : GeckoTerminal d'abord, Birdeye seulement s'il échoue
+  (cas des faux pattern-KO TOAD/STONK en août).
+- `BIRDEYE_CU_DAY` (défaut 900) PAR CLÉ et par jour UTC ; coût compté par appel (12 ≤100 bougies, 25 ≤300, 35 au-delà ; un 200 vide
+  est facturé) ; une clé au plafond passe la main à la 2e. 2 clés = 1 800 CU/j ≈ 50 appels 1H/1D. v3 abandonnée (v1 seule).
+- Ligne `📊 bougies/h` : + compteur 1h/1d GeckoTerminal (`gtHtf`) et crédits Birdeye du jour par clé. Clés : reset 08/10 et 17/10.
