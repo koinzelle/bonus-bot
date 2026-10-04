@@ -2425,3 +2425,9 @@ conso DexPaprika (`📊 bougies/h`). État au 04/10 : sbAjoutBas 43 épisodes = 
 gagner ; sbChute aucun signal stable (seule la profondeur compte : −20 → 30 % coupées, −30 → 41 %, −40 → 63 %) ; sbRefusPlein
 refusés 68 %/32 % (pire que nos entrées 75/24) → le remplacement ne se justifie pas, mais l'occupant le plus vieux non armé a
 médiane −36 % LP et 87 h ; sbTrailSeul 29 % font +10 % avant −10 % après la sortie RSI2 → la sortie RSI2 a raison (71 %).
+
+## 34. 05/10 — DEXPAPRIKA ET GECKOTERMINAL EN PARALLÈLE (demande user)
+Au début de chaque scan, `prefetch15()` (sans await) télécharge chez DexPaprika les 15m des tokens dus pendant que la boucle
+principale avance (GeckoTerminal 5m/1h/1d, lectures LP). Requête en vol partagée (`_pfInflight`) : la boucle l'attend au lieu de
+doubler l'appel. Appels DexPaprika sérialisés (≤ ~28/min). Mesure : ligne `⏲️ scan` (référence avant DexPaprika : 89 s médiane,
+28 téléchargements, 2,8 s chacun ; avec DexPaprika en série : 99 s sur 3 scans à cache froid).

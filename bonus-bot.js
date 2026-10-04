@@ -1056,10 +1056,18 @@ function _ppBudgetOk() {
     if (h !== _ppHour) { _ppHour = h; _ppCount = 0; }
     return PAPRIKA_KEY && Date.now() >= _ppOffUntil && _ppCount < PAPRIKA_MAX_H;
 }
+let _ppChain = Promise.resolve();
 async function _ppGet(url, params) {
-    const wait = _ppLastTs + 2100 - Date.now();           // ≤ ~28/min, sous la limite de 30
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    _ppLastTs = Date.now(); _ppCount++;
+    // (05/10) file d'attente : le pré-chargement et la boucle peuvent appeler en même temps → on sérialise
+    // l'espacement pour rester ≤ ~28/min (limite 30), sinon 429 et DexPaprika coupé 60 s.
+    const slot = _ppChain.then(async () => {
+        const wait = _ppLastTs + 2100 - Date.now();
+        if (wait > 0) await new Promise(r => setTimeout(r, wait));
+        _ppLastTs = Date.now();
+    });
+    _ppChain = slot.catch(() => {});
+    await slot;
+    _ppCount++;
     return axios.get(url, { params, headers: { Authorization: PAPRIKA_KEY, Accept: 'application/json' }, timeout: 12000 });
 }
 async function paprikaOhlcv(mint, gmgnRes, limit, intervalSec) {
@@ -1090,6 +1098,31 @@ async function paprikaOhlcv(mint, gmgnRes, limit, intervalSec) {
         return [];
     }
 }
+// ── (2026-10-05, demande user) PRÉ-CHARGEMENT 15m DEXPAPRIKA EN PARALLÈLE DU SCAN ─────────────────
+// DexPaprika et GeckoTerminal sont deux serveurs avec chacun sa limite : les attendre l'un après l'autre
+// gaspille du temps. Au début de chaque scan, une boucle SANS await télécharge chez DexPaprika les bougies
+// 15m des tokens dus, pendant que la boucle principale avance (5m, 1h, 1d chez GeckoTerminal, lectures LP).
+// Quand la boucle principale arrive sur un token, son 15m est déjà en cache — ou en cours : elle attend
+// alors la requête en vol au lieu d'en lancer une 2e (`_pfInflight`). Une seule boucle à la fois.
+const _pfInflight = new Map();   // mint+'15m' -> Promise
+let _pfRunning = false;
+async function prefetch15(mints) {
+    if (_pfRunning || !PAPRIKA_KEY) return;
+    _pfRunning = true;
+    try {
+        for (const tok of mints) {
+            if (!_ppBudgetOk()) break;
+            const key = tok + '15m';
+            if (_pfInflight.has(key)) continue;
+            { const cc = candleCache.get(key); if (cc && Date.now() - cc.ts < 45e3) continue; }   // déjà servi par la boucle
+            const p = paprikaOhlcv(tok, '15m', 192, 900).then(cs => {
+                if (cs.length >= 15) { candleCache.set(key, { cs, ts: Date.now() }); candleSrcCount.paprika++; }
+            }).catch(() => {}).finally(() => _pfInflight.delete(key));
+            _pfInflight.set(key, p);
+            await p;
+        }
+    } finally { _pfRunning = false; }
+}
 // Birdeye 60s → l'IP Railway refroidit → Birdeye lève le throttle → 1er appel OK → le cache s'amorce → moins
 // d'appels. Sans ça, le bot re-tape 13×/scan et ENTRETIENT le throttle (jamais de récup).
 async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, force = false) {
@@ -1100,6 +1133,11 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
     const key = mint + gmgnRes;
     const c = candleCache.get(key);
     if (!force && c && Date.now() - c.ts < ttlMs) return c.cs; // cache : ÉVITE l'appel (force=on rejoue, pour le fetch HTF du pattern)
+    if (!force && _pfInflight.has(key)) {   // (05/10) pré-chargement DexPaprika en vol → on l'attend plutôt que de doubler l'appel
+        try { await _pfInflight.get(key); } catch (_) {}
+        const c2 = candleCache.get(key);
+        if (c2 && Date.now() - c2.ts < ttlMs) return c2.cs;
+    }
     let cs = [];
     // ── (2026-09-08, 17h) ROUTAGE PAR COÛT : 1H et 1D vont chez GeckoTerminal EN PREMIER ───────
     // Coût d'un appel v3 (formule Birdeye : base(résolution) × profondeur × ancienneté) :
@@ -1804,6 +1842,14 @@ async function scan() {
         // (27/09, GO user) les tokens JAMAIS évalués passent en tête : un token neuf attendait sa 1re analyse
         // 20 min en médiane (p90 80 min) derrière les mêmes tokens re-vérifiés en boucle.
         const rotated = [..._rot.filter(([t, w]) => !w.diag && !state.positions[t]), ..._rot.filter(([t, w]) => w.diag || state.positions[t])];
+        { // (05/10) 15m dus → DexPaprika en parallèle (pas d'await), même règle de fraîcheur que la boucle
+            const dus = rotated.filter(([t, w]) => {
+                if (!state.positions[t] && w.nextCheckAt && now < w.nextCheckAt) return false;
+                const ttl = w.nearEntry ? 45e3 : (w.dipProx != null && w.dipProx < 0.29 ? 600e3 : 300e3);
+                const cc = candleCache.get(t + '15m'); return !(cc && Date.now() - cc.ts < ttl);
+            }).map(([t]) => t);
+            prefetch15(dus).catch(() => {});
+        }
         _tWatch0 = Date.now();
         for (const [tok, w] of rotated) {
             const inPos = !!state.positions[tok];
