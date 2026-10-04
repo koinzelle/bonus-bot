@@ -157,6 +157,14 @@ const REOPEN_HAUT_MAX = parseInt(process.env.REOPEN_HAUT_MAX || '1', 10);       
 // même mouvement, et le token doit de toute façon re-remplir TOUT le cahier des charges.
 const REENTRY_COOLDOWN_MS = parseInt(process.env.REENTRY_COOLDOWN_MS || String(10 * 60 * 1000), 10);
 const MOU_LOCK_MS = parseInt(process.env.MOU_LOCK_H || "48", 10) * 3600 * 1000;
+// (2026-10-04, GO user) FILTRE « ATH USÉ » : pas d'entrée sur un token qui a cassé son ATH ≥ 8 fois et vaut 3-15 M$.
+// 966 vrais trades (25/08→02/10) : la zone fait −0,0084/trade contre +0,0027 ailleurs ; bloquer = +0,86 SOL
+// (116 trades, dont ~70 gagnants perdus) ; positif sur les 2 moitiés, 6/6 semaines, sans les 3 pires, p≈0,001 ;
+// zone repérée le 27/09 puis confirmée hors échantillon (4 des 9 coupes du 26/09 au 02/10). Réglable sans code.
+const ATH_USE_ON = process.env.ATH_USE !== 'off';
+const ATH_USE_BREAKS = parseInt(process.env.ATH_USE_BREAKS || '8', 10);
+const ATH_USE_MC_MIN = parseFloat(process.env.ATH_USE_MC_MIN || '3000000');
+const ATH_USE_MC_MAX = parseFloat(process.env.ATH_USE_MC_MAX || '15000000');
 const MOU_LOCK_MIN_POS = parseInt(process.env.MOU_LOCK_MIN_POS || '6', 10);   // (27/09) verrou mou actif seulement à partir de N positions réelles // (2026-09-14) verrou après une sortie MOLLE (RSI2 > 3 h à < 3 % de LP) — réglable sans redéploiement
 // ── VERROU ANTI-COIN-MOURANT — TTL DÉSACTIVÉ PAR DÉFAUT (2026-08-27) ────────────────────────────────
 // J'avais proposé un TTL 48h pour débloquer les cycleurs verrouillés à vie (CYBERLEEK et ses 65 creux
@@ -2291,6 +2299,22 @@ async function scan() {
                         }
                     }
                     });
+                    // (2026-10-04, GO user) OMBRE + ALERTE « position profonde qui rebondit ». Une position passée
+                    // sous −40 % n'a plus AUCUNE sortie avant 0 % (RSI2 plancher 0, trail +6 %) : un rebond la laisse
+                    // bloquée (OCTO, JEANPHIL 100 h). Rejeu sur vrais LP/RSI2 25/09→04/10 : sortir au 1er RSI2>90
+                    // ≈ +0,17 SOL de PnL + 0,17 de slot, mais 9 cas dont 3 contre → PAS automatique : alerte au user.
+                    ombre('sbRebondProfond', () => {
+                        if (!pos.live) return;
+                        pos._minLp = Math.min(pos._minLp ?? 0, realGain);
+                        if (realGain <= -0.40) pos._deep40 = true;
+                        if (pos._deep40 && rsi2 != null && rsi2 > 90 && realGain < 0
+                            && (pos._rbAlertLp == null || realGain > pos._rbAlertLp + 0.10)) {
+                            pos._rbAlertLp = realGain;
+                            recordShadow('sbRebondProfond', { symbol: pos.symbol, tok, lp: +(realGain * 100).toFixed(1),
+                                minLp: +(pos._minLp * 100).toFixed(1), rsi2: +rsi2.toFixed(0), ageH: +((Date.now() - pos.openedAt) / 3600000).toFixed(1) });
+                            tg(`🔔 ${pos.symbol} : position profonde (min ${(pos._minLp * 100).toFixed(0)} %) qui rebondit — RSI2 ${rsi2.toFixed(0)}, LP ${(realGain * 100).toFixed(1)} %. Aucune sortie auto avant 0 % : fermer à la main ?`);
+                        }
+                    });
                     if (rsi2 != null && rsi2 > 90 && (pos._awaitBounce || realGain > rsi2FloorFor(pos))) {
                         // (2026-08-24) RSI2 = PLANCHER quand pas armé (< +6% LP). Sort les positions molles DANS LE
                         // VERT avant qu'elles retombent. Le trail-only l'avait retiré → hold rouge sans issue (cc
@@ -2582,12 +2606,18 @@ async function scan() {
             else if (!atDip) block = `pas-au-creux(<${(dumpThr * 100).toFixed(0)}%${established ? '·établi' : ''})`;
             else if (!rsiLow) block = `pas-survendu(RSI>${RSI_ENTRY_MAX}=pompe)`;
             else if ((w.athBreaks || 0) >= 4 && curMc < 1_500_000) block = 'ATH-épuisé(4x·<1.5M)'; // cap ATH conditionnel MC (2026-08-17) : le 4e top qui rug = un PETIT coin (WOFL $92k → -35%). Un coin ≥1.5M qui multiplie les ATH TREND (LAYOOO $2.75M → +17.7%) → pas de cap. Validé sur la journée.
+            else if (ATH_USE_ON && (w.athBreaks || 0) >= ATH_USE_BREAKS && curMc >= ATH_USE_MC_MIN && curMc < ATH_USE_MC_MAX) block = `ATH-usé(${ATH_USE_BREAKS}x·${ATH_USE_MC_MIN / 1e6}-${ATH_USE_MC_MAX / 1e6}M)`;
             else if (!canReenter) block = 'coin-mourant';
             else if (!feesOk) block = `fees<${FEE_TVL_FLOOR}%(${feeTvl.toFixed(0)}%)`; // pool ne génère pas assez de fees → LP mort
             else if (explosif) block = `pump-explosif-x${maxPump15.toFixed(0)}`;
             else if (onCooldown) block = 'cooldown';
             else if (Object.keys(state.positions).length >= MAX_POSITIONS) block = 'max-pos';
             else block = 'ENTRÉE';
+            // (04/10) ombre du filtre ATH-usé : ce qu'on aurait pris (une ligne par token / 2 h) → vérifier qu'il tient
+            if (block && block.startsWith('ATH-usé') && (!w._athUseTs || now - w._athUseTs > 2 * 3600e3)) {
+                w._athUseTs = now;
+                ombre('sbAthUse', () => recordShadow('sbAthUse', { symbol: w.symbol, tok, price: curPrice, athBreaks: w.athBreaks || 0, mcK: Math.round(curMc / 1000) }));
+            }
             state.blockCount = state.blockCount || {};
             state.blockCount[block] = (state.blockCount[block] || 0) + 1;
             // ── (2026-09-21) OMBRES DU STAND-BY ──────────────────────────────────────────────────

@@ -2383,3 +2383,13 @@ issue, cas cc +1,2 % → −11,5 %) : l'ombre doit battre ce précédent, pas le
 
 ## 29. 01/10 — OMBRE `sbReentreeFlux` (n'agit pas)
 COLLECT : ré-entrée 2 h après sa coupe, juste après une vague de ~46 k$ de ventes en 30 min (dont 15,5 k$ d'un seul wallet), recoupée en 65 min (−0,167). Sur 108 entrées, une forte vente nette avant l'entrée est NORMALE et gagnante (≥0,1 % MC : 36/38 gagnantes) → pas de filtre général. Pour les seules ré-entrées dans les 48 h après une coupe, l'ombre enregistre au moment de la décision le flux d'ordres de la pool coupée (1 h et 30 min : ventes, vendeurs, USD, plus grosse vente) + ce qu'une règle « vente nette 1 h ≥ 1 % MC » aurait fait. Coupes mémorisées dans `state.cutInfo`. Lecture : `grep 'SHADOW sbReentreeFlux'`. Interdiction après 2 coupes et blocage : NON décidés (user).
+
+## 30. 04/10 — FILTRE D'ENTRÉE « ATH USÉ » (≥ 8 cassures d'ATH · MC 3-15 M$) + ALERTE « position profonde qui rebondit »
+- **Filtre (GO user, déployé)** : 966 vrais trades 25/08→02/10 — zone −0,0084/trade vs +0,0027 ailleurs ; bloquer ≈ +0,86 SOL
+  (116 trades), positif sur les 2 moitiés et 6/6 semaines, sans les 3 pires +0,35, p≈0,001 ; sélection sur la 1re moitié
+  (ATH≥8·3-10 M$ +0,40 → +0,42 sur la 2e) ; 3-15 M$ retenu par le user (+0,04 de plus, bloque PAID). Repéré le 27/09,
+  confirmé hors échantillon (4 des 9 coupes 26/09→02/10). Réglable : `ATH_USE=off`, `ATH_USE_BREAKS`, `ATH_USE_MC_MIN/MAX`.
+  Ombre `sbAthUse` = entrées bloquées (une ligne/token/2 h) → vérifier qu'il tient (~10 jours).
+- **Alerte Telegram + ombre `sbRebondProfond` (n'agit pas)** : position passée sous −40 % qui fait RSI2>90 en restant
+  négative → message au user (stop-loss humain), ré-alerte seulement si la LP gagne encore 10 pts. Rejeu vrais LP/RSI2
+  25/09→04/10 : sortir là ≈ +0,17 PnL + 0,17 slot, 9 cas dont 3 contre → pas automatisé.
