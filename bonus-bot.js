@@ -1242,12 +1242,20 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
 // TTL longs = moins d'appels : 15m→120s (support/exit) ; 1H→20min ; daily→60min (macro = lent).
 const candles5 = (mint, limit = 200) => candlesTF(mint, '5m', '5m', limit, 300, 120 * 1000);   // cache 60s→120s (charge Birdeye)
 const candles15 = (mint, limit = 192, ttl = 450 * 1000) => candlesTF(mint, '15m', '15m', limit, 900, ttl); // cache 300s (45s pour les tokens near-entry, cf w.nearEntry)
-// (05/10, demande user) caches HTF allongés : 1H 20 min → 2 h, daily 60 min → 6 h (réglables). Un pattern ou un ATH ne
+// (05/10, demande user) cache 1H allongé : 20 min → 2 h (réglable) ; daily : voir candlesDay (1 fois par clôture journalière). Un pattern ou un ATH ne
 // change pas en 20 min, et la fraîcheur est assurée par la fusion des bougies 15m (48 h, toujours fraîches) dans l'ATH.
 const HTF_1H_TTL_MS = parseInt(process.env.HTF_1H_TTL_MIN || '120', 10) * 60 * 1000;
-const HTF_1D_TTL_MS = parseInt(process.env.HTF_1D_TTL_MIN || '360', 10) * 60 * 1000;
 const candles1h = (mint, limit = 720, force = false) => candlesTF(mint, '1h', '1H', limit, 3600, HTF_1H_TTL_MS, force);
-const candlesDay = (mint, limit = 1000, force = false) => candlesTF(mint, '1d', '1D', limit, 86400, HTF_1D_TTL_MS, force);
+// (05/10, idée user) DAILY : on ne retélécharge QUE quand une nouvelle bougie journalière a clôturé (minuit UTC + 5 min de
+// marge pour que la source la finalise) → 1 appel par token et par jour au lieu de 4-24. Le cache est « frais » tant qu'il a
+// été rempli après la dernière clôture : ttl = temps écoulé depuis cette clôture. Un token neuf est téléchargé à sa 1re analyse.
+// La bougie du jour en cours n'est pas suivie, mais l'ATH récent est couvert par la fusion des bougies 15m.
+function _ttlDepuisClotureJour() {
+    const marge = 5 * 60 * 1000, jour = 86400e3;
+    const derniere = Math.floor((Date.now() - marge) / jour) * jour + marge;
+    return Math.max(Date.now() - derniere, 1);
+}
+const candlesDay = (mint, limit = 1000, force = false) => candlesTF(mint, '1d', '1D', limit, 86400, _ttlDepuisClotureJour(), force);
 
 // chop-rate (2026-08-03) : sur les bougies récentes, quelle fraction des dumps REBONDIT (+8% avant -30%)
 // vs continue à mourir (-30% = hors range). Chopper (NEEGY ~88%) → on cycle ; dumper (breadcat bas) → on

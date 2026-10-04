@@ -2440,6 +2440,7 @@ doubler l'appel. Appels DexPaprika sérialisés (≤ ~28/min). Mesure : ligne `�
 - Ligne `📊 bougies/h` : + compteur 1h/1d GeckoTerminal (`gtHtf`) et crédits Birdeye du jour par clé. Clés : reset 08/10 et 17/10.
 
 ## 36. 05/10 — CACHES 1H ET DAILY ALLONGÉS (demande user)
-1H : 20 min → **2 h** (`HTF_1H_TTL_MIN`, défaut 120) ; daily : 60 min → **6 h** (`HTF_1D_TTL_MIN`, défaut 360). Pour ne jamais rater un ATH
+1H : 20 min → **2 h** (`HTF_1H_TTL_MIN`, défaut 120) ; daily : 60 min → **1 fois par clôture journalière** (minuit UTC + 5 min ; idée user,
+remplace le cache 6 h du même jour). Un token neuf est téléchargé à sa 1re analyse ; le cache est en mémoire (redémarrage = re-téléchargement). Pour ne jamais rater un ATH
 récent, l'ATH fusionne désormais les plus hauts des bougies 15m (48 h, fraîches) avec la série 1H/daily ; le pattern reste calculé sur
 la série HTF seule (et il est mémorisé 14 j une fois validé). Effet attendu : ~6× moins d'appels 1H/daily → scan plus court.
