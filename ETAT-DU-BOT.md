@@ -2403,3 +2403,14 @@ COLLECT : ré-entrée 2 h après sa coupe, juste après une vague de ~46 k$ de v
   bs125 (−39/+64 %) +0,0222 (20) · bs200 (−55/+121 %) +0,0081 (36). Mesure = avant/après sur les bs100, au wallet.
 - Coût attendu : liquidité par bin −33 % → moins de fees tant que le prix reste près de l'entrée ; plus de pools refusées
   (bin arrays manquants, jamais payés). Revert : `WIDE_BINS_100=81` sur Railway.
+
+## 32. 04/10 — BOUGIES 15m CHEZ DEXPAPRIKA (clé gratuite) + compteur d'appels par source
+- **Pourquoi** : Birdeye gratuit = 30 000 CU/mois et `/defi/ohlcv` coûte désormais 25 CU pour 192-200 bougies (doc :
+  12 ≤100, 25 ≤300, 35 au-delà). Logs : depuis le 08/09 une seule fenêtre où une clé a marché — clé #1 le 25/09
+  09:27 → 10:42, vidée en 75 min. Reset = « Due Date » du tableau de bord (08/10 et 17/10).
+- **DexPaprika** (`DEXPAPRIKA_API_KEY`, header `Authorization`) : 1 requête = 1 crédit, 100 000 / 30 j glissants, 30/min,
+  intervalles ≥10m (15m oui, 5m NON), 7 j d'historique. Endpoint PAR POOL (token agrégé = payant) → même pool que
+  GeckoTerminal ; `inversed=true` si le mint n'est pas token0 (méta lue 1×/24 h). Priorité 15m : DexPaprika → Birdeye →
+  GMGN → GeckoTerminal. Budget `PAPRIKA_MAX_H` (défaut 120/h ≈ 2 900/j), espacement 2,1 s ; 402 → coupé 6 h, 429 → 60 s,
+  401/403 → 1 h. 5m, 1h et 1d inchangés (GT/Birdeye). Écart mesuré vs GT sur la même bougie ≈ 3 %.
+- **Compteur** : ligne `📊 bougies/h` (une par heure) → mesurer la vraie consommation et ajuster le budget.

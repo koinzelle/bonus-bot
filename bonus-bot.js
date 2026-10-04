@@ -1037,9 +1037,64 @@ async function birdeyeOhlcv(mint, type, limit, intervalSec) {
 const candleCache = new Map(); // (mint+res) -> { cs, ts }
 let _gapWarnTs = 0;
 let birdeyeBackoffUntil = 0, birdeye429Warned = false, birdeyeFails = 0, birdeyeEmpty = 0, gtFallbackWarned = false; // BACKOFF (outage 10/08) : sur 429/échecs, on ARRÊTE de taper
+// ── (2026-10-04) DEXPAPRIKA : SOURCE DES BOUGIES 15m (clé gratuite) ──────────────────────────────
+// Birdeye gratuit est devenu inutilisable : `/defi/ohlcv` coûte désormais 25 CU pour 192-200 bougies,
+// une clé réinitialisée a été vidée en 75 min le 25/09. DexPaprika (clé gratuite) : 1 requête = 1 crédit
+// quel que soit le nombre de bougies, 100 000 crédits sur 30 jours GLISSANTS, 30 req/min, intervalles
+// ≥ 10m (donc 15m OK, PAS 5m), 7 jours d'historique. Endpoint PAR POOL seulement (le token agrégé est
+// payant) → on prend la même pool que GeckoTerminal (la plus liquide). Prix en USD, base = token0 :
+// si notre mint est token1 on demande `inversed=true` (méta de pool lue une fois, 1 crédit, cache 24 h).
+// Budget : PAPRIKA_MAX_H appels/heure (défaut 120 ≈ 2 900/jour < 3 333) ; au-delà, chaîne habituelle
+// Birdeye → GMGN → GeckoTerminal. 402 (crédits épuisés) → coupé 6 h ; 429 → pause 60 s.
+const PAPRIKA_KEY = (process.env.DEXPAPRIKA_API_KEY || '').trim();
+const PAPRIKA_MAX_H = parseInt(process.env.PAPRIKA_MAX_H || '120', 10);
+const _ppMeta = new Map();          // pool -> { inv, ts }
+let _ppHour = 0, _ppCount = 0, _ppOffUntil = 0, _ppLastTs = 0, _ppWarned = false;
+const candleSrcCount = { paprika: 0, birdeye: 0, gmgn: 0, gt: 0 }; let _candleSrcTs = Date.now();
+function _ppBudgetOk() {
+    const h = Math.floor(Date.now() / 3600e3);
+    if (h !== _ppHour) { _ppHour = h; _ppCount = 0; }
+    return PAPRIKA_KEY && Date.now() >= _ppOffUntil && _ppCount < PAPRIKA_MAX_H;
+}
+async function _ppGet(url, params) {
+    const wait = _ppLastTs + 2100 - Date.now();           // ≤ ~28/min, sous la limite de 30
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    _ppLastTs = Date.now(); _ppCount++;
+    return axios.get(url, { params, headers: { Authorization: PAPRIKA_KEY, Accept: 'application/json' }, timeout: 12000 });
+}
+async function paprikaOhlcv(mint, gmgnRes, limit, intervalSec) {
+    if (gmgnRes !== '15m' || !_ppBudgetOk()) return [];
+    const pool = await gtPoolFor(mint); if (!pool) return [];
+    try {
+        let m = _ppMeta.get(pool);
+        if (!m || Date.now() - m.ts > 24 * 3600e3) {
+            const r = await _ppGet(`https://api.dexpaprika.com/networks/solana/pools/${pool}`);
+            const t0 = r.data?.tokens?.[0]?.id;
+            m = { inv: !!t0 && t0 !== mint, ts: Date.now() }; _ppMeta.set(pool, m);
+            if (!_ppBudgetOk()) return [];
+        }
+        const start = Math.floor(Date.now() / 1000) - limit * intervalSec;
+        const r = await _ppGet(`https://api.dexpaprika.com/networks/solana/pools/${pool}/ohlcv`,
+            { start, interval: gmgnRes, limit: Math.min(limit, 1000), ...(m.inv ? { inversed: true } : {}) });
+        const L = Array.isArray(r.data) ? r.data : [];
+        if (!_ppWarned && L.length) { _ppWarned = true; console.log(`  🌶️ DexPaprika répond (${L.length} bougies 15m${m.inv ? ', inversé' : ''}) — source 15m prioritaire, budget ${PAPRIKA_MAX_H}/h`); }
+        return L.map(k => [Math.floor(Date.parse(k.time_open) / 1000), +k.open, +k.high, +k.low, +k.close, +(k.volume || 0)])
+            .filter(c => c[0] && isFinite(c[4]) && c[4] > 0).sort((a, b) => a[0] - b[0]);
+    } catch (e) {
+        const st = e && e.response && e.response.status;
+        if (st === 402) { _ppOffUntil = Date.now() + 6 * 3600e3; console.log('  🌶️ DexPaprika : crédits épuisés (402) — coupé 6 h, repli Birdeye/GeckoTerminal'); }
+        else if (st === 429) _ppOffUntil = Date.now() + 60e3;
+        else if (st === 401 || st === 403) { _ppOffUntil = Date.now() + 3600e3; console.log(`  🌶️ DexPaprika refuse (${st}) : ${String(e.response?.data?.message || '').slice(0, 120)} — coupé 1 h`); }
+        return [];
+    }
+}
 // Birdeye 60s → l'IP Railway refroidit → Birdeye lève le throttle → 1er appel OK → le cache s'amorce → moins
 // d'appels. Sans ça, le bot re-tape 13×/scan et ENTRETIENT le throttle (jamais de récup).
 async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, force = false) {
+    if (Date.now() - _candleSrcTs >= 3600e3) {   // (04/10) compteur d'appels de bougies par source, 1 ligne/heure
+        console.log(`  📊 bougies/h : DexPaprika ${candleSrcCount.paprika} · Birdeye ${candleSrcCount.birdeye} · GMGN ${candleSrcCount.gmgn} · GeckoTerminal ${candleSrcCount.gt} (+ 1h/1d GT en direct)`);
+        for (const k in candleSrcCount) candleSrcCount[k] = 0; _candleSrcTs = Date.now();
+    }
     const key = mint + gmgnRes;
     const c = candleCache.get(key);
     if (!force && c && Date.now() - c.ts < ttlMs) return c.cs; // cache : ÉVITE l'appel (force=on rejoue, pour le fetch HTF du pattern)
@@ -1061,6 +1116,11 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
     if (chersEnV3) {
         try { cs = await gtOhlcv(mint, gmgnRes, limit); } catch (_) {}
         if (cs.length >= 15) { candleCache.set(key, { cs, ts: Date.now() }); return cs; }
+    }
+    if (gmgnRes === '15m') {
+        try { cs = await paprikaOhlcv(mint, gmgnRes, limit, intervalSec); } catch (_) { cs = []; }
+        if (cs.length >= 15) { candleSrcCount.paprika++; candleCache.set(key, { cs, ts: Date.now() }); return cs; }
+        cs = [];
     }
     if (force || Date.now() >= birdeyeBackoffUntil) { // pas en backoff (ou FORCÉ : fetch HTF pattern, victime sinon du backoff partagé → faux pattern-KO)
         try {
@@ -1084,7 +1144,7 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
                     console.log('🚨 BIRDEYE RÉPOND VIDE (HTTP 200, 0 bougie) 10 fois d\'affilée — crédits épuisés ou plan expiré ? Vérifier le tableau de bord Birdeye.');
                     tg('🚨 Birdeye renvoie des réponses VIDES (200 sans données) — crédits probablement épuisés. Le bot ne peut plus évaluer d\'entrée.');
                 }
-            } else { birdeyeEmpty = 0; }
+            } else { birdeyeEmpty = 0; candleSrcCount.birdeye++; }
             birdeye429Warned = false; birdeyeFails = 0;
         }
         catch (e) {
@@ -1097,13 +1157,13 @@ async function candlesTF(mint, gmgnRes, birdeyeType, limit, intervalSec, ttlMs, 
         }
     }
     if (cs.length < 15) { // Birdeye vide/rate-limité → fallback GMGN (épargné au max)
-        try { const g = await throttled(() => gmgnKline(mint, gmgnRes, limit, intervalSec)); if (g.length > cs.length) cs = g; } catch (_) {}
+        try { const g = await throttled(() => gmgnKline(mint, gmgnRes, limit, intervalSec)); if (g.length > cs.length) { cs = g; candleSrcCount.gmgn++; } } catch (_) {}
     }
     if (cs.length < 15) { // 2e repli : GeckoTerminal, sans clé (filet anti-panne du 08/09)
         try {
             const gt = await gtOhlcv(mint, gmgnRes, limit);
             if (gt.length > cs.length) {
-                cs = gt;
+                cs = gt; candleSrcCount.gt++;
                 if (!gtFallbackWarned) { gtFallbackWarned = true; console.log('  🦎 Repli GeckoTerminal actif — Birdeye et GMGN sans données (lent : 7s entre appels)'); }
             }
         } catch (_) {}
