@@ -3735,6 +3735,48 @@ console.log(`${live.enabled ? '🟢 Bonus Stage LIVE démarré — ordres RÉELS
 tg(`🚀 Bot démarré (${live.enabled ? 'LIVE' : 'paper'}). Entrée : chop-cycle au creux + RSI2<50 ; sortie : trail 1% au-dessus de +6% LP, RSI2>90 en dessous, CUT hors-range ${(RANGE_DOWN * 100).toFixed(0)}% ; max ${MAX_LIVE_POSITIONS} positions réelles.`);
 // scan() enveloppé : un rejet dans un tick est loggé, jamais propagé en unhandledRejection.
 const safeScan = () => scan().catch(e => console.log('⚠️ scan tick (survécu):', String(e?.stack || e?.message || e).slice(0, 200)));
+// ── (2026-10-05, demande user) OMBRE « BOUGIES MAISON DEXSCREENER » ─────────────────────────────────
+// ds-candles.js construit des bougies 5m/15m à partir des prix DexScreener lus toutes les 15 s (2 appels
+// pour tout le watch, gratuit). Rien ne les utilise : une fois par heure on les compare aux bougies 15m
+// officielles du cache (DexPaprika/GeckoTerminal), créneau par créneau, sur les bougies clôturées des deux
+// côtés. On mesure l'écart de prix (clôture, haut, bas) et surtout l'effet sur la décision : RSI2 recalculé
+// en remplaçant les dernières clôtures officielles par les nôtres, et accord sur « RSI2 < 50 ».
+// Critère de bascule (à juger avec le user) : écart médian de clôture < 1 % et accord RSI2<50 ≥ 95 %.
+const dsc = require('./ds-candles');
+const _dsSuivis = () => [...new Set([...Object.keys(state.watch || {}), ...Object.keys(state.positions || {})])];
+dsc.demarrer(_dsSuivis, 15000);
+function comparerBougiesDs() {
+    try {
+        const ec = { close: [], high: [], low: [] }, rsiEc = [];
+        let accord = 0, total = 0, tokens = 0;
+        for (const mint of _dsSuivis()) {
+            const ds = dsc.bougiesCloturees(mint, '15m'), ref = candleCache.get(mint + '15m');
+            if (ds.length < 3 || !ref || !ref.cs || !ref.cs.length) continue;
+            const refClos = ref.cs.filter(c => c[0] + 900 <= ref.ts / 1000);   // clôturées AU MOMENT du téléchargement
+            const R = new Map(refClos.map(c => [c[0], c]));
+            const paires = ds.filter(c => R.has(c[0])).map(c => [c, R.get(c[0])]);
+            if (paires.length < 2) continue;
+            tokens++;
+            for (const [d, r] of paires) {
+                if (r[4] > 0) ec.close.push(Math.abs(d[4] / r[4] - 1));
+                if (r[2] > 0) ec.high.push(Math.abs(d[2] / r[2] - 1));
+                if (r[3] > 0) ec.low.push(Math.abs(d[3] / r[3] - 1));
+            }
+            const tFin = paires[paires.length - 1][0][0], dsMap = new Map(paires.map(([d]) => [d[0], d[4]]));
+            const base = refClos.filter(c => c[0] <= tFin);
+            if (base.length >= 10) {
+                const a = calculateRSI(base.map(c => c[4]), 2), b = calculateRSI(base.map(c => dsMap.has(c[0]) ? dsMap.get(c[0]) : c[4]), 2);
+                if (a != null && b != null) { rsiEc.push(Math.abs(a - b)); total++; if ((a < 50) === (b < 50)) accord++; }
+            }
+        }
+        const q = (a, f) => { if (!a.length) return '-'; const x = [...a].sort((u, v) => u - v); return x[Math.min(x.length - 1, Math.floor(x.length * f))]; };
+        const pc = (a, f) => { const v = q(a, f); return v === '-' ? '-' : (v * 100).toFixed(2) + '%'; };
+        const st = dsc.stats, h = (Date.now() - st.depuis) / 3600e3;
+        console.log(`  🧪 [OMBRE bougies DexScreener] ${tokens} tokens, ${ec.close.length} bougies 15m comparées | écart clôture méd ${pc(ec.close, .5)} (q90 ${pc(ec.close, .9)}) · haut ${pc(ec.high, .5)} · bas ${pc(ec.low, .5)} | RSI2 écart méd ${q(rsiEc, .5) === '-' ? '-' : q(rsiEc, .5).toFixed(1)} pt · accord RSI2<50 ${total ? Math.round(100 * accord / total) + '%' : '-'} (${total}) | ${(st.appels / h).toFixed(0)} appels/h, ${st.echecs} échecs`);
+    } catch (e) { console.log(`  ⚠️ OMBRE bougies DexScreener a levé : ${e && e.message}`); }
+}
+setInterval(comparerBougiesDs, 3600e3);
+setTimeout(comparerBougiesDs, 50 * 60e3);   // 1re mesure ~50 min après le démarrage (assez de créneaux clôturés)
 setInterval(safeScan, SCAN_INTERVAL_MS);
 safeScan();
 

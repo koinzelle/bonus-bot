@@ -2444,3 +2444,11 @@ doubler l'appel. Appels DexPaprika sérialisés (≤ ~28/min). Mesure : ligne `�
 remplace le cache 6 h du même jour). Un token neuf est téléchargé à sa 1re analyse ; le cache est en mémoire (redémarrage = re-téléchargement). Pour ne jamais rater un ATH
 récent, l'ATH fusionne désormais les plus hauts des bougies 15m (48 h, fraîches) avec la série 1H/daily ; le pattern reste calculé sur
 la série HTF seule (et il est mémorisé 14 j une fois validé). Effet attendu : ~6× moins d'appels 1H/daily → scan plus court.
+
+## 37. 05/10 — OMBRE « BOUGIES MAISON DEXSCREENER » (demande user, n'agit pas)
+`ds-candles.js` : prix DexScreener (`tokens/v1`, 30 tokens/appel, gratuit) lus toutes les 15 s pour tout le watch + positions
+(~8 appels/min) → bougies 5m/15m construites en mémoire. Rien ne les utilise. Une fois par heure, ligne
+`🧪 [OMBRE bougies DexScreener]` : écart de clôture/haut/bas vs bougies 15m officielles (mêmes créneaux, clôturés des deux côtés),
+écart de RSI2 et accord sur « RSI2 < 50 ». Critère proposé pour basculer (décision user) : écart médian de clôture < 1 % et accord
+RSI2<50 ≥ 95 %. Basculer voudrait dire : historique téléchargé une fois à l'ajout (GeckoTerminal), puis direct DexScreener.
+Limites : mèches < 15 s invisibles ; la fréquence de mise à jour du prix DexScreener reste à vérifier ; bougies perdues au redémarrage.
