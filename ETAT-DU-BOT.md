@@ -2525,3 +2525,12 @@ hors mise − 0,07 ; valeurs d'origine gardées (`pnlSolLiveBrut`, `lpPctBrut`, 
   −30 % : coupes +0,42 mais gagnantes −0,64 (14 sorties dans le rouge) → −0,22 SOL ; −40 % : +0,30 / −0,39 → −0,09 ; −50 % : −0,04.
   Avec 81-121 bins, une position sous −40 % revient souvent en vert (7 gagnantes pour 8 coupées). → NE PAS automatiser ;
   garder la coupe −55 % + les alertes (rebond profond, position morte) avec décision humaine.
+
+## 43. 06/10 — SEUIL DE COUPE : −55 % CONFIRMÉ (TRANCHÉ)
+Rejeu de 1 103 positions (10/08 → 04/10) depuis l'entrée avec les fourchettes ACTUELLES (bs100 → 121 bins), bougies 1h,
+simulateur calé, + loyer de place 0,0009 SOL/h (prudent : ~0,0017/h réel depuis le 27/09). Net vs −55 % : −60 % −1,50 ·
+−65 % −1,61 · −70 % −2,51 · −75 % −3,21 SOL. Les rebonds sauvés (+0,44 à +1,04 brut) ne paient pas les 40 h moyennes de place
+bloquée par les positions qui stagnent hors fourchette sans frais entre −55 % et le nouveau seuil. Seule la dernière semaine
+(27/09 → 04/10) est légèrement positive (−65 % +0,27 · −70 % +0,08) : cas favorable, pas une règle. Variante « coupe −70 % +
+sortie RSI hors fourchette si LP ≤ −40 % » : +0,28 sur 9 jours dont +0,23 pour le seul swordcat → non retenue.
+→ Garder −55 % + alertes (rebond profond, position morte). Ne rouvrir qu'avec beaucoup de cas à 121 bins.
