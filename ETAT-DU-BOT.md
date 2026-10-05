@@ -2501,3 +2501,11 @@ Source : 52 captures (`~/ep`), dont son règlement « The edge is the exit » (I
   le meilleur reste ≥ 20 % plus bas (+0,0095). Vs la sortie précédente : au-dessus +0,0038 · ±5 % +0,0045 · 5-20 % dessous +0,0059 ·
   ≥ 20 % dessous +0,0069. Exiger un rachat ≥ 5 % sous la sortie supprimerait 465 trades à +1,94 SOL → NON. Sur les 9 coupes-ré-entrées
   depuis le 26/09 : 2 rachetées plus haut (COLLECT +27 %, SPLICE +36 %), 4 au même prix, 3 plus bas.
+
+## 41. 05/10 — VALEUR D'OUVERTURE IMPLAUSIBLE : relecture + correction du trade Cadence
+Cadence (05/10 13:47) : valeur d'ouverture lue entre les deux transactions de dépôt d'une position étendue → 0,1448 SOL pour
+0,28 déposés → LP affichée +93 % dès la 1re minute, trail armé à tort, sortie notée « TRAIL +112 % / +0,1622 SOL » pour un vrai
+≈ +9 % (≈ +0,026). Seul cas sur 187 ouvertures mesurées depuis le 27/09. **Correctif** (`openBidAsk`) : relecture jusqu'à 7 fois
+tant que la valeur n'est pas à ±20 % de la mise ; sinon base laissée vide → auto-réparation à la 1re lecture du lot.
+**Correction au démarrage** des trades ≤ 140 bins avec dépôt hors mise > 0,15 SOL (normal 0,05 · q90 0,075) : base = valeur lue +
+hors mise − 0,07 ; valeurs d'origine gardées (`pnlSolLiveBrut`, `lpPctBrut`, `openValueSolBrut`, `correctionOuverture`).

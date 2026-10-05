@@ -507,6 +507,20 @@ const POSITION_SIZE_SOL = 1.0;    // taille papier (pour les stats en SOL)
 
 let state = { positions: {}, trades: [], watch: {} };
 try { if (fs.existsSync(STATE_FILE)) state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (_) {}
+// (2026-10-05) CORRECTION DES OUVERTURES SOUS-ÉVALUÉES (cas Cadence 05/10 : valeur lue entre deux dépôts). Repérage :
+// position ≤ 140 bins dont le « dépôt hors mise » dépasse 0,15 SOL (normal : 0,05 de médiane, 0,075 au q90 ; les 0,17 des
+// positions à 290 bins sont de la vraie caution). Base corrigée = valeur lue + dépôt hors mise − 0,07 (caution + gas d'une
+// position ≤ 140 bins). Valeurs d'origine gardées (pnlSolLiveBrut, lpPctBrut, openValueSolBrut) ; une seule fois par trade.
+try {
+    for (const t of (state.trades || [])) {
+        if (t.correctionOuverture || t.depotHorsMise == null || t.openValueSol == null || t.pnlSolLive == null) continue;
+        if (!(t.nBins && t.nBins <= 140 && t.depotHorsMise > 0.15)) continue;
+        const base = t.openValueSol + t.depotHorsMise - 0.07, fin = t.pnlSolLive + t.openValueSol;
+        Object.assign(t, { pnlSolLiveBrut: t.pnlSolLive, lpPctBrut: t.lpPct ?? null, openValueSolBrut: t.openValueSol, correctionOuverture: true,
+            openValueSol: +base.toFixed(4), pnlSolLive: +(fin - base).toFixed(4), lpPct: +((fin / base - 1) * 100).toFixed(2) });
+        console.log(`🩹 ${t.symbol}: ouverture sous-évaluée corrigée — ${t.pnlSolLiveBrut} → ${t.pnlSolLive} SOL (LP ${t.lpPctBrut} → ${t.lpPct} %)`);
+    }
+} catch (e) { console.log('correction ouvertures :', e.message); }
 // (2026-09-27) VERROUS RECONSTRUITS depuis l'historique : toute sortie MOLLE (RSI2 hors REBOND, > 3 h,
 // < 3 % de LP) des 48 dernières heures re-verrouille son mint jusqu'à son terme. Rattrape les verrous
 // effacés par la purge de la watch avant le correctif (PAID 27/09 06:16) et ceux posés avant lui.

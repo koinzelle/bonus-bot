@@ -731,9 +731,23 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
     let openValueSol = null;
     // Poll de propagation : la position vient d'être créée, le RPC ne l'indexe pas toujours
     // instantanément (getPositionsByUserAndLbPair renvoie vide) → on réessaie avant d'abandonner.
-    for (let attempt = 0; attempt < 4 && openValueSol == null; attempt++) {
+    // (2026-10-05) VALEUR D'OUVERTURE PLAUSIBLE OU RIEN. Cadence 05/10 13:47 : les deux transactions de dépôt d'une position
+    // étendue étaient confirmées, mais la lecture a vu l'état d'AVANT la seconde → 0,1448 SOL lus pour 0,28 déposés. La LP
+    // est calculée par rapport à cette valeur : +93 % affichés dès la 1re minute, trail armé à tort, sortie notée +112 %
+    // (+0,162 SOL) pour un vrai ≈ +9 %. On relit tant que la valeur n'est pas à ±20 % de la mise ; sinon on laisse null et
+    // l'auto-réparation du scan la reprend sur la 1re lecture du lot (base PnL restaurée), position non évaluée d'ici là.
+    for (let attempt = 0; attempt < 7; attempt++) {
         if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
-        try { openValueSol = await positionValueSol(posRef, dlmmPool); } catch (_) {}
+        let v = null;
+        try { v = await positionValueSol(posRef, dlmmPool); } catch (_) {}
+        if (v == null) continue;
+        openValueSol = v;
+        if (v >= 0.8 * amountSol && v <= 1.2 * amountSol) break;
+        console.log(`  ⏳ valeur d'ouverture lue ${v.toFixed(4)} SOL pour une mise de ${amountSol.toFixed(4)} — implausible, relecture (${attempt + 1}/7)`);
+    }
+    if (openValueSol != null && (openValueSol < 0.8 * amountSol || openValueSol > 1.2 * amountSol)) {
+        console.log(`  ⚠️ valeur d'ouverture toujours implausible (${openValueSol.toFixed(4)} pour ${amountSol.toFixed(4)}) → base laissée vide, reprise à la 1re lecture du lot`);
+        openValueSol = null;
     }
     console.log(`  💰 Déposé: ${depositedSol.toFixed(4)} SOL (rent+gas inclus) | valeur LP: ${openValueSol != null ? openValueSol.toFixed(4) : '?'} SOL | bins [${minBinId}→${maxBinId}] (${nBins} bins, bs${binStep}${wide ? ', LARGE' : ''})`);
     let baseFeePct = null;   // (05/10) frais de base de la pool, et groupe de l'A/B frais s'il y en a eu un
