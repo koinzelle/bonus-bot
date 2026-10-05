@@ -3258,6 +3258,30 @@ function recordLv(pos, rg, bin, raw) {
         if (ref && now - ref.t >= 15 * 60 * 1000) {
             pos._feeVel1h = (raw.fees - ref.f) / ((now - ref.t) / 3600000);
         }
+        // ── (2026-10-05, GO user) ALERTE + OMBRE « POSITION MORTE » — ne ferme rien ───────────────────────
+        // Sous −20 % de LP et AUCUN frais gagné depuis 12 h, puis 24 h (cas PAID, COLLECT, JEANPHIL, RAWR). Mesuré le
+        // 05/10 sur 445 positions (vraie LP, vrais frais, 17/09→05/10) : 24 h sans frais → 4 sur 4 finies coupées ;
+        // 12 h → 10 cas, 5 coupées, 3 revenues en vert. Une alerte Telegram par palier (le user décide) + l'ombre
+        // `sbPositionMorte` et les champs `mort12` / `mort24` du trade, pour juger plus tard une sortie automatique.
+        if (pos.live && rg != null && rg <= -0.20 && pos._feeHist.length >= 3) {
+            for (const H of [12, 24]) {
+                const k = '_mort' + H;
+                if (pos[k]) continue;
+                const anciens = pos._feeHist.filter(q => now - q.t >= H * 3600e3);
+                const base = anciens[anciens.length - 1];
+                if (!base) continue;                                    // historique trop court (position plus jeune que H)
+                const gagne = raw.fees - base.f;
+                if (gagne > 0.0003) continue;                          // elle gagne encore (> 0,3 mSOL sur la période)
+                pos[k] = now;
+                const ageH = +((now - (typeof pos.openedAt === 'string' ? Date.parse(pos.openedAt) : pos.openedAt)) / 3600e3).toFixed(1);
+                ombre('sbPositionMorte', () => recordShadow('sbPositionMorte', { symbol: pos.symbol, tok: pos.live.tokenMint || null, palierH: H,
+                    lp: +(rg * 100).toFixed(1), fraisGagnesSol: +gagne.toFixed(5), fraisTotalSol: +raw.fees.toFixed(5), ageH }));
+                tg(`💀 ${pos.symbol} : position morte — aucun frais depuis ${H} h, LP ${(rg * 100).toFixed(1)} %. ` +
+                    (H === 24 ? 'Historique : 24 h sans frais sous −20 % → 4 cas sur 4 finis coupés.' : 'Historique : 12 h sans frais sous −20 % → 5 cas sur 10 coupés, 3 revenus en vert.') +
+                    ' Le bot ne ferme pas : fermer à la main ?');
+                console.log(`  💀 ${pos.symbol}: position morte (${H} h sans frais, LP ${(rg * 100).toFixed(1)} %) → alerte Telegram`);
+            }
+        }
     }
     // ── (2026-09-08) TEMPS PASSÉ HORS RANGE PAR LE BAS ──────────────────────────────────────────
     // Mesuré le 08/09 sur 192 trades : une position sortie par le bas rend **-0,00898 SOL/trade**
@@ -3464,6 +3488,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         reopenTest: pos._reopenTest || null,
         nBins: (pos.live && pos.live.nBins) || null, binStep: (pos.live && pos.live.binStep) || null, wide: pos.live ? !!pos.live.wide : null,
         baseFeePct: (pos.live && pos.live.baseFeePct) ?? null, poolAB: (pos.live && pos.live.poolAB) || null,   // (05/10) A/B frais de base
+        mort12: !!pos._mort12, mort24: !!pos._mort24,   // (05/10) alerte/ombre position morte
         fuiteMin: pos._flMin != null ? +pos._flMin.toFixed(3) : null, fuiteMainMin: pos._flMainMin != null ? +pos._flMainMin.toFixed(3) : null,   // (05/10) ombre sbFuiteLP
         fuiteUsdMin: pos._flUsdMin != null ? +pos._flUsdMin.toFixed(3) : null, fuiteLp80: pos._fl80 ?? null, fuiteLp60: pos._fl60 ?? null,
         poolFeeRef: (pos.live && pos.live.poolFeeRef) ?? null, poolFeeAlt: (pos.live && pos.live.poolFeeAlt) ?? null,   // (27/09) A/B fourchette large

@@ -2509,3 +2509,15 @@ Cadence (05/10 13:47) : valeur d'ouverture lue entre les deux transactions de d�
 tant que la valeur n'est pas à ±20 % de la mise ; sinon base laissée vide → auto-réparation à la 1re lecture du lot.
 **Correction au démarrage** des trades ≤ 140 bins avec dépôt hors mise > 0,15 SOL (normal 0,05 · q90 0,075) : base = valeur lue +
 hors mise − 0,07 ; valeurs d'origine gardées (`pnlSolLiveBrut`, `lpPctBrut`, `openValueSolBrut`, `correctionOuverture`).
+
+## 42. 05/10 — ALERTE + OMBRE « POSITION MORTE » (GO user) ; tests liste blanche, recentrage, rebond RSI
+- **Position morte** (ne ferme rien) : LP ≤ −20 % et aucun frais (> 0,3 mSOL) gagné depuis 12 h, puis 24 h → alerte Telegram 💀 par
+  palier + ombre `sbPositionMorte` + champs `mort12`/`mort24` des trades. Base : 445 positions (vraie LP + frais, 17/09→05/10) :
+  24 h → 4/4 coupées (RAWR, COLLECT, JEANPHIL, PAID), sortir au signal +0,17 SOL ; 12 h → 10 cas, 5 coupées, 3 vertes, +0,09.
+- **Recentrage d'EP** (20 positions sorties par le bas depuis 27/09, simulateur calé) : garder −16,9 % moyen, 11/20 vertes ;
+  flip en échelle −24,4 %, 0 vertes ; recentrage double −29,3 % → PIRE (fige la perte au 1er rebond). Non codé.
+- **Liste blanche / curation d'EP** : la curation aurait refusé des trades à +0,016/trade (acceptés −0,001) ; « token qui s'éteint »
+  bloquerait +0,014/trade ; passé négatif sur le token NON prédictif (1 255 trades : +0,0053 vs +0,0057). Rien à adopter.
+- **Sortie au 1er RSI2>90 pour les positions creusées** (vraie LP + vrai RSI2 des logs, 981 positions 26/08→05/10) : touché −40 % →
+  62 positions, effet LP +0,080 SOL + 355 h de place libérée ; −30 % → +0,054 LP + 884 h ; mortes 24 h → +0,167 LP + 241 h. Positif
+  mais petit en LP, surtout de la place libérée. EN ATTENTE du GO user (règle de sortie : décision explicite requise).
