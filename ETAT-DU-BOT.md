@@ -2534,3 +2534,30 @@ bloquée par les positions qui stagnent hors fourchette sans frais entre −55 %
 (27/09 → 04/10) est légèrement positive (−65 % +0,27 · −70 % +0,08) : cas favorable, pas une règle. Variante « coupe −70 % +
 sortie RSI hors fourchette si LP ≤ −40 % » : +0,28 sur 9 jours dont +0,23 pour le seul swordcat → non retenue.
 → Garder −55 % + alertes (rebond profond, position morte). Ne rouvrir qu'avec beaucoup de cas à 121 bins.
+
+## 44. 06/10 — « NOS COUPES MANGENT 40 % DU BÉNÉFICE » : BATTERIE DE TESTS → −55 % RESTE (TRANCHÉ, 2ᵉ fois)
+Scripts et données : `/tmp/cc/cut/` (séries LP réelles des logs 26/08→05/10, bougies 15 min GeckoTerminal de 138 tokens).
+- **Le chiffre est juste mais ne vient pas de la règle.** Grosses pertes (LP ≤ −25 % ou ≥ 0,06 SOL), toutes étiquettes :
+  26/08-07/09 3,2 % des trades = 18 % des gains · 08-14/09 4,9 % = 40 % · 15-21/09 8,0 % = 58 % · 22-28/09 5,9 % = 60 % ·
+  29/09-05/10 5,2 % = 59 %. Trois règles différentes (attente du rebond, coupe prix, coupe LP) → toujours 40-60 %. Ce qui a
+  changé, c'est la FRÉQUENCE des effondrements (×2 depuis début septembre), pas la sortie.
+- **Couper plus tôt perd** (vraie LP, 1 053 positions, place libérée créditée) : −30 % −0,37 · −35 % −0,60 · −40 % −0,76 ·
+  −45 % −0,62 · −50 % ≈ 0 SOL. Depuis le 27/09, les 22 positions passées entre −30 et −50 % sont TOUTES revenues vertes.
+- **Couper plus bas / ne pas couper** : rejeu ancré sur les 54 positions réelles passées sous −55 % ou sorties en perte (39-41
+  que la règle actuelle coupe), bougies 15 min, valeur Meteora de la vraie géométrie. Modèle contrôlé sur 13 208 relevés réels :
+  écart médian −3 pt (prudent), −1 pt depuis une ancre ≤ −48 %. Si on garde : ~4 sur 10 reviennent au vert (délai médian 38-45 h),
+  ~4,5 sur 10 passent sous −80 %. Brut +0,3 à +1,6 SOL (selon l'ancrage) mais **0,0002-0,0008 SOL par heure de place gardée,
+  contre 0,0012-0,0014 SOL/h pour un trade normal** (moyenne réelle 26/08 → 05/10, coupes comprises). Net au coût mesuré :
+  −60 % −0,33/−0,46 · −65 % −0,52/−1,06 · −70 % −0,91/−1,95 · −75 % −1,22/−2,18 · −80 % −0,89/−2,63 · jamais −3,2/−4,9 SOL.
+  Rejeu du carnet avec les VRAIS trades bloqués (même token + carnet plein) : tous négatifs (−0,37 à −5,25).
+  Variantes (frais 0,15-0,6 %/h, ordre intra-bougie, horizon 3/7/14 j, sortie au retour à 0, biais modèle +3 pt, 2 ancrages,
+  bootstrap 10 000, retrait des meilleurs cas) : aucun seuil fixe plus bas n'est jamais positif net. Seules les 8 coupes depuis le
+  27/09 donneraient −65/−75 % ≈ +0,15 (CALI, SAPLING remontés ; 3 encore indécises) — fenêtre courte.
+  Garde limitée (24/48 h puis coupe) : +0,19 à −1,88 selon l'ancrage → non démontré.
+- **« Parking » hors plafond** (la position gardée ne bloque plus une place) : 1 à la fois (cash libre 0,48 SOL) → −0,41 à
+  +0,20 SOL, rien ; illimité → jusqu'à 4-11 parquées simultanément (1,4-3,7 SOL de capital en plus) pour 0,0003-0,0008 SOL/h,
+  moins qu'un slot normal. Rejeté.
+- **Entrée** : 24 variables (athBreaks, MC, dump, feeTvl, volume, RSI, âge, historique du token, pertes précédentes…) → AUC
+  0,42-0,65 sur 25 coupes, rien d'exploitable ; « déjà une perte ≥ 40 % sur ce token » : 2,2 % de coupes vs 2,4 %.
+→ Garder −55 %. Le levier n'est pas la sortie mais la fréquence des effondrements (côté entrée/détection précoce) : revue des
+ombres sbFuiteLP / sbPositionMorte / patternKO vers le 14/10.
