@@ -2446,6 +2446,7 @@ async function scan() {
                     // sous −40 % n'a plus AUCUNE sortie avant 0 % (RSI2 plancher 0, trail +6 %) : un rebond la laisse
                     // bloquée (OCTO, JEANPHIL 100 h). Rejeu sur vrais LP/RSI2 25/09→04/10 : sortir au 1er RSI2>90
                     // ≈ +0,17 SOL de PnL + 0,17 de slot, mais 9 cas dont 3 contre → PAS automatique : alerte au user.
+                    pos._lastLp = realGain;   // (05/10) dernière LP connue — lue par l'ombre sbFuiteLP
                     ombre('sbRebondProfond', () => {
                         if (!pos.live) return;
                         pos._minLp = Math.min(pos._minLp ?? 0, realGain);
@@ -3449,6 +3450,8 @@ async function closePaper(tok, pos, exitPrice, reason) {
         reopenTest: pos._reopenTest || null,
         nBins: (pos.live && pos.live.nBins) || null, binStep: (pos.live && pos.live.binStep) || null, wide: pos.live ? !!pos.live.wide : null,
         baseFeePct: (pos.live && pos.live.baseFeePct) ?? null, poolAB: (pos.live && pos.live.poolAB) || null,   // (05/10) A/B frais de base
+        fuiteMin: pos._flMin != null ? +pos._flMin.toFixed(3) : null, fuiteMainMin: pos._flMainMin != null ? +pos._flMainMin.toFixed(3) : null,   // (05/10) ombre sbFuiteLP
+        fuiteUsdMin: pos._flUsdMin != null ? +pos._flUsdMin.toFixed(3) : null, fuiteLp80: pos._fl80 ?? null, fuiteLp60: pos._fl60 ?? null,
         poolFeeRef: (pos.live && pos.live.poolFeeRef) ?? null, poolFeeAlt: (pos.live && pos.live.poolFeeAlt) ?? null,   // (27/09) A/B fourchette large
         depotHorsMise: (pos.live && pos.live.depotHorsMise) ?? null,   // (2026-09-21) ouverte via le laissez-passer UPSIDE d'EP
         chopInconnu: pos._chopInconnu || null, // (2026-09-21) le filtre chop de septembre l'aurait refusée
@@ -3803,6 +3806,56 @@ function comparerBougiesDs() {
 }
 setInterval(comparerBougiesDs, 3600e3);
 setTimeout(comparerBougiesDs, 50 * 60e3);   // 1re mesure ~50 min après le démarrage (assez de créneaux clôturés)
+// ── (2026-10-05, GO user) OMBRE « FUITE DES LP » — n'agit sur rien ────────────────────────────────────
+// La liquidité de NOTRE pool en QUANTITÉS (tokens et SOL : `liquidity.base/quote` de DexScreener), pas en dollars.
+// En dollars, elle baisse mécaniquement quand le prix baisse : présente dans les 18 coupes sur 18 depuis le 17/09, mais
+// sortir dessus perd de −0,5 à −0,9 SOL (elle ne fait que répéter la chute). Une vraie fuite — des LP qui retirent —
+// fait baisser LES DEUX côtés à la fois, alors qu'un simple mouvement de prix fait monter un côté et baisser l'autre.
+// Indice = max(base/base₀, quote/quote₀) : ≈ 1 ou plus sans retrait, nettement < 1 quand les deux côtés fondent.
+// Même mesure sur la pool principale du token. Base₀ = 1re mesure (à l'ouverture pour les nouvelles positions).
+// Journal : franchissements 0,8 / 0,6 / 0,4 (avec la LP du moment) + une ligne par heure. Trade : fuiteMin, fuiteMainMin,
+// fuiteUsdMin, fuiteLp80, fuiteLp60. Question du 14/10 : l'indice sépare-t-il les coupes des positions qui reviennent ?
+let _fuiteRuns = 0;
+async function ombreFuiteLP() {
+    try {
+        const pos = Object.entries(state.positions).filter(([, p]) => p.live && p.live.poolAddress);
+        if (!pos.length) return;
+        const H = { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 };
+        const r = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/solana/${[...new Set(pos.map(([, p]) => p.live.poolAddress))].slice(0, 30).join(',')}`, H);
+        const byPool = new Map((r.data?.pairs || []).map(q => [q.pairAddress, q]));
+        const r2 = await axios.get(`https://api.dexscreener.com/tokens/v1/solana/${pos.map(([t]) => t).slice(0, 30).join(',')}`, H);
+        const main = new Map();
+        for (const q of (Array.isArray(r2.data) ? r2.data : [])) { const m = q.baseToken && q.baseToken.address; if (m && !main.has(m)) main.set(m, q); }
+        const resume = [];
+        for (const [tok, p] of pos) {
+            const q = byPool.get(p.live.poolAddress), mp = main.get(tok);
+            const L = q && q.liquidity, LM = mp && mp.liquidity;
+            if (!L || !(L.base > 0) || !(L.quote > 0)) continue;
+            if (!p._fl0) p._fl0 = { base: L.base, quote: L.quote, usd: L.usd || null, mPair: mp ? mp.pairAddress : null,
+                mBase: LM && LM.base > 0 ? LM.base : null, mQuote: LM && LM.quote > 0 ? LM.quote : null, ts: Date.now() };
+            const f0 = p._fl0;
+            const idx = Math.max(L.base / f0.base, L.quote / f0.quote);
+            const usdR = f0.usd > 0 && L.usd > 0 ? L.usd / f0.usd : null;
+            const midx = (LM && f0.mBase && f0.mQuote && mp.pairAddress === f0.mPair) ? Math.max(LM.base / f0.mBase, LM.quote / f0.mQuote) : null;
+            p._flMin = Math.min(p._flMin ?? 1, idx);
+            if (midx != null) p._flMainMin = Math.min(p._flMainMin ?? 1, midx);
+            if (usdR != null) p._flUsdMin = Math.min(p._flUsdMin ?? 1, usdR);
+            for (const sv of [0.8, 0.6, 0.4]) {
+                const k = '_fl' + Math.round(sv * 100);
+                if (idx < sv && p[k] == null) {
+                    p[k] = p._lastLp != null ? +(p._lastLp * 100).toFixed(1) : 'inconnue';
+                    recordShadow('sbFuiteLP', { symbol: p.symbol, tok, seuil: sv, indice: +idx.toFixed(3), base: Math.round(L.base), quote: +L.quote.toFixed(2),
+                        dollarsRatio: usdR != null ? +usdR.toFixed(3) : null, indicePrincipale: midx != null ? +midx.toFixed(3) : null,
+                        lp: p[k], ageH: +((Date.now() - p.openedAt) / 3600e3).toFixed(1) });
+                }
+            }
+            resume.push(`${p.symbol} ${idx.toFixed(2)}${midx != null ? '/' + midx.toFixed(2) : ''} ($ ${usdR != null ? usdR.toFixed(2) : '?'})`);
+        }
+        if (_fuiteRuns++ % 6 === 0 && resume.length) console.log(`  💧 [OMBRE fuite LP] indice quantités notre pool/pool principale (liquidité en $) : ${resume.join(' · ')}`);
+    } catch (e) { /* ombre : jamais bloquante */ }
+}
+setInterval(ombreFuiteLP, 10 * 60e3);
+setTimeout(ombreFuiteLP, 90e3);
 setInterval(safeScan, SCAN_INTERVAL_MS);
 safeScan();
 

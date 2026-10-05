@@ -2488,3 +2488,16 @@ Source : 52 captures (`~/ep`), dont son règlement « The edge is the exit » (I
   = +0,31 SOL de LP mais −0,12 de loyer de slot, porté par 2 rebonds (CALI, JEANPHIL après 58 h) quand 4 sur 7 auraient fini à −70 % →
   échantillon trop petit, à refaire au 14/10. PAID (05/10, −0,197) : 6 jours de lente baisse, liquidité de la pool −73 %, plus de
   frais depuis le 02/10, alerte rebond profond reçue à −49,3 % (22:03 le 04/10).
+
+## 40. 05/10 — OMBRE `sbFuiteLP` (liquidité en QUANTITÉS) + test « racheter plus haut » (GO user, n'agit pas)
+- **Ombre** : toutes les 10 min, `liquidity.base/quote` DexScreener de NOTRE pool et de la pool principale du token. Indice =
+  max(base/base₀, quote/quote₀) : ≈ 1+ quand seul le prix bouge, < 1 quand les deux côtés fondent (LP qui retirent).
+  Journal : franchissements 0,8 / 0,6 / 0,4 avec la LP du moment (`SHADOW sbFuiteLP`), ligne `💧 [OMBRE fuite LP]` par heure ;
+  trades : `fuiteMin`, `fuiteMainMin`, `fuiteUsdMin`, `fuiteLp80`, `fuiteLp60`. Pourquoi : la liquidité en DOLLARS qui fond est dans
+  les 18 coupes sur 18 depuis le 17/09, mais sortir dessus perd −0,5 à −0,9 SOL (elle répète la chute) ; en quantités, elle isole
+  la vraie fuite. Lecture au 14/10.
+- **Test « attendre un dump après notre sortie au lieu de racheter plus haut »** (1 058 ré-entrées < 48 h) : racheter ≥ 20 % PLUS
+  HAUT que l'entrée précédente = +0,0060 SOL/trade, 3,5 % de coupes — pas pire que 0-20 % plus haut (+0,0034) ou plus bas (+0,0050) ;
+  le meilleur reste ≥ 20 % plus bas (+0,0095). Vs la sortie précédente : au-dessus +0,0038 · ±5 % +0,0045 · 5-20 % dessous +0,0059 ·
+  ≥ 20 % dessous +0,0069. Exiger un rachat ≥ 5 % sous la sortie supprimerait 465 trades à +1,94 SOL → NON. Sur les 9 coupes-ré-entrées
+  depuis le 26/09 : 2 rachetées plus haut (COLLECT +27 %, SPLICE +36 %), 4 au même prix, 3 plus bas.
