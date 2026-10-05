@@ -2520,4 +2520,8 @@ hors mise − 0,07 ; valeurs d'origine gardées (`pnlSolLiveBrut`, `lpPctBrut`, 
   bloquerait +0,014/trade ; passé négatif sur le token NON prédictif (1 255 trades : +0,0053 vs +0,0057). Rien à adopter.
 - **Sortie au 1er RSI2>90 pour les positions creusées** (vraie LP + vrai RSI2 des logs, 981 positions 26/08→05/10) : touché −40 % →
   62 positions, effet LP +0,080 SOL + 355 h de place libérée ; −30 % → +0,054 LP + 884 h ; mortes 24 h → +0,167 LP + 241 h. Positif
-  mais petit en LP, surtout de la place libérée. EN ATTENTE du GO user (règle de sortie : décision explicite requise).
+  mais petit en LP, surtout de la place libérée — CHIFFRES DOMINÉS PAR L'ÈRE DES FOURCHETTES ÉTROITES.
+  **Refait sur les seules positions ouvertes depuis le 27/09 (fourchettes larges, 194 positions, 8 coupées) : NÉGATIF.**
+  −30 % : coupes +0,42 mais gagnantes −0,64 (14 sorties dans le rouge) → −0,22 SOL ; −40 % : +0,30 / −0,39 → −0,09 ; −50 % : −0,04.
+  Avec 81-121 bins, une position sous −40 % revient souvent en vert (7 gagnantes pour 8 coupées). → NE PAS automatiser ;
+  garder la coupe −55 % + les alertes (rebond profond, position morte) avec décision humaine.
