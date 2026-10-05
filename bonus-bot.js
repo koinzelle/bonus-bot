@@ -146,7 +146,17 @@ rotateLogs();
 // UNE SEULE position en mode test à la fois ; les autres occasions partent en ombre pour qu'on
 // compare les prises aux non-prises sur la même période.
 const REOPEN_HAUT_MS = parseInt(process.env.REOPEN_HAUT_MS || String(20 * 60 * 1000), 10);  // fenêtre de validité du laissez-passer
-const REOPEN_HAUT_MAX = parseInt(process.env.REOPEN_HAUT_MAX || '1', 10);                   // positions en mode test simultanées
+const REOPEN_HAUT_MAX = parseInt(process.env.REOPEN_HAUT_MAX || '3', 10);                   // positions en mode réouverture simultanées (05/10 : 1 → 3)
+// (2026-10-05, GO user) RÉOUVERTURE COMPLÈTE « À LA EP » : pendant le laissez-passer, TOUS les filtres d'entrée sont
+// contournés (creux, RSI2, pattern, chop, ATH épuisé/usé, anti-mourant, fees/TVL, pump explosif) — sauf les garde-fous :
+// MC ≥ 250 k$, ATH déjà > 250 k$, cooldown, places libres, cash, bin arrays existants. Tokens SANS taxe seulement.
+// Simulé le 05/10 (Meteora exact, simulateur calé sur 1 088 vraies entrées) sur nos 33 sorties par le haut : +8,0 % de
+// LP par réouverture en 121 bins (IC 95 % [+1,1 ; +12,9]), 3 coupes sur 33 ; nos entrées normales +2,9 % ; témoin
+// « creux −20 % puis +49 % » au hasard +2,3 %. Avant ce changement la fenêtre ne rouvrait que 3 fois sur 39.
+// Au plus REOPEN_CHAIN_24H réouvertures par token sur 24 h. Coupure : REOPEN_HAUT_BYPASS=off (retour au laissez-passer
+// partiel du 21/09 : creux et RSI2 seulement).
+const REOPEN_HAUT_BYPASS = process.env.REOPEN_HAUT_BYPASS !== 'off';
+const REOPEN_CHAIN_24H = parseInt(process.env.REOPEN_CHAIN_24H || '3', 10);
 // (2026-09-21) 30 → 10 min. Mesuré sur 6 jours : les 35 épisodes refusés par ce verrou se comportent
 // comme les entrées RETENUES — +10,9 % de plus-haut à 6 h contre +12,9 %, 69 % touchent +6 % contre
 // 77 % — mais avec MOINS de casse : 6 % tombent à -35 % contre 9 % pour les entrées réelles. C'est le
@@ -1865,7 +1875,8 @@ async function scan() {
         const _rot = [...watchEntries.slice(scanOffset), ...watchEntries.slice(0, scanOffset)];
         // (27/09, GO user) les tokens JAMAIS évalués passent en tête : un token neuf attendait sa 1re analyse
         // 20 min en médiane (p90 80 min) derrière les mêmes tokens re-vérifiés en boucle.
-        const rotated = [..._rot.filter(([t, w]) => !w.diag && !state.positions[t]), ..._rot.filter(([t, w]) => w.diag || state.positions[t])];
+        const _passe = ([t, w]) => !state.positions[t] && w.reopenUntil && Date.now() < w.reopenUntil;   // (05/10) réouverture d'abord
+        const rotated = [..._rot.filter(_passe), ..._rot.filter(e => !_passe(e) && !e[1].diag && !state.positions[e[0]]), ..._rot.filter(e => !_passe(e) && (e[1].diag || state.positions[e[0]]))];
         { // (05/10) 15m dus → DexPaprika en parallèle (pas d'await), même règle de fraîcheur que la boucle
             const dus = rotated.filter(([t, w]) => {
                 if (!state.positions[t] && w.nextCheckAt && now < w.nextCheckAt) return false;
@@ -2733,7 +2744,9 @@ async function scan() {
             w.hot = !!(armed && mcOk && chopOk);                     // "chaud" = choppy + armé
             // ── DIAGNOSTIC : 1re condition qui bloque + compteur global (nouveau funnel EP) ──
             let block = null;
-            if (!armed) block = 'not-armed';
+            const reopenGo = REOPEN_HAUT_BYPASS && reopenHaut && armed && mcOk && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS;
+            if (reopenGo) block = 'RÉOUVERTURE-HAUT';
+            else if (!armed) block = 'not-armed';
             else if (!mcOk) block = 'MC<250k';
             else if (ageH < AGE_MIN_H) block = 'coin<10h';
             else if (!patOk) block = 'pattern-KO';
@@ -2861,7 +2874,7 @@ async function scan() {
             // ── ENTRÉE EP CHOP-CYCLE (2026-08-03) : coin CHOPPY (chop-rate ≥60%) + AU CREUX (dumpé ≥10% sous
             // le haut récent) + armé (>250k) + pas explosif + pas en cooldown. Plus de gate ATH/pattern/retrace :
             // on ouvre sur CHAQUE dump d'un chopper et on CYCLE (le cooldown post-close pace la ré-ouverture).
-            if (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && rsiLow && canReenter && feesOk && ((w.athBreaks || 0) < 4 || curMc >= 1_500_000) && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS) {
+            if (reopenGo || (armed && mcOk && ageH >= AGE_MIN_H && patOk && chopOk && atDip && rsiLow && canReenter && feesOk && ((w.athBreaks || 0) < 4 || curMc >= 1_500_000) && !explosif && !onCooldown && Object.keys(state.positions).length < MAX_POSITIONS)) {
                 // Pool Meteora viable requise en LIVE (sélection EP "coin AND pool selection") — lazy, cachée 30min.
                 if (live.enabled && live.findMeteoraPool) {
                     if (w.meteoraOk == null || now - (w.meteoraCheckedAt || 0) > 30 * 60e3) {
@@ -2921,7 +2934,10 @@ async function scan() {
                     depuisSortieMolleMin: Math.round((now - _mouTs) / 60000) });
                 const _reopenTest = !!(w.reopenUntil && now < w.reopenUntil);
                 if (w.reopenUntil) w.reopenUntil = 0;
-                if (_reopenTest) console.log(`  🔁 ${w.symbol}: RÉ-OUVERTURE après sortie par le haut (dump+RSI2 contournés) — position de TEST`);
+                if (_reopenTest) {
+                    w.reopenHist = [...(w.reopenHist || []).filter(t => now - t < 24 * 3600e3), now];
+                    console.log(`  🔁 ${w.symbol}: RÉ-OUVERTURE après sortie par le haut (${REOPEN_HAUT_BYPASS ? 'tous filtres d\'entrée contournés' : 'dump+RSI2 contournés'}) — ${w.reopenHist.length}/${REOPEN_CHAIN_24H} sur 24 h`);
+                }
                 state.positions[tok] = { _reopenTest, _chopInconnu, _sousVerrou48, symbol: w.symbol, entry, openedAt: now, ageH: +ageH.toFixed(1), athMc: Math.round(athMc), drawdownPct: +(drawdown * 100).toFixed(0), support, patternOk: patOk, athAgeH: athAgeHr, athStale48, entryCandleTs: lastC[0],
                     // features d'entrée enrichies (2026-07-29) pour l'analyse gagnants/perdants
                     // (2026-09-18) INSTANTANÉ DE LIQUIDITÉ À L'ENTRÉE. Piste ouverte par le user le 18/09 :
@@ -3431,7 +3447,9 @@ async function closePaper(tok, pos, exitPrice, reason) {
         tvlPoints: (pos._tvlHist || []).length,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         reopenTest: pos._reopenTest || null,
-        nBins: (pos.live && pos.live.nBins) || null, binStep: (pos.live && pos.live.binStep) || null, wide: pos.live ? !!pos.live.wide : null,   // (27/09) A/B fourchette large
+        nBins: (pos.live && pos.live.nBins) || null, binStep: (pos.live && pos.live.binStep) || null, wide: pos.live ? !!pos.live.wide : null,
+        baseFeePct: (pos.live && pos.live.baseFeePct) ?? null, poolAB: (pos.live && pos.live.poolAB) || null,   // (05/10) A/B frais de base
+        poolFeeRef: (pos.live && pos.live.poolFeeRef) ?? null, poolFeeAlt: (pos.live && pos.live.poolFeeAlt) ?? null,   // (27/09) A/B fourchette large
         depotHorsMise: (pos.live && pos.live.depotHorsMise) ?? null,   // (2026-09-21) ouverte via le laissez-passer UPSIDE d'EP
         chopInconnu: pos._chopInconnu || null, // (2026-09-21) le filtre chop de septembre l'aurait refusée
         sousVerrou48: pos._sousVerrou48 || null, // (2026-09-21) le verrou 48 h du 14/09 l'aurait refusée
@@ -3498,10 +3516,18 @@ async function closePaper(tok, pos, exitPrice, reason) {
         // (2026-09-21) PORTE UPSIDE D'EP : sortie par le HAUT → laissez-passer de ré-ouverture.
         if (/hors-range HAUT|CYCLE ONE-SIDED COMPLET/.test(reason || '')) {
             const dejaTest = Object.values(state.positions).filter(p => p._reopenTest).length;
-            if (dejaTest < REOPEN_HAUT_MAX) {
+            const taxeBps = (pos.live && pos.live.transferFeeBps) || 0;
+            const chaine = (state.watch[tok].reopenHist || []).filter(t => Date.now() - t < 24 * 3600e3).length;
+            if (REOPEN_HAUT_BYPASS && taxeBps > 0) {
+                console.log(`  🕯️ ${pos.symbol}: sortie par le HAUT — pas de réouverture (token taxé ${(taxeBps / 100).toFixed(1)} %)`);
+            } else if (chaine >= REOPEN_CHAIN_24H) {
+                recordShadow('reopenHaut', { symbol: pos.symbol, tok, lpSortie: trade.lpPct, prix: exitPrice, durMin: trade.durMin, motif: `plafond ${REOPEN_CHAIN_24H}/24h` });
+                console.log(`  🕯️ ${pos.symbol}: sortie par le HAUT — pas de réouverture (déjà ${chaine} sur 24 h) → ombre`);
+            } else if (dejaTest < REOPEN_HAUT_MAX) {
                 state.watch[tok].reopenUntil = Date.now() + REOPEN_HAUT_MS;
                 state.watch[tok].cooldownUntil = 0;                        // le cooldown anti-boucle ne s'applique pas ici
-                console.log(`  🔁 ${pos.symbol}: sortie par le HAUT (+${trade.lpPct != null ? trade.lpPct.toFixed(1) : '?'}% LP) → laissez-passer de ré-ouverture ${REOPEN_HAUT_MS / 60000} min (dump+RSI2 contournés)`);
+                state.watch[tok].nextCheckAt = 0;                          // (05/10) contrôlé dès le prochain scan
+                console.log(`  🔁 ${pos.symbol}: sortie par le HAUT (+${trade.lpPct != null ? trade.lpPct.toFixed(1) : '?'}% LP) → laissez-passer de ré-ouverture ${REOPEN_HAUT_MS / 60000} min (${REOPEN_HAUT_BYPASS ? 'tous filtres d\'entrée contournés' : 'dump+RSI2 contournés'})`);
             } else {
                 recordShadow('reopenHaut', { symbol: pos.symbol, tok, lpSortie: trade.lpPct, prix: exitPrice,
                     durMin: trade.durMin, motif: 'plafond test atteint' });

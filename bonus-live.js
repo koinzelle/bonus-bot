@@ -113,7 +113,18 @@ const WIDE_MODE = (process.env.WIDE_MODE || 'all').toLowerCase();   // (27/09, G
 const _poolRefus = new Map();   // poolAddress -> jusqu'à (ms)
 const POOL_REFUS_MS = parseFloat(process.env.POOL_REFUS_H || '2') * 3600e3;   // (27/09, user) exclusion 2 h (6 h trop strict)
 const WIDE_AB_P = parseFloat(process.env.WIDE_AB_P || '0.5');
-const BS80_ALT_RATIO = parseFloat(process.env.BS80_ALT_RATIO || '0.5');   // (27/09) seuil de rendement pour préférer une pool bs≥100 à une bs80
+const BS80_ALT_RATIO = parseFloat(process.env.BS80_ALT_RATIO || '0.5');
+// (2026-10-05, GO user) A/B SUR LES FRAIS DE BASE DE LA POOL. Une décision sur deux — et SEULEMENT quand une pool du
+// même token a des frais de base plus élevés, rapporte au moins POOL_FEE_ALT_RATIO du rendement (fees/TVL 24 h) de la
+// pool qu'on aurait prise et a ≥ 10 k$ de TVL — on prend la plus chère (groupe B). Sinon rien ne change (groupe A, ou
+// pas d'A/B du tout quand aucune pool plus chère n'existe : « s'il n'y a pas mieux en fees, il prend comme maintenant »).
+// Mesuré le 05/10 : frais réellement encaissés (médiane, % de la mise par heure) 0,15 (≤1,5 %) · 0,43 (2 %) · 0,66
+// (3-5 %) ; à token égal la pool chère encaisse plus 7 fois sur 10 ; MAIS le résultat net par trade ne suit pas à bin
+// step égal → seul l'A/B tranche. Lecture : champ `poolAB` des trades. Coupure : POOL_FEE_AB=off.
+const POOL_FEE_AB = process.env.POOL_FEE_AB !== 'off';
+const POOL_FEE_ALT_RATIO = parseFloat(process.env.POOL_FEE_ALT_RATIO || '0.5');
+let _poolABToggle = 0;
+const _poolABInfo = new Map();   // adresse de pool → { grp, feeRef, feeAlt } (lu par openBidAsk pour l'enregistrer dans le trade)   // (27/09) seuil de rendement pour préférer une pool bs≥100 à une bs80
 let _wideNextUsed = false;
 function wideBinsFor(binStep) {
     if (binStep <= 80) return parseInt(process.env.WIDE_BINS_80 || '200', 10);   // (27/09, user) 200 bins ≈ −55 %/+122 % : protection du capital prioritaire (290 = frais ≈ 0, 141 jugé trop court)
@@ -292,6 +303,23 @@ async function findMeteoraPool(tokenAddress, preferredPool, metPools) {
         if (alts.length) {
             console.log(`  🔀 bs80 évité : ${alts[0].c.addr.slice(0, 8)} bs${alts[0].c.binStep} fee${alts[0].c.baseFeePct}% ${alts[0].r.ftv.toFixed(1)}%/j (TVL ${Math.round(alts[0].r.tvl / 1000)}k$) au lieu de ${best.addr.slice(0, 8)} bs${best.binStep} ${ref ? ref.ftv.toFixed(1) + '%/j' : '?'}`);
             best = alts[0].c;
+        }
+    }
+    if (POOL_FEE_AB && best && Array.isArray(metPools) && metPools.length) {
+        const ftvOf = c => { const m = metPools.find(p => p.addr === c.addr); return m && m.tvl > 0 ? { ftv: (m.vol24h * (c.baseFeePct / 100)) / m.tvl * 100, tvl: m.tvl } : null; };
+        const ref = ftvOf(best);
+        const plusCheres = !ref ? [] : candidates
+            .filter(c => c.addr !== best.addr && c.baseFeePct > best.baseFeePct && c.binStep >= BS_MIN && !(c.binStep <= 80 && WIDE_MODE !== 'off'))
+            .map(c => ({ c, r: ftvOf(c) }))
+            .filter(a => a.r && a.r.tvl >= 10000 && a.r.ftv >= POOL_FEE_ALT_RATIO * ref.ftv)
+            .sort((a, b) => b.c.baseFeePct - a.c.baseFeePct || b.r.ftv - a.r.ftv);
+        if (plusCheres.length) {
+            const grp = (_poolABToggle++ % 2 === 0) ? 'B' : 'A', alt = plusCheres[0], feeRef = best.baseFeePct;
+            if (grp === 'B') {
+                console.log(`  🅱️ A/B frais : pool plus chère ${alt.c.addr.slice(0, 8)} bs${alt.c.binStep} fee${alt.c.baseFeePct}% ${alt.r.ftv.toFixed(1)}%/j au lieu de ${best.addr.slice(0, 8)} bs${best.binStep} fee${best.baseFeePct}% ${ref.ftv.toFixed(1)}%/j`);
+                best = alt.c;
+            } else console.log(`  🅰️ A/B frais : pool habituelle ${best.addr.slice(0, 8)} fee${best.baseFeePct}% gardée (une fee${alt.c.baseFeePct}% existait, ${alt.r.ftv.toFixed(1)}%/j)`);
+            _poolABInfo.set(best.addr, { grp, feeRef, feeAlt: alt.c.baseFeePct });
         }
     }
     if (!wanted && parRendement && parRendement.c.addr !== candidates[0].addr) {
@@ -708,8 +736,12 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
         try { openValueSol = await positionValueSol(posRef, dlmmPool); } catch (_) {}
     }
     console.log(`  💰 Déposé: ${depositedSol.toFixed(4)} SOL (rent+gas inclus) | valeur LP: ${openValueSol != null ? openValueSol.toFixed(4) : '?'} SOL | bins [${minBinId}→${maxBinId}] (${nBins} bins, bs${binStep}${wide ? ', LARGE' : ''})`);
+    let baseFeePct = null;   // (05/10) frais de base de la pool, et groupe de l'A/B frais s'il y en a eu un
+    try { baseFeePct = parseFloat((await dlmmPool.getFeeInfo()).baseFeeRatePercentage?.toString() ?? null); } catch (_) {}
+    const ab = _poolABInfo.get(poolAddress) || {};
     return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, openValueSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint, oneSided,
-        nBins, binStep, wide, depotHorsMise: openValueSol != null ? +(depositedSol - openValueSol).toFixed(5) : null };
+        nBins, binStep, wide, depotHorsMise: openValueSol != null ? +(depositedSol - openValueSol).toFixed(5) : null,
+        baseFeePct, poolAB: ab.grp || null, poolFeeRef: ab.feeRef ?? null, poolFeeAlt: ab.feeAlt ?? null };
 }
 
 // ── Valeur de position en SOL (X + Y + fees) — LECTURE ON-CHAIN DIRECTE ──────────────────────────

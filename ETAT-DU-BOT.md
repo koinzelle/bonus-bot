@@ -2474,3 +2474,17 @@ Source : 52 captures (`~/ep`), dont son règlement « The edge is the exit » (I
 - **Taxe 1 % : marginale.** 147 trades depuis 11/09 : net entre −0,09 (écart wallet mesuré 3 %) et +0,31 SOL (taxe selon la
   composition à la sortie, 1,9 % de la mise) ; sorties RSI2 = −0,19 SOL net, TRAIL +1,03. Garder au-delà du RSI2 ne sauve rien
   (simulé −0,15 à −0,63 vs −0,18). Option simple et réversible : `MAX_TRANSFER_FEE_BPS=100` (refuser dès 1 %) une semaine, mesure wallet.
+
+## 39. 05/10 — RÉOUVERTURE COMPLÈTE APRÈS SORTIE PAR LE HAUT + A/B FRAIS DE BASE DES POOLS (GO user)
+- **Réouverture** (`REOPEN_HAUT_BYPASS`, défaut actif) : après une sortie par le haut, le laissez-passer de 20 min contourne
+  TOUS les filtres d'entrée (creux, RSI2, pattern, chop, ATH épuisé/usé, anti-mourant, fees/TVL, pump explosif). Restent :
+  MC ≥ 250 k$, ATH > 250 k$, cooldown, places, cash, bin arrays. Pas de laissez-passer pour un token taxé. Token prioritaire dans
+  la rotation et contrôlé dès le scan suivant. `REOPEN_HAUT_MAX` 1 → 3 positions simultanées, `REOPEN_CHAIN_24H` = 3 par token / 24 h.
+  Base : §38 (+8,0 % LP par réouverture en 121 bins, IC>0). Mesure : champ `reopenTest` des trades, au wallet.
+- **A/B frais de base** (`POOL_FEE_AB`, défaut actif) : seulement quand une pool du token a des frais plus élevés, ≥ 50 % du
+  rendement (`POOL_FEE_ALT_RATIO`) et ≥ 10 k$ de TVL : une décision sur deux prend la plus chère (B), l'autre garde la pool
+  habituelle (A). Sans pool plus chère : rien ne change. Champs `poolAB`, `baseFeePct`, `poolFeeRef`, `poolFeeAlt` dans les trades.
+- **Coupe −55 % : inchangée.** Test « seuil plus bas » sur les 7 coupes faites avec la règle actuelle (LP, depuis 26/09) : −70 %
+  = +0,31 SOL de LP mais −0,12 de loyer de slot, porté par 2 rebonds (CALI, JEANPHIL après 58 h) quand 4 sur 7 auraient fini à −70 % →
+  échantillon trop petit, à refaire au 14/10. PAID (05/10, −0,197) : 6 jours de lente baisse, liquidité de la pool −73 %, plus de
+  frais depuis le 02/10, alerte rebond profond reçue à −49,3 % (22:03 le 04/10).
