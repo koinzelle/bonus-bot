@@ -13,8 +13,9 @@ const axios = require('axios');
 const TF = { '5m': 300, '15m': 900 };
 const MAX_BOUGIES = 220;
 const series = new Map();      // mint -> { '5m': [[t,o,h,l,c,0]], '15m': [...], debut: ts du 1er échantillon }
-const stats = { appels: 0, echecs: 0, lectures: 0, depuis: Date.now() };
+const stats = { appels: 0, echecs: 0, lectures: 0, memePool: 0, autrePool: 0, depuis: Date.now() };
 let enCours = false;
+let _getPool = null;   // (06/10) mint -> pool des bougies officielles (GeckoTerminal), si connue
 
 function enregistre(mint, px, tsMs) {
     let s = series.get(mint);
@@ -36,20 +37,43 @@ function enregistre(mint, px, tsMs) {
 async function lecture(mints) {
     if (enCours || !mints.length) return;
     enCours = true;
+    // (2026-10-06, demande user) MÊME POOL QUE LES BOUGIES OFFICIELLES. L'ombre prenait la « 1re paire rendue » par
+    // DexScreener, souvent une autre pool que celle d'où viennent nos bougies (la plus liquide chez GeckoTerminal) :
+    // une partie de l'écart de clôture (0,4-0,7 % médian) et du désaccord RSI2 (82-92 %) venait de là. Les tokens dont la
+    // pool officielle est connue sont lus PAR ADRESSE DE POOL ; les autres prennent la paire la plus liquide.
+    const fetchJson = async (url) => {
+        stats.appels++;
+        const r = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
+        return r.data;
+    };
     try {
-        for (let i = 0; i < mints.length; i += 30) {
-            const lot = mints.slice(i, i + 30);
+        const parPool = [], parToken = [];
+        for (const m of mints) { const pool = _getPool ? _getPool(m) : null; if (pool) parPool.push([m, pool]); else parToken.push(m); }
+        for (let i = 0; i < parPool.length; i += 30) {
+            const lot = parPool.slice(i, i + 30);
             try {
-                stats.appels++;
-                const r = await axios.get(`https://api.dexscreener.com/tokens/v1/solana/${lot.join(',')}`,
-                    { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
-                const now = Date.now(), vu = new Set();
-                for (const p of (Array.isArray(r.data) ? r.data : [])) {
-                    const mint = p && p.baseToken && p.baseToken.address, px = p && parseFloat(p.priceUsd);
-                    if (!mint || vu.has(mint) || !lot.includes(mint) || !(px > 0)) continue;
-                    vu.add(mint);                 // une seule paire par token : la principale (1re rendue)
-                    enregistre(mint, px, now);
+                const d = await fetchJson(`https://api.dexscreener.com/latest/dex/pairs/solana/${lot.map(z => z[1]).join(',')}`);
+                const pairs = (d && (d.pairs || (d.pair ? [d.pair] : []))) || [];
+                const now = Date.now();
+                for (const [m, pool] of lot) {
+                    const p = pairs.find(z => z && z.pairAddress === pool);
+                    const px = p && (p.baseToken && p.baseToken.address === m ? parseFloat(p.priceUsd) : null);
+                    if (px > 0) { enregistre(m, px, now); stats.memePool++; } else parToken.push(m);   // repli : par token
                 }
+            } catch (_) { stats.echecs++; for (const [m] of lot) parToken.push(m); }
+        }
+        for (let i = 0; i < parToken.length; i += 30) {
+            const lot = parToken.slice(i, i + 30);
+            try {
+                const d = await fetchJson(`https://api.dexscreener.com/tokens/v1/solana/${lot.join(',')}`);
+                const now = Date.now(), best = new Map();
+                for (const p of (Array.isArray(d) ? d : [])) {
+                    const mint = p && p.baseToken && p.baseToken.address;
+                    if (!mint || !lot.includes(mint) || !(parseFloat(p.priceUsd) > 0)) continue;
+                    const b = best.get(mint);
+                    if (!b || ((p.liquidity && p.liquidity.usd) || 0) > ((b.liquidity && b.liquidity.usd) || 0)) best.set(mint, p);   // la plus liquide
+                }
+                for (const [mint, p] of best) { enregistre(mint, parseFloat(p.priceUsd), now); stats.autrePool++; }
             } catch (_) { stats.echecs++; }
         }
     } finally { enCours = false; }
@@ -62,7 +86,8 @@ function bougiesCloturees(mint, tf) {
     return s[tf].filter(c => c[0] > debut && c[0] < courant);
 }
 
-function demarrer(getMints, intervalMs = 15000) {
+function demarrer(getMints, intervalMs = 15000, getPool = null) {
+    _getPool = getPool;
     setInterval(() => { lecture(getMints()).catch(() => {}); }, intervalMs);
     // ménage : on oublie les tokens qui ne sont plus suivis
     setInterval(() => { const vivants = new Set(getMints()); for (const m of series.keys()) if (!vivants.has(m)) series.delete(m); }, 3600e3);

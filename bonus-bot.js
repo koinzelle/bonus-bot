@@ -3846,11 +3846,11 @@ const safeScan = () => scan().catch(e => console.log('⚠️ scan tick (survécu
 // Critère de bascule (à juger avec le user) : écart médian de clôture < 1 % et accord RSI2<50 ≥ 95 %.
 const dsc = require('./ds-candles');
 const _dsSuivis = () => [...new Set([...Object.keys(state.watch || {}), ...Object.keys(state.positions || {})])];
-dsc.demarrer(_dsSuivis, 15000);
+dsc.demarrer(_dsSuivis, 15000, mint => { const c = _gtPoolCache.get(mint); return c && c.pool ? c.pool : null; });   // (06/10) même pool que les bougies officielles
 function comparerBougiesDs() {
     try {
         const ec = { close: [], high: [], low: [] }, rsiEc = [];
-        let accord = 0, total = 0, tokens = 0;
+        let accord = 0, total = 0, tokens = 0, accSortie = 0, totSortie = 0;   // (06/10) + accord sur le signal de SORTIE (RSI2 > 90)
         for (const mint of _dsSuivis()) {
             const ds = dsc.bougiesCloturees(mint, '15m'), ref = candleCache.get(mint + '15m');
             if (ds.length < 3 || !ref || !ref.cs || !ref.cs.length) continue;
@@ -3868,13 +3868,13 @@ function comparerBougiesDs() {
             const base = refClos.filter(c => c[0] <= tFin);
             if (base.length >= 10) {
                 const a = calculateRSI(base.map(c => c[4]), 2), b = calculateRSI(base.map(c => dsMap.has(c[0]) ? dsMap.get(c[0]) : c[4]), 2);
-                if (a != null && b != null) { rsiEc.push(Math.abs(a - b)); total++; if ((a < 50) === (b < 50)) accord++; }
+                if (a != null && b != null) { rsiEc.push(Math.abs(a - b)); total++; if ((a < 50) === (b < 50)) accord++; totSortie++; if ((a > 90) === (b > 90)) accSortie++; }
             }
         }
         const q = (a, f) => { if (!a.length) return '-'; const x = [...a].sort((u, v) => u - v); return x[Math.min(x.length - 1, Math.floor(x.length * f))]; };
         const pc = (a, f) => { const v = q(a, f); return v === '-' ? '-' : (v * 100).toFixed(2) + '%'; };
         const st = dsc.stats, h = (Date.now() - st.depuis) / 3600e3;
-        console.log(`  🧪 [OMBRE bougies DexScreener] ${tokens} tokens, ${ec.close.length} bougies 15m comparées | écart clôture méd ${pc(ec.close, .5)} (q90 ${pc(ec.close, .9)}) · haut ${pc(ec.high, .5)} · bas ${pc(ec.low, .5)} | RSI2 écart méd ${q(rsiEc, .5) === '-' ? '-' : q(rsiEc, .5).toFixed(1)} pt · accord RSI2<50 ${total ? Math.round(100 * accord / total) + '%' : '-'} (${total}) | ${(st.appels / h).toFixed(0)} appels/h, ${st.echecs} échecs`);
+        console.log(`  🧪 [OMBRE bougies DexScreener] ${tokens} tokens, ${ec.close.length} bougies 15m comparées | écart clôture méd ${pc(ec.close, .5)} (q90 ${pc(ec.close, .9)}) · haut ${pc(ec.high, .5)} · bas ${pc(ec.low, .5)} | RSI2 écart méd ${q(rsiEc, .5) === '-' ? '-' : q(rsiEc, .5).toFixed(1)} pt · accord RSI2<50 ${total ? Math.round(100 * accord / total) + '%' : '-'} (${total}) · accord RSI2>90 ${totSortie ? Math.round(100 * accSortie / totSortie) + '%' : '-'} | même pool que l'officielle ${st.memePool + st.autrePool ? Math.round(100 * st.memePool / (st.memePool + st.autrePool)) + '%' : '-'} des lectures | ${(st.appels / h).toFixed(0)} appels/h, ${st.echecs} échecs`);
     } catch (e) { console.log(`  ⚠️ OMBRE bougies DexScreener a levé : ${e && e.message}`); }
 }
 setInterval(comparerBougiesDs, 3600e3);

@@ -2617,3 +2617,7 @@ Relecture des 1 246 transactions du wallet (28/09 22:55 → 06/10, RPC public) e
 - **Rotation (06/10)** : depuis le 27/09, les trades < 2 h (48 %) font +1,79 SOL dans 9 % du temps de place ; ceux > 12 h
   (7 % des trades) occupent 49 % du temps de place pour −0,59 SOL. Rappel : STAGNATION (sortie au temps) a coûté −0,61 SOL
   en 2 jours (7 coupes sur 11 ont rebondi) → toute sortie au temps passe par l'ombre (sbPositionMorte, en cours).
+- **Ombre bougies DexScreener (bilan 1,5 j)** : clôture 0,4-0,7 % d'écart médian (OK < 1 %), mais accord RSI2<50 82-92 %
+  (< 95 % visé). Amélioration 06/10 (demande user) : lecture par ADRESSE DE LA POOL des bougies officielles (endpoint
+  `latest/dex/pairs`, sinon paire la plus liquide — avant : « 1re paire rendue », souvent une autre pool) + accord sur le
+  signal de sortie RSI2>90 + part des lectures sur la même pool. Re-juger à la revue du 14/10.
