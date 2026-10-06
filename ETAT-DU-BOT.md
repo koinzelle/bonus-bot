@@ -2650,3 +2650,6 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   depuis le 27/09** · 15 % → +2,06 / +0,27 · 20 % → +1,88 / +0,39. Volume 24 h : aucun gradient.
 - Réglage : variable Railway `FEE_TVL_FLOOR` (défaut code 3, actuel 5) ; elle filtre aussi la source de découverte Met-fees.
   Revert instantané. À mesurer au wallet et avec `pnlWalletSol`.
+- **Vérifié sur les seuls tokens NON TAXÉS** (question user : on ne trade plus les taxés) — 710 trades, net des seuls swaps
+  (~1 %) : < 8 % −1,2 % · 8-12 % −2,5 % · 12-15 % +1,4 % · 15-30 % +1,8 % · > 30 % +2,1 % (depuis le 27/09 : −2,1 / −3,9 / +4,8 /
+  +2,4 / +3,3 %) ; < 12 % moins bon 5 semaines sur 5. Plancher 12 % : +1,35 SOL / 42 j (+0,03/j), +0,45 / 10 j depuis le 27/09.
