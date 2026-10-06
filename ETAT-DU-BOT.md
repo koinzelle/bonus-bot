@@ -2598,3 +2598,15 @@ Relecture des 1 246 transactions du wallet (28/09 22:55 → 06/10, RPC public) e
   (3 trades), verrou 48 h conditionnel et ré-entrées après coupe (chutent moins), priorité watch du 27/09 (aucun effet visible).
 - 1 % taxés depuis le 12/09 : 129 trades, +0,93 affiché, taxe ≈ −1,04 → net −0,11 SOL (+ ALLINU/SI ouvertes ≈ −0,20).
   Non taxés mêmes semaines : +1,68 SOL net. Wallet depuis l'arrêt des 1 % (03/10) : trop court (≈ 0, 4 coupes de non taxés).
+- **Marché ou sélection (définitif, 666 tokens surveillés, bougies 1 h, scripts `/tmp/cc/mkt/`)** — part des cas suivis
+  d'une chute ≥ 60 % en 48 h, par semaine 01-07/09 → 29/09-05/10 : marché surveillé 42 · 42 · 41 · 54 · 52 % ; creux refusés
+  par nos filtres 32 · 37 · 34 · 41 · 44 % ; **nos entrées 24 · 29 · 35 · 38 · 51 %** (dernière semaine : 90 entrées sur 147).
+  → LES DEUX : le marché s'est durci depuis le 22/09 (+10 pts) ET notre avance sur le marché (−13 à −18 pts début septembre)
+  a disparu. La hausse de la dernière semaine vient surtout de 6 tokens re-tradés en boucle (36 des 46 entrées « suivies
+  d'une chute ») — pour la plupart GAGNANTS (SAPLING +0,22 malgré sa coupe, CAKE +0,13, BOB +0,10) ; grosses pertes
+  réalisées en baisse (4,1 % contre 6,4 %).
+- **Début de course = zone la plus dangereuse** : chute ≥ 60 % en 48 h selon l'âge au suivi : < 6 h 81 % · 6-24 h 68 % ·
+  1-3 j 60 % · 3-7 j 40 % · > 7 j 15 %. Nos entrées : 0 % · 1 % · 29 % · 29 % · 42 %. Les jeunes sont refusés par `coin<10h`
+  (85 % des refus < 6 h) et `pattern-KO` (52 % à 6-24 h). Le point faible est le MILIEU (1-7 j, 58 % des entrées) ; à
+  trancher avec `pnlWalletSol` (1-2 semaines) : les tokens jeunes/petits rapportent autant au PnL affiché mais leurs swaps
+  coûtent probablement plus.
