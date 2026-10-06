@@ -2561,3 +2561,40 @@ Scripts et données : `/tmp/cc/cut/` (séries LP réelles des logs 26/08→05/10
   0,42-0,65 sur 25 coupes, rien d'exploitable ; « déjà une perte ≥ 40 % sur ce token » : 2,2 % de coupes vs 2,4 %.
 → Garder −55 %. Le levier n'est pas la sortie mais la fréquence des effondrements (côté entrée/détection précoce) : revue des
 ombres sbFuiteLP / sbPositionMorte / patternKO vers le 14/10.
+
+## 45. 06/10 — FUITE PnL AFFICHÉ ↔ WALLET EXPLIQUÉE ON-CHAIN + CORRECTIONS D'EXÉCUTION (GO user)
+Relecture des 1 246 transactions du wallet (28/09 22:55 → 06/10, RPC public) et bilan de 155 trades.
+- **Le PnL affiché (`pnlSolLive`) ne mesure que la valeur DANS la pool.** Hors mesure, par trade (médiane / total 7,4 j) :
+  achat Jupiter de la part token ≈ +1,0 % (0,0014 SOL, total −0,12) · revente ≈ −1,0 % immédiate, −3,2 % si laissée au
+  balayage (total −0,25) · nouveaux comptes token jamais refermés −0,03 (20 tokens) · frais de tx −0,01. **≈ −0,41 SOL
+  sur 7,4 j = l'écart constaté sur la ligne 🏦 WALLET (−0,42)** → ~0,0026 SOL/trade ≈ 1 % de la mise. Jusqu'au 05/10 s'y
+  ajoutait la taxe des tokens à 1 % (≈ 3 % de la mise par trade).
+- **Pas de création de bin array** : « InitializeBinArray » apparaît dans les dépôts mais ne crée rien (vérifié : seuls la
+  position, rendue au close, et le compte WSOL, refermé à chaque trade, sont créés). Comptes token vides : 60, 0,092 SOL
+  récupérables — **le user les ferme lui-même (Titan)** ; le bot ne ferme PAS les comptes (il re-trade souvent le token).
+- **Bug corrigé — revente partielle à la fermeture** : une position étendue se vide en 2 transactions ; la lecture du solde
+  ne voyait parfois que la 1re (HIGGS 06/10 : 12 tokens vendus, 4 489 laissés au balayage). 12 sorties sur 154. Désormais :
+  deux lectures identiques avant de vendre, puis revérification et revente de ce qui arrive après (4 passes max).
+- **Tolérance de slippage Jupiter 10 % → 2 %** (`JUP_SLIPPAGE_BPS`, défaut 200 ; `JUP_SLIPPAGE_SORTIE_BPS` pour assouplir
+  la seule revente si des ventes restent bloquées — à surveiller sur les CUT de tokens qui s'effondrent).
+- **Mesure de chaque swap** : ligne `🔁 Jupiter entrée/sortie : annoncé … · reçu … (écart) · impact annoncé`, stats dans
+  `/status.swapStats` et la ligne horaire. Écart régulier sous −0,5 % = prix qui bouge ou sandwich.
+- **PnL WALLET réel par trade** (`pnlWalletSol`, `txOuv`, `txFerm`) : somme des SOL entrés/sortis dans les transactions du
+  trade, lue on-chain après la sortie ; ajouté au Telegram de sortie (« 🏦 PnL wallet réel ») et cumulé dans `/status.pnlWallet`
+  et la ligne horaire. Validé sur HIGGS 06/10 : +0,0327 calculé (bilan manuel +0,0328) pour +0,0397 affiché.
+- **Ombre `sbAttente15`** (demande user, n'agit pas) : après chaque revente de sortie, devis Jupiter pour la même quantité à
+  +15 s et +30 s → dira si attendre quelques secondes rapporte (biais prudent : notre vente a déjà poussé le prix).
+- **Meteora (UI) ≠ wallet** : Meteora ne voit que les pools, pas les swaps Jupiter → comme le PnL affiché. Au 06/10 08:13 :
+  Meteora +0,27 (24 h) / +0,5 (7 j) contre wallet +0,14 / +0,21. Wallet depuis le 19/09 : +0,52 SOL (positions au coût).
+
+## 46. 06/10 — QUALITÉ DES TOKENS CHOISIS : CE QUI A CHANGÉ DEPUIS SEPTEMBRE (analyse, rien déployé)
+- Part des entrées suivies d'une chute ≥ 60 % en 48 h : 24 % (01-07/09) → 29 % → 35 % → 39 % (22-28/09) → 52 % (dernière
+  semaine, partiel). Bougies GeckoTerminal contrôlées contre le prix vu par le bot pendant la détention (écart médian 1 pt).
+- Les groupes qui chutent le plus (même semaine) : tokens < 72 h (55 % vs 24 %), non établis (46 % vs 21 %), MC < 1 M$ (54 %
+  vs 29 %) — **mais rendement par trade égal ou meilleur** (+0,7 / +1,8 / +2,9 pts de mise, net de taxe). Pas une dégradation.
+- Vrais coupables : (1) tokens taxés mi-septembre (50 % des trades, PnL affiché brut de taxe → 08-21/09 ≈ 0 net) — corrigé
+  par les plafonds 10/09, 12/09 et le blocage du 1 % (05/10) ; (2) tokens « ATH usés » (part 7 % → 15 %, grosses pertes 8,6 %
+  vs 4,7 %, −2,1 pts/trade) — bloqués le 04/10. Hors de cause : cooldown 10 min (13 ré-entrées, 11 gagnantes), tolérance RSI
+  (3 trades), verrou 48 h conditionnel et ré-entrées après coupe (chutent moins), priorité watch du 27/09 (aucun effet visible).
+- 1 % taxés depuis le 12/09 : 129 trades, +0,93 affiché, taxe ≈ −1,04 → net −0,11 SOL (+ ALLINU/SI ouvertes ≈ −0,20).
+  Non taxés mêmes semaines : +1,68 SOL net. Wallet depuis l'arrêt des 1 % (03/10) : trop court (≈ 0, 4 coupes de non taxés).

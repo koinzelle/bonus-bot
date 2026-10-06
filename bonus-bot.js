@@ -602,6 +602,16 @@ async function instantaneWallet() {
         console.log(`  🏦 WALLET: ${(lam / 1e9).toFixed(4)} liquide + ${cout.toFixed(4)} en position + ${rent.toFixed(2)} rent = ${tot.toFixed(4)} SOL`
             + (ref != null && state.walletHist.length > 2
                 ? ` | depuis ${new Date(prem.t).toISOString().slice(5, 16).replace('T', ' ')} : ${tot - ref >= 0 ? '+' : ''}${(tot - ref).toFixed(4)} SOL` : ''));
+        // (2026-10-06) PnL wallet RÉEL par trade (swaps compris) cumulé, à côté du LP affiché, + écart des swaps Jupiter
+        try {
+            const tw = (state.trades || []).filter(t => t.pnlWalletSol != null);
+            const ss = live.swapStats ? live.swapStats() : null;
+            if (tw.length || (ss && ss.n)) {
+                const w = tw.reduce((a, t) => a + t.pnlWalletSol, 0), l = tw.reduce((a, t) => a + (t.pnlSolLive || 0), 0);
+                console.log(`  🏦 PnL RÉEL par trade (depuis le 06/10) : ${tw.length} trades · wallet ${w >= 0 ? '+' : ''}${w.toFixed(4)} SOL · LP affiché ${l >= 0 ? '+' : ''}${l.toFixed(4)} · écart ${(w - l).toFixed(4)} SOL${tw.length ? ` (${((w - l) / tw.length).toFixed(4)}/trade)` : ''}`
+                    + (ss && ss.n ? ` | swaps Jupiter : ${ss.n} mesurés, reçu vs annoncé ${ss.moyenne >= 0 ? '+' : ''}${ss.moyenne} % en moyenne, ${ss.sous1} sous −1 % (tolérance ${ss.toleranceEntreeBps / 100} %)` : ''));
+            }
+        } catch (_) { /* affichage seulement */ }
         save();
     } catch (e) { console.log('  ⚠️ instantané wallet:', String(e.message).slice(0, 60)); }
 }
@@ -3350,6 +3360,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
     // ── LIVE : fermer la vraie position D'ABORD. Si le close réel échoue → on GARDE le tracking
     // (pattern anti-world de bot 1 : jamais supprimer une position pas vidée on-chain).
     let pnlSolLive = null, trade_pnlSource = null, closeRate = false;
+    let txFerm = null, venteRatee = false;   // (06/10) transactions de la fermeture → PnL wallet réel
     if (pos.live && live.enabled) {
         // anti-spam Telegram : la sortie se re-déclenche à chaque tick tant que la position est GARDÉE
         // (close en échec) → on n'alerte qu'une fois / 15 min par position, mais on RE-TENTE le close à
@@ -3358,6 +3369,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         try {
             const r = await withTimeout(live.closeVerified(pos.live), CLOSE_TIMEOUT_MS, `close ${pos.symbol}`);
             if (!r || !r.ok) { alertThrottled(`🚨 LIVE ${pos.symbol}: close INCOMPLET — position GARDÉE, re-tentée à chaque tick, vérifier on-chain`); pos._closing = false; return; }
+            txFerm = r.txs || null; venteRatee = !!r.venteRatee;
             // PnL RÉEL = valeur on-chain close − open (X+Y+fees, insensible au bruit wallet). Fallback sur
             // le flat-to-flat seulement si la lecture on-chain a échoué (2026-07-25, fix mesure).
             if (r.closeValueSol != null && pos.live.openValueSol != null) {
@@ -3486,6 +3498,11 @@ async function closePaper(tok, pos, exitPrice, reason) {
         tvlPoints: (pos._tvlHist || []).length,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         reopenTest: pos._reopenTest || null,
+        // (2026-10-06, GO user) PnL WALLET RÉEL : somme des SOL entrés/sortis du wallet dans les transactions du trade
+        // (achat et revente Jupiter, dépôt, retrait, cautions, frais). `pnlSolLive` ne mesure que la valeur DANS la pool :
+        // mesuré on-chain sur 155 trades (28/09→06/10), il surestime le réel de ~0,0026 SOL par trade (swaps ≈ 1 % à
+        // l'achat et à la revente de la part token). Rempli quelques secondes après la sortie (lecture des transactions).
+        pnlWalletSol: null, txOuv: (pos.live && pos.live.txs) || null, txFerm, venteRatee: venteRatee || null,
         nBins: (pos.live && pos.live.nBins) || null, binStep: (pos.live && pos.live.binStep) || null, wide: pos.live ? !!pos.live.wide : null,
         baseFeePct: (pos.live && pos.live.baseFeePct) ?? null, poolAB: (pos.live && pos.live.poolAB) || null,   // (05/10) A/B frais de base
         mort12: !!pos._mort12, mort24: !!pos._mort24,   // (05/10) alerte/ombre position morte
@@ -3612,7 +3629,20 @@ async function closePaper(tok, pos, exitPrice, reason) {
         const realPnl = pnlSolLive != null
             ? `${livePct != null ? `${livePct > 0 ? '+' : ''}${livePct.toFixed(0)}% ` : ''}(${pnlSolLive > 0 ? '+' : ''}${pnlSolLive} SOL, fees incluses)`
             : `${(pnlPct * 100).toFixed(1)}%`;
-        tg(`${good ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason}\n💵 PnL LP réel: ${realPnl} | ${trade.durMin} min`);
+        const msg = `${good ? '✅' : '🛑'} SORTIE ${pos.symbol} — ${reason}\n💵 PnL LP réel: ${realPnl} | ${trade.durMin} min`;
+        // (2026-10-06, GO user) PnL WALLET RÉEL du trade, lu dans ses propres transactions (insensible aux autres
+        // positions). Le message part dès que la lecture est faite (quelques secondes), ou sans elle si elle échoue.
+        const ouv = pos.live.txs;
+        if (live.walletDeltaOfTxs && ouv && ouv.length && !pos.live.txsIncompletes && txFerm && txFerm.length) {
+            withTimeout(live.walletDeltaOfTxs([...ouv, ...txFerm]), 120000, `pnl wallet ${pos.symbol}`).then(w => {
+                if (!w || w.manquantes) { console.log(`  🏦 ${pos.symbol}: PnL wallet non calculé (${w ? w.manquantes : '?'} transaction(s) illisible(s))`); tg(msg); return; }
+                trade.pnlWalletSol = +w.sol.toFixed(4); trade.pnlWalletTx = w.n; save();
+                const ecart = pnlSolLive != null ? trade.pnlWalletSol - pnlSolLive : null;
+                const signe = v => `${v >= 0 ? '+' : ''}${v.toFixed(4)}`;
+                console.log(`  🏦 ${pos.symbol}: PnL WALLET réel ${signe(trade.pnlWalletSol)} SOL (swaps, frais et cautions compris, ${w.n} tx) · LP affiché ${pnlSolLive != null ? signe(pnlSolLive) : '?'} · écart ${ecart != null ? signe(ecart) : '?'} SOL${venteRatee ? ' · ⚠️ revente incomplète : des tokens restent au wallet, PnL sous-estimé' : ''}`);
+                tg(`${msg}\n🏦 PnL wallet réel: ${signe(trade.pnlWalletSol)} SOL (swaps compris)${venteRatee ? ' ⚠️ revente incomplète' : ''}`);
+            }).catch(() => tg(msg));
+        } else tg(msg);
     }
 }
 
@@ -3766,6 +3796,10 @@ http.createServer((req, res) => {
         // savoir depuis /status si le bot passe de vrais ordres.
         mode: live.enabled ? 'LIVE' : 'PAPER',
         maxLivePositions: MAX_LIVE_POSITIONS, maxPaperPositions: MAX_POSITIONS,
+        // (2026-10-06) écart annoncé/reçu des swaps Jupiter + PnL wallet réel cumulé (trades fermés depuis le 06/10)
+        swapStats: live.swapStats ? live.swapStats() : null,
+        pnlWallet: (() => { const t = (state.trades || []).filter(x => x.pnlWalletSol != null); const w = t.reduce((a, x) => a + x.pnlWalletSol, 0), l = t.reduce((a, x) => a + (x.pnlSolLive || 0), 0);
+            return { trades: t.length, reelSol: +w.toFixed(4), lpAfficheSol: +l.toFixed(4), ecartSol: +(w - l).toFixed(4) }; })(),
         exitTuning: { armPct: TP_PCT * 100, trailPct: TRAIL * 100, bounceArmPct: RANGE_DOWN * 100, cutHardPct: CUT_HARD * 100, rsi2FloorLpPct: RSI2_FLOOR_LP * 100 },
         entryTuning: { feeTvlFloor: FEE_TVL_FLOOR, rsiMax: 50, mourantTtl: MOURANT_TTL_H > 0 ? MOURANT_TTL_H + 'h' : 'à vie', atrEntry: ATR_ENTRY, atrK: ATR_K,
             // (2026-09-20) VALEURS EFFECTIVES DES GARDE-FOUS TAXE. Elles n'étaient exposées nulle part :

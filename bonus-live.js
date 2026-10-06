@@ -417,26 +417,88 @@ async function tokenBalanceRaw(mint) {
 // bruit qui masquait les VRAIS échecs de swap dans les logs.
 const DUST_RAW = 100000n;
 // (2026-08-30) retry : le 400 de Jupiter est souvent transitoire ou dû à un montant lu trop tôt.
-async function jupSwap(inputMint, outputMint, rawAmount, tries = 3) {
+// (2026-10-06, GO user) TOLÉRANCE DE SLIPPAGE 10 % → 2 %. Mesuré on-chain sur 130 achats propres (28/09→06/10) :
+// le prix réellement payé dépasse le prix de la pool de 1,0 % en médiane (q90 3,4 %). 10 % ne servait donc à rien
+// en temps normal et laissait la porte ouverte aux robots sandwich (ils peuvent nous faire payer jusqu'à la limite).
+// Chaque tentative refait un devis : un refus à 2 % est retenté sur un prix frais. JUP_SLIPPAGE_SORTIE_BPS permet
+// d'assouplir la seule REVENTE (sortie, balayage) sans redéploiement de code si des reventes restent bloquées.
+const JUP_SLIPPAGE_BPS = parseInt(process.env.JUP_SLIPPAGE_BPS || '200', 10);
+const JUP_SLIPPAGE_SORTIE_BPS = parseInt(process.env.JUP_SLIPPAGE_SORTIE_BPS || String(JUP_SLIPPAGE_BPS), 10);
+async function jupSwap(inputMint, outputMint, rawAmount, tries = 3, sens = 'entrée') {
+    const bps = sens === 'entrée' ? JUP_SLIPPAGE_BPS : JUP_SLIPPAGE_SORTIE_BPS;
     for (let i = 1; i <= tries; i++) {
-        try { return await jupSwapOnce(inputMint, outputMint, rawAmount); }
+        try { return await jupSwapOnce(inputMint, outputMint, rawAmount, bps, sens); }
         catch (e) {
             const st = e.response?.status, body = JSON.stringify(e.response?.data || {}).slice(0, 120);
-            console.log(`  ⚠️ jupSwap ${i}/${tries} (${rawAmount} unités) : ${st || e.message} ${body}`);
+            console.log(`  ⚠️ jupSwap ${sens} ${i}/${tries} (${rawAmount} unités, tolérance ${bps / 100} %) : ${st || e.message} ${body}`);
             if (i === tries) throw e;
             await new Promise(r => setTimeout(r, 2000 * i));
         }
     }
 }
+
+// ── (2026-10-06) LECTURE ON-CHAIN DE CE QU'UNE TRANSACTION A FAIT AU WALLET ──────────────────────────
+// Variation de SOL (natif + WSOL, frais inclus) et des tokens du wallet, lue dans la transaction elle-même :
+// insensible aux autres positions qui s'ouvrent ou se ferment au même moment (le défaut du flat-to-flat).
+async function txWalletDeltas(sig) {
+    const me = keypair.publicKey.toString();
+    for (let i = 0; i < 6; i++) {
+        try {
+            const t = await connection.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+            if (t && t.meta) {
+                const keys = t.transaction.message.accountKeys.map(k => (k.pubkey || k).toString());
+                const wi = keys.indexOf(me);
+                const tok = {};
+                for (const b of t.meta.preTokenBalances || []) if (b.owner === me) tok[b.mint] = (tok[b.mint] || 0n) - BigInt(b.uiTokenAmount.amount);
+                for (const b of t.meta.postTokenBalances || []) if (b.owner === me) tok[b.mint] = (tok[b.mint] || 0n) + BigInt(b.uiTokenAmount.amount);
+                const lam = wi >= 0 ? t.meta.postBalances[wi] - t.meta.preBalances[wi] : 0;
+                return { lam, fee: t.meta.fee || 0, tok, err: t.meta.err || null };
+            }
+        } catch (_) { /* pas encore indexée : on réessaie */ }
+        await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+    }
+    return null;
+}
+// PnL WALLET d'un ensemble de transactions (celles d'UN trade) : somme des SOL entrés/sortis, swaps, cautions et frais compris.
+async function walletDeltaOfTxs(sigs) {
+    let lam = 0, n = 0, manquantes = 0;
+    for (const s of sigs || []) {
+        const d = await txWalletDeltas(s);
+        if (!d) { manquantes++; continue; }
+        lam += d.lam + Number(d.tok[SOL_MINT] || 0n); n++;
+    }
+    return { sol: lam / LAMPORTS_PER_SOL, n, manquantes };
+}
+
+// ── (2026-10-06) MESURE DE CHAQUE SWAP : montant annoncé par Jupiter vs montant réellement reçu ──────────
+// Un écart négatif régulier au-delà de ~0,5 % = prix qui bouge entre devis et exécution, ou robot sandwich.
+const _swapStats = { n: 0, somme: 0, sous05: 0, sous1: 0, depuis: Date.now() };
+async function mesurerSwap(sig, q, inputMint, outputMint, bps, sens) {
+    try {
+        const d = await txWalletDeltas(sig);
+        if (!d || d.err) return;
+        const annonce = BigInt(q.outAmount || '0');
+        if (annonce <= 0n) return;
+        const recu = outputMint === SOL_MINT
+            ? BigInt(d.lam + d.fee) + (d.tok[SOL_MINT] || 0n)    // SOL reçu ; les frais de tx ne sont pas du slippage
+            : (d.tok[outputMint] || 0n);
+        const ecart = Number(recu - annonce) / Number(annonce) * 100;
+        _swapStats.n++; _swapStats.somme += ecart; if (ecart < -0.5) _swapStats.sous05++; if (ecart < -1) _swapStats.sous1++;
+        const fmt = v => outputMint === SOL_MINT ? `${(Number(v) / LAMPORTS_PER_SOL).toFixed(4)} SOL` : `${v} unités`;
+        console.log(`  🔁 Jupiter ${sens} : annoncé ${fmt(annonce)} · reçu ${fmt(recu)} (${ecart >= 0 ? '+' : ''}${ecart.toFixed(2)} %) · impact annoncé ${(+q.priceImpactPct * 100 || 0).toFixed(2)} % · tolérance ${bps / 100} %`
+            + (_swapStats.n % 20 === 0 ? ` | 📊 ${_swapStats.n} swaps mesurés : écart moyen ${(_swapStats.somme / _swapStats.n).toFixed(2)} %, ${_swapStats.sous05} sous −0,5 %, ${_swapStats.sous1} sous −1 %` : ''));
+    } catch (_) { /* mesure seulement : jamais bloquant */ }
+}
+function swapStats() { return { ..._swapStats, moyenne: _swapStats.n ? +(_swapStats.somme / _swapStats.n).toFixed(3) : null, toleranceEntreeBps: JUP_SLIPPAGE_BPS, toleranceSortieBps: JUP_SLIPPAGE_SORTIE_BPS }; }
 // (2026-09-24) lite-api.jup.ag est en cours de retrait : Jupiter y baisse la limite progressivement,
 // et depuis Railway 100 % des swaps prenaient un 429 (5 ouvertures ratées en 10 min). Nouvelle base
 // api.jup.ag ; avec JUP_API_KEY (portail développeur Jupiter) la limite passe à 60 req/min par clé
 // au lieu de 30 req/min sans clé.
 const JUP_BASE = 'https://api.jup.ag/swap/v1';
 const JUP_HEADERS = process.env.JUP_API_KEY ? { 'x-api-key': process.env.JUP_API_KEY } : {};
-async function jupSwapOnce(inputMint, outputMint, rawAmount) {
+async function jupSwapOnce(inputMint, outputMint, rawAmount, slippageBps = JUP_SLIPPAGE_BPS, sens = 'entrée') {
     const quote = await axios.get(`${JUP_BASE}/quote`, {
-        params: { inputMint, outputMint, amount: rawAmount.toString(), slippageBps: 1000 }, timeout: 12000, // 10% (EP: "so your transaction doesn't hang") — tokens volatils, avant 3%
+        params: { inputMint, outputMint, amount: rawAmount.toString(), slippageBps }, timeout: 12000,   // (06/10) 2 % par défaut, 10 % auparavant
         headers: JUP_HEADERS,
     });
     const swap = await axios.post(`${JUP_BASE}/swap`, {
@@ -447,7 +509,35 @@ async function jupSwapOnce(inputMint, outputMint, rawAmount) {
     tx.sign([keypair]);
     const h = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
     await confirmTx(h);
+    mesurerSwap(h, quote.data, inputMint, outputMint, slippageBps, sens).catch(() => {});   // (06/10) annoncé vs reçu, en tâche de fond
+    _dernierDevis.set(inputMint, { out: quote.data.outAmount, impact: quote.data.priceImpactPct, t: Date.now() });
     return h;
+}
+
+// ── (2026-10-06, demande user) OMBRE « ATTENDRE 15 S AVANT DE REVENDRE » — n'agit pas ─────────────────────
+// Question : à la sortie, revendre tout de suite coûte-t-il plus cher que d'attendre quelques secondes que la pool
+// se calme ? Mesuré on-chain : revente immédiate −1,0 % sur la part token, revente au balayage (17 min) −3,2 % ;
+// personne n'a mesuré 15 s. Après chaque revente de sortie, on redemande un devis Jupiter pour la MÊME quantité à
+// +15 s et +30 s, sans rien échanger, et on le compare au devis qui a servi à vendre.
+// Biais connu : notre propre vente a déjà poussé le prix ; si l'arbitrage ne l'a pas rattrapé, le devis tardif est
+// plus bas → l'ombre est PRUDENTE (elle sous-estime l'intérêt d'attendre). Ligne `SHADOW sbAttente15` pour l'analyse.
+const _dernierDevis = new Map();   // mint d'entrée -> { out, impact, t } du dernier swap exécuté
+function ombreAttente(mint, raw, sig) {
+    const q0 = _dernierDevis.get(mint);
+    if (!q0 || Date.now() - q0.t > 30000) return;
+    (async () => {
+        const res = {};
+        for (const sec of [15, 30]) {
+            await new Promise(r => setTimeout(r, 15000));
+            try {
+                const q = await axios.get(`${JUP_BASE}/quote`, { params: { inputMint: mint, outputMint: SOL_MINT, amount: raw.toString(), slippageBps: JUP_SLIPPAGE_SORTIE_BPS }, timeout: 12000, headers: JUP_HEADERS });
+                res[sec] = q.data.outAmount;
+            } catch (_) { res[sec] = null; }
+        }
+        const b = Number(q0.out), f = v => v == null ? '?' : `${(Number(v) / LAMPORTS_PER_SOL).toFixed(4)} SOL (${((Number(v) / b - 1) * 100 >= 0 ? '+' : '')}${((Number(v) / b - 1) * 100).toFixed(2)} %)`;
+        console.log(`  🕰️ [OMBRE attente] revente ${mint.slice(0, 8)} : devis à la vente ${(b / LAMPORTS_PER_SOL).toFixed(4)} SOL (impact annoncé ${((+q0.impact || 0) * 100).toFixed(2)} %) · à +15 s ${f(res[15])} · à +30 s ${f(res[30])}`);
+        console.log(`  🕯️ SHADOW sbAttente15 ${JSON.stringify({ mint, raw: raw.toString(), sig, out0: q0.out, impact0: +q0.impact || 0, out15: res[15], out30: res[30], ts: new Date().toISOString() })}`);
+    })().catch(() => {});
 }
 
 // ── Sweep : reswappe tout token résiduel (orphelin d'un open avorté) → SOL ──────────────────────
@@ -459,7 +549,7 @@ async function sweepToken(mint) {
     const raw = await tokenBalanceRaw(mint);
     if (raw <= DUST_RAW) return false;   // (2026-08-30) la poussière fait échouer Jupiter en boucle et masque les vrais échecs
     console.log(`  🧹 Sweep ${mint.slice(0, 8)}: ${raw} unités → SOL...`);
-    try { await jupSwap(mint, SOL_MINT, raw); console.log('  ✅ sweep OK'); return true; }
+    try { await jupSwap(mint, SOL_MINT, raw, 3, 'balayage'); console.log('  ✅ sweep OK'); return true; }
     catch (e) { console.log(`  ⚠️ sweep échoué: ${String(e.message).slice(0, 60)}`); return false; }
 }
 
@@ -595,6 +685,7 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
     if (wide) console.log(`  📐 FOURCHETTE LARGE (${WIDE_MODE}) : ${nBins} bins en bs${binStep} [${minBinId}→${maxBinId}] ≈ −${((1 - Math.pow(1 + binStep / 10000, -(activeBin.binId - minBinId))) * 100).toFixed(0)} % / +${((Math.pow(1 + binStep / 10000, maxBinId - activeBin.binId) - 1) * 100).toFixed(0)} %`);
 
     let tokenRaw = 0n, halfLamports;
+    const txOuv = [];   // (06/10) toutes les transactions de l'ouverture → PnL wallet réel du trade
     if (oneSided) {
         halfLamports = Math.floor(amountSol * LAMPORTS_PER_SOL);   // TOUTE la mise en SOL
         console.log(`  🪜 ONE-SIDED : ${amountSol.toFixed(4)} SOL en échelle sur ${BIN_RANGE} bins SOUS le prix — aucun swap, aucune taxe d'entrée`);
@@ -602,7 +693,8 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
     // ~moitié de la mise en token → côté HAUT du Bid-Ask (base vendue pendant la montée)
     halfLamports = Math.floor((amountSol / 2) * LAMPORTS_PER_SOL);
     console.log(`  🔁 Swap ${(halfLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL → token (côté haut)...`);
-    await jupSwap(SOL_MINT, xMint, halfLamports);
+    const hBuy = await jupSwap(SOL_MINT, xMint, halfLamports);
+    if (hBuy) txOuv.push(hBuy);
     // Propagation RPC (2026-07-22) : le solde token n'est PAS visible instantanément après le confirm
     // → lecture immédiate = 0 → abandon à tort (alors que le swap a réussi = tokens orphelins). Bot 1
     // attend 2s ; ici on poll jusqu'à ~12s pour être robuste avant d'abandonner.
@@ -622,7 +714,7 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
         try {
             const ctx = await dlmmPool.createExtendedEmptyPosition(minBinId, maxBinId, positionKeypair.publicKey, keypair.publicKey);
             const ch = await connection.sendTransaction(ctx, [keypair, positionKeypair]);
-            await confirmTx(ch); cree = true;
+            await confirmTx(ch); cree = true; txOuv.push(ch);
             console.log(`  ✅ TX position étendue (${nBins} bins): https://solscan.io/tx/${ch}`);
             // (27/09) 1re ouverture réelle (suit) : 1er morceau passé, 2e « Simulation failed » → dépôt
             // partiel (0,22/0,28). On retente donc avec CE QUI RESTE au wallet (token lu on-chain, SOL
@@ -638,7 +730,7 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
                     });
                     for (const t of Array.isArray(addTxs) ? addTxs : [addTxs]) {
                         const h = await connection.sendTransaction(t, [keypair]);
-                        await confirmTx(h);
+                        await confirmTx(h); txOuv.push(h);
                         console.log(`  ✅ TX liquidité (essai ${essai}): https://solscan.io/tx/${h}`);
                     }
                     xReste = 0n; yReste = 0n;
@@ -694,7 +786,7 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
         });
         for (const t of Array.isArray(tx) ? tx : [tx]) {
             const h = await connection.sendTransaction(t, [keypair, positionKeypair]);
-            await confirmTx(h);
+            await confirmTx(h); txOuv.push(h);
             console.log(`  ✅ TX ouverture: https://solscan.io/tx/${h}`);
         }
     } catch (e) {
@@ -717,7 +809,7 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
             console.log(`  ✅ dépôt ATTERRI après le timeout (${String(e.message).slice(0, 45)}) — position récupérée, valeur LP ${recup.toFixed(4)} SOL`);
             return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress,
                 depositedSol: (balBefore - balAfterR) / LAMPORTS_PER_SOL, openValueSol: recup,
-                lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint };
+                lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint, txs: txOuv, txsIncompletes: true };   // la TX de dépôt a expiré : sa signature manque
         }
         // Dépôt réellement échoué APRÈS le swap → les tokens sont orphelins : on les reswappe en SOL.
         console.log(`  ⚠️ dépôt LP échoué (${String(e.message).slice(0, 60)}) — sweep du token swappé...`);
@@ -755,7 +847,7 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
     const ab = _poolABInfo.get(poolAddress) || {};
     return { positionKeypairPub: positionKeypair.publicKey.toString(), poolAddress, depositedSol, openValueSol, lowerBinId: minBinId, upperBinId: maxBinId, tokenMint: xMint, oneSided,
         nBins, binStep, wide, depotHorsMise: openValueSol != null ? +(depositedSol - openValueSol).toFixed(5) : null,
-        baseFeePct, poolAB: ab.grp || null, poolFeeRef: ab.feeRef ?? null, poolFeeAlt: ab.feeAlt ?? null };
+        baseFeePct, poolAB: ab.grp || null, poolFeeRef: ab.feeRef ?? null, poolFeeAlt: ab.feeAlt ?? null, txs: txOuv };
 }
 
 // ── Valeur de position en SOL (X + Y + fees) — LECTURE ON-CHAIN DIRECTE ──────────────────────────
@@ -947,6 +1039,7 @@ async function positionState(pos) {
 async function closeVerified(pos) {
     _cashShortUntil = 0;   // (2026-09-05) une fermeture rend du SOL : le verrou de manque de cash saute ici
     const balBefore = await solBalance();
+    const txs = [];   // (06/10) toutes les transactions de la fermeture → PnL wallet réel du trade
     const dlmmPool = await DLMM.create(connection, new PublicKey(pos.poolAddress));
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
@@ -956,7 +1049,7 @@ async function closeVerified(pos) {
             const p = userPositions.find(u => u.publicKey.toString() === pos.positionKeypairPub);
             if (!p) { // introuvable = déjà vidée on-chain → close réussi
                 console.log('  ✓ position introuvable on-chain = déjà fermée');
-                return { ok: true, proceedsSol: (await solBalance() - balBefore) / LAMPORTS_PER_SOL, closeValueSol: null };
+                return { ok: true, proceedsSol: (await solBalance() - balBefore) / LAMPORTS_PER_SOL, closeValueSol: null, txs };
             }
             // valeur ON-CHAIN avant remove (X+Y+fees en SOL) = base du PnL réel
             let closeValueSol = null;
@@ -982,12 +1075,12 @@ async function closeVerified(pos) {
             const txList = Array.isArray(removeTxs) ? removeTxs : (removeTxs ? [removeTxs] : []);
             if (txList.length === 0) {
                 const closeTx = await dlmmPool.closePosition({ owner: keypair.publicKey, position: p });
-                const h = await connection.sendTransaction(closeTx, [keypair]); await confirmTx(h);
+                const h = await connection.sendTransaction(closeTx, [keypair]); await confirmTx(h); txs.push(h);
                 console.log(`  ✅ TX closePosition: https://solscan.io/tx/${h}`);
             } else {
                 for (const t of txList) {
                     const h = await connection.sendTransaction(t, [keypair]);
-                    await confirmTx(h);
+                    await confirmTx(h); txs.push(h);
                     console.log(`  ✅ TX fermeture: https://solscan.io/tx/${h}`);
                 }
             }
@@ -999,31 +1092,47 @@ async function closeVerified(pos) {
                     const { userPositions: up2 } = await dlmmPool.getPositionsByUserAndLbPair(keypair.publicKey);
                     const p2 = up2.find(u => u.publicKey.toString() === pos.positionKeypairPub);
                     if (p2) { const ct = await dlmmPool.closePosition({ owner: keypair.publicKey, position: p2 });
-                        const hc = await connection.sendTransaction(ct, [keypair]); await confirmTx(hc);
+                        const hc = await connection.sendTransaction(ct, [keypair]); await confirmTx(hc); txs.push(hc);
                         console.log(`  🧹 compte de position encore ouvert → fermé, caution rendue: https://solscan.io/tx/${hc}`); }
                 } else if (pos.nBins > 70) console.log(`  ✓ compte de position étendue (${pos.nBins} bins) fermé — caution rendue`);
             } catch (ce) { console.log(`  ⚠️ contrôle de fermeture du compte: ${String(ce.message).slice(0, 60)}`); }
             // re-swap du token récupéré → SOL (sinon PnL faussé + poussière qui traîne)
+            // (2026-08-30, cas GTA6 20/51 + STONK) Le solde était lu UNE fois, immédiatement après la TX de fermeture —
+            // avant que le RPC ait indexé les tokens rendus : le bot swappait la poussière et les vrais tokens restaient.
+            // (2026-10-06, GO user) REVENTE COMPLÈTE. Une position étendue se vide en DEUX transactions ; la lecture
+            // ne voyait parfois que la 1re. HIGGS 06/10 05:10 : 12 tokens revendus tout de suite, 4 489 (la moitié de
+            // la position) laissés au balayage de 05:13. Mesuré on-chain sur 154 sorties (28/09→06/10) : 12 cas,
+            // revente 17 min plus tard en médiane, −3,2 % sur la part token contre −1,0 % en revente immédiate.
+            // Désormais : on attend deux lectures identiques avant de vendre, puis on revérifie et on revend ce qui
+            // arrive après, jusqu'à 4 passes.
+            let venteRatee = false;
             if (pos.tokenMint) {
-                try {
-                    // (2026-08-30, cas GTA6 20/51 + STONK) Le solde était lu UNE fois, immédiatement après
-                    // la TX de fermeture — avant que le RPC ait indexé les tokens rendus. Il renvoyait donc
-                    // l'ancien solde (la poussière du close précédent, ~17 unités), le garde `> 0n` passait,
-                    // et le bot swappait 17 unités : Jupiter répondait 400 en 140 ms. Les milliers de vrais
-                    // tokens arrivaient une seconde plus tard et restaient au wallet — 0,41 SOL immobilisés.
-                    // On attend maintenant que le solde DÉPASSE la poussière, jusqu'à 8 tentatives (~20 s).
-                    let raw = 0n;
+                for (let tour = 1; tour <= 4; tour++) {
+                    let raw = 0n, prec = null;
                     for (let attempt = 0; attempt < 8; attempt++) {
-                        raw = await tokenBalanceRaw(pos.tokenMint);
-                        if (raw > DUST_RAW) break;
+                        raw = await tokenBalanceRaw(pos.tokenMint).catch(() => 0n);
+                        if (raw > DUST_RAW && prec !== null && raw === prec) break;    // deux lectures identiques : solde complet
+                        if (raw <= DUST_RAW && tour > 1 && attempt >= 2) break;         // après une revente, plus rien n'arrive
+                        prec = raw;
                         await new Promise(r => setTimeout(r, 2500));
                     }
-                    if (raw > DUST_RAW) { await jupSwap(pos.tokenMint, SOL_MINT, raw); console.log(`  🔁 Token résiduel re-swappé en SOL (${raw} unités)`); }
-                    else console.log(`  · pas de token à re-swapper (${raw} unités = poussière)`);
-                } catch (e) { console.log(`  ⚠️ re-swap token→SOL échoué (${String(e.message).slice(0, 60)}) — résidu au wallet, rattrapé au prochain sweep`); }
+                    if (raw <= DUST_RAW) { if (tour === 1) console.log(`  · pas de token à re-swapper (${raw} unités = poussière)`); break; }
+                    try {
+                        const hs = await jupSwap(pos.tokenMint, SOL_MINT, raw, 3, 'sortie');
+                        if (hs) txs.push(hs);
+                        console.log(`  🔁 Token re-swappé en SOL (${raw} unités${tour > 1 ? `, passe ${tour} : tokens arrivés après la 1re lecture` : ''})`);
+                        ombreAttente(pos.tokenMint, raw, hs);
+                    } catch (e) {
+                        venteRatee = true;
+                        console.log(`  ⚠️ re-swap token→SOL échoué (${String(e.message).slice(0, 60)}) — résidu au wallet, rattrapé au prochain balayage`);
+                        break;
+                    }
+                }
+                // (06/10) Le compte du token n'est PAS refermé (décision user) : le bot re-trade souvent le même token
+                // et ne sait pas quand ; le ménage des comptes vides se fait à la main.
             }
             const proceedsSol = (await solBalance() - balBefore) / LAMPORTS_PER_SOL;
-            return { ok: true, proceedsSol, closeValueSol };
+            return { ok: true, proceedsSol, closeValueSol, txs, venteRatee };
         } catch (e) {
             console.log(`  ⚠️ close tentative ${attempt}/3: ${String(e.message).slice(0, 80)}`);
             if (attempt === 3) { console.log('  🚨 CLOSE INCOMPLET — garder le tracking, alerter, NE PAS logger de PnL'); return { ok: false, proceedsSol: null }; }
@@ -1042,4 +1151,4 @@ async function closeVerified(pos) {
 //   slot qui avance + volume réel nul → la pool dormait vraiment     → rien à réparer côté RPC
 // `getSlot()` est un appel EN PLUS (Anchor n'expose pas le contexte) : réservé aux positions armées.
 async function currentSlot() { try { return await connection.getSlot(); } catch (_) { return null; } }
-module.exports = { enabled: true, solBalance, findMeteoraPool, transferFeeBps, MAX_TRANSFER_FEE_BPS, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions, currentSlot };
+module.exports = { enabled: true, solBalance, findMeteoraPool, transferFeeBps, MAX_TRANSFER_FEE_BPS, openBidAsk, closeVerified, positionValueSol, positionValueAndBin, allPositionValues, positionValuesByKeys, positionState, sweepToken, sweepOrphans, findOrphanPositions, currentSlot, walletDeltaOfTxs, swapStats };
