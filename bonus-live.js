@@ -483,6 +483,9 @@ async function mesurerSwap(sig, q, inputMint, outputMint, bps, sens) {
             ? BigInt(d.lam + d.fee) + (d.tok[SOL_MINT] || 0n)    // SOL reçu ; les frais de tx ne sont pas du slippage
             : (d.tok[outputMint] || 0n);
         const ecart = Number(recu - annonce) / Number(annonce) * 100;
+        // (06/10) un balayage de poussière fausse tout : la caution du compte WSOL rendue dans la même transaction (0,0015 SOL)
+        // passe pour du « reçu » sur un swap de quelques lamports (+285 689 % mesuré). Hors stats : < 0,001 SOL ou écart > 25 %.
+        if ((outputMint === SOL_MINT && annonce < 1000000n) || Math.abs(ecart) > 25) return;
         _swapStats.n++; _swapStats.somme += ecart; if (ecart < -0.5) _swapStats.sous05++; if (ecart < -1) _swapStats.sous1++;
         const fmt = v => outputMint === SOL_MINT ? `${(Number(v) / LAMPORTS_PER_SOL).toFixed(4)} SOL` : `${v} unités`;
         console.log(`  🔁 Jupiter ${sens} : annoncé ${fmt(annonce)} · reçu ${fmt(recu)} (${ecart >= 0 ? '+' : ''}${ecart.toFixed(2)} %) · impact annoncé ${(+q.priceImpactPct * 100 || 0).toFixed(2)} % · tolérance ${bps / 100} %`

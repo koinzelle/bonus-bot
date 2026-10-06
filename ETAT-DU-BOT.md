@@ -2610,3 +2610,10 @@ Relecture des 1 246 transactions du wallet (28/09 22:55 → 06/10, RPC public) e
   (85 % des refus < 6 h) et `pattern-KO` (52 % à 6-24 h). Le point faible est le MILIEU (1-7 j, 58 % des entrées) ; à
   trancher avec `pnlWalletSol` (1-2 semaines) : les tokens jeunes/petits rapportent autant au PnL affiché mais leurs swaps
   coûtent probablement plus.
+- **06/10 soir — premiers relevés en production** : sorties baton / SAPLING reçu = annoncé (−0,01 / −0,03 %), entrées OTC /
+  Cadence reçu = annoncé (0,00 %) ; impact annoncé 0,5 à 3,8 %. Ombre attente : baton −0,65 % à +15 s, SAPLING (impact 3,8 %)
+  +0,44 % / +1,29 % à +15 / +30 s. Correctif : les balayages de poussière (< 0,001 SOL, caution WSOL comptée comme reçu,
+  « +285 689 % ») sont exclus des stats de swap.
+- **Rotation (06/10)** : depuis le 27/09, les trades < 2 h (48 %) font +1,79 SOL dans 9 % du temps de place ; ceux > 12 h
+  (7 % des trades) occupent 49 % du temps de place pour −0,59 SOL. Rappel : STAGNATION (sortie au temps) a coûté −0,61 SOL
+  en 2 jours (7 coupes sur 11 ont rebondi) → toute sortie au temps passe par l'ombre (sbPositionMorte, en cours).
