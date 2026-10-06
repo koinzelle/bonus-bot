@@ -2321,6 +2321,7 @@ async function scan() {
                 // Mesurable, contrairement à l'attente actuelle : elle sort PLUS TÔT que la coupe
                 // sèche, donc la position est encore ouverte quand l'ombre se déclenche.
                 // On journalise le LP qu'elle aurait réalisé ; à la fermeture on comparera au réel.
+                ombre('sbMacd', () => { if (pos.live) ombreMacdPosition(pos, tok, realGain); });   // (07/10) ombre MACD, n'agit pas
                 ombre('sbChute', () => {
                     if (!pos.live) return;
                     for (const sl of [20, 30, 40]) {
@@ -3125,6 +3126,7 @@ async function scan() {
                 });
                 const msg = `🎯 ENTRÉE ${w.symbol} (chop-cycle${downtrend ? ' ⚠️downtrend' : ''})\nprix: $${entry.toFixed(8)} | chop ${(cr * 100).toFixed(0)}% | dumpé -${(dumpedFromHigh * 100).toFixed(0)}% sous le haut récent\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: TP +6% OU RSI(2)>90 | cut hors-range -35% | on cycle`;
                 ombre('sbFlux', () => { const f = ombreFlux(tok, w.symbol, 'entrée', { dump: +(dumpedFromHigh * 100).toFixed(0) }); if (f && state.positions[tok]) state.positions[tok].fluxEntree = f; });
+                ombre('sbMacd', () => { const me = macdEntree(tok); if (me && state.positions[tok]) state.positions[tok].macdEntree = me; });
                 console.log(msg.replace(/\n/g, ' | '));   // Telegram RÉEL uniquement (2026-08-11) : la notif part seulement si l'ouverture live réussit (voir plus bas)
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
                 // Cap MAX_LIVE_POSITIONS (défaut 1, 2026-07-22) : limite le blast radius en dry-run —
@@ -3509,6 +3511,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         reopenTest: pos._reopenTest || null,
         fluxEntree: pos.fluxEntree || null,   // (07/10) ombre flux d'ordres à l'entrée
+        macdEntree: pos.macdEntree || null, macdSorties: pos._macd && Object.keys(pos._macd).length ? pos._macd : null,   // (07/10) ombre MACD
         // (2026-10-06, GO user) PnL WALLET RÉEL : somme des SOL entrés/sortis du wallet dans les transactions du trade
         // (achat et revente Jupiter, dépôt, retrait, cautions, frais). `pnlSolLive` ne mesure que la valeur DANS la pool :
         // mesuré on-chain sur 155 trades (28/09→06/10), il surestime le réel de ~0,0026 SOL par trade (swaps ≈ 1 % à
@@ -3864,6 +3867,63 @@ dsc.demarrer(_dsSuivis, 15000, mint => { const c = _gtPoolCache.get(mint); retur
 // nouvelle : le FLUX D'ORDRES au moment du creux (achats/ventes et volume sur 5 min / 1 h, liquidité), gratuit via les
 // lectures DexScreener déjà faites toutes les 15 s. Journalisé à chaque creux (pris ou refusé, 1 par token et par 6 h) et à
 // chaque entrée (aussi dans le trade : `fluxEntree`). Verdict après ~2 semaines : sépare-t-il les rebonds des effondrements ?
+// ── (2026-10-07, GO user) OMBRE MACD (12,26,9) — n'agit sur rien ─────────────────────────────────────────────────
+// Porte basse d'EP : « un indicateur de tendance en grande unité de temps coupe toutes les positions du token ». Test du
+// 07/10 sur nos vraies LP, 8 unités de temps : tout croisement 15 min-2 h perd (−1 à −7 SOL sur 40 j) ; le croisement 4 h
+// est le seul neutre/positif (+0,14 SOL sur 34 cas, ~+0,9 avec la place libérée) ; « 1 h sous zéro + LP ≤ −10 % » +0,14
+// (32 cas) ; « 15 min sous zéro » positif depuis le 27/09 seulement. En filtre d'entrée, le MACD 4 h baissier bloque surtout
+// des gagnants (132 sur 147 depuis le 26/08) mais a évité −0,37 SOL depuis le 27/09 : instable.
+// Journalisé : 1er croisement de chaque variante pendant la position (avec la LP du moment, ligne SHADOW sbMacd, champ
+// `macdSorties` du trade) + état du MACD 30 min / 2 h / 4 h à l'entrée (`macdEntree`). Verdict après ~30 déclenchements.
+// Bougies : 15 min du cache ; 1 h = historique 1 h du cache complété par les heures pleines tirées des 15 min (plus fraîches).
+function _aggTF(c, sec) { const o = []; for (const k of c) { const t = Math.floor(k[0] / sec) * sec, l = o[o.length - 1];
+    if (!l || l[0] !== t) o.push([t, k[1], k[2], k[3], k[4], k[5] || 0]); else { l[2] = Math.max(l[2], k[2]); l[3] = Math.min(l[3], k[3]); l[4] = k[4]; l[5] += k[5] || 0; } } return o; }
+function _emaArr(v, n) { const k = 2 / (n + 1); let e = null; return v.map(x => e = e == null ? x : x * k + e * (1 - k)); }
+function _serie1h(tok) {
+    const h = (candleCache.get(tok + '1h') || {}).cs || [], q = (candleCache.get(tok + '15m') || {}).cs || [];
+    const m = new Map(h.map(c => [c[0], c]));
+    const H = new Map(); for (const c of q) { const t = Math.floor(c[0] / 3600) * 3600; const a = H.get(t);
+        if (!a) H.set(t, { c: [t, c[1], c[2], c[3], c[4], c[5] || 0], n: 1 }); else { a.c[2] = Math.max(a.c[2], c[2]); a.c[3] = Math.min(a.c[3], c[3]); a.c[4] = c[4]; a.c[5] += c[5] || 0; a.n++; } }
+    for (const [t, a] of H) if (a.n === 4 && !m.has(t)) m.set(t, a.c);   // heures COMPLÈTES seulement
+    return [...m.values()].sort((x, y) => x[0] - y[0]);
+}
+function _macdDernier(cs, tfSec) {
+    const now = Date.now() / 1000, c = cs.filter(k => k[0] + tfSec <= now);   // bougies CLÔTURÉES
+    if (c.length < 40) return null;
+    const cl = c.map(k => k[4]), a = _emaArr(cl, 12), b2 = _emaArr(cl, 26), m = a.map((x, i) => x - b2[i]), s = _emaArr(m, 9), i = c.length - 1;
+    return { ct: (c[i][0] + tfSec) * 1000, m: m[i], s: s[i], mPrev: m[i - 1], sPrev: s[i - 1] };
+}
+function _macdTF(tok, tf) {
+    const q = (candleCache.get(tok + '15m') || {}).cs;
+    if (tf === '15m') return q ? _macdDernier(q, 900) : null;
+    if (tf === '30m') return q ? _macdDernier(_aggTF(q, 1800), 1800) : null;
+    const h = _serie1h(tok); if (!h.length) return null;
+    if (tf === '1h') return _macdDernier(h, 3600);
+    if (tf === '2h') return _macdDernier(_aggTF(h, 7200), 7200);
+    if (tf === '4h') return _macdDernier(_aggTF(h, 14400), 14400);
+    return null;
+}
+const MACD_VARIANTES = [
+    ['4h', 'croisement', r => r.m < r.s && r.mPrev >= r.sPrev],
+    ['1h', 'croisement sous zéro', r => r.m < r.s && r.mPrev >= r.sPrev && r.m < 0],
+    ['15m', 'croisement sous zéro', r => r.m < r.s && r.mPrev >= r.sPrev && r.m < 0],
+];
+function ombreMacdPosition(pos, tok, realGain) {
+    pos._macd = pos._macd || {};
+    if (!pos._macd1hTs || Date.now() - pos._macd1hTs > 30 * 60e3) { pos._macd1hTs = Date.now(); candles1h(tok).catch(() => {}); }   // historique 1 h rafraîchi en tâche de fond
+    for (const [tf, nom, f] of MACD_VARIANTES) {
+        const k = tf + ' ' + nom; if (pos._macd[k]) continue;
+        const r = _macdTF(tok, tf); if (!r || r.ct <= pos.openedAt || !f(r)) continue;
+        pos._macd[k] = { t: r.ct, lp: +(realGain * 100).toFixed(1) };
+        recordShadow('sbMacd', { symbol: pos.symbol, tok, tf, variante: nom, lp: +(realGain * 100).toFixed(1), peak: +((pos.peakGain || 0) * 100).toFixed(1),
+            ageH: +((Date.now() - pos.openedAt) / 3600e3).toFixed(1), bougie: new Date(r.ct).toISOString(), macd: r.m, signal: r.s });
+    }
+}
+function macdEntree(tok) {
+    const o = {};
+    for (const tf of ['30m', '2h', '4h']) { const r = _macdTF(tok, tf); if (r) o[tf] = { bas: r.m < r.s, sousZero: r.m < 0 }; }
+    return Object.keys(o).length ? o : null;
+}
 const _fluxVu = new Map();
 function ombreFlux(tok, sym, type, extra) {
     const f = dsc.flux(tok);

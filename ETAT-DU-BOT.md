@@ -2631,3 +2631,10 @@ Relecture des 1 246 transactions du wallet (28/09 22:55 → 06/10, RPC public) e
   variations de prix, liquidité, MC) à chaque creux refusé (1 par token et par 6 h) et à chaque entrée (`fluxEntree` dans le
   trade). Motif : étude du 06/10 — 2 564 creux + 978 entrées, aucune des 15 mesures disponibles ne prédit le rebond (AUC
   0,45-0,57). Verdict dans ~2 semaines : le flux sépare-t-il les rebonds (+10 % avant −35 %) des effondrements ?
+- **Ombre `sbMacd`** (07/10, GO user, n'agit pas) : porte basse d'EP (« indicateur de tendance HTF ») testée en MACD
+  12/26/9 sur 8 unités de temps (`/tmp/cc/mkt/macdtf.js`) : tout croisement 15 min-2 h perd (−1 à −7 SOL) ; croisement
+  4 h +0,14 SOL / 34 cas (~+0,9 avec la place libérée) ; « 1 h sous zéro + LP ≤ −10 % » +0,14 / 32 cas. Filtre d'entrée
+  MACD 4 h baissier : bloque 132 gagnants sur 147 depuis le 26/08 (+0,58 SOL perdus) mais aurait évité −0,37 depuis le 27/09.
+  Sortie au 1er RSI2>90 EN ROUGE (question user) : depuis le 27/09, 45 positions sur 51 auraient fait PIRE (−0,43 SOL).
+  Journalisé : 1er croisement 4 h / 1 h sous zéro / 15 min sous zéro pendant chaque position (LP du moment) + état MACD
+  30 min / 2 h / 4 h à l'entrée (`macdEntree`, `macdSorties`). Verdict après ~30 déclenchements du 4 h (3-4 semaines).
