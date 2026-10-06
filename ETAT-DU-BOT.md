@@ -2660,3 +2660,26 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   « molle » (frais < 0,1-0,5 mSOL/h) = −0,08 à +0,23 SOL, pas mieux que le hasard ; fermer la plus VIEILLE non armée ≥ 5 h =
   +0,35 à +0,45 SOL / 12 j (27-29 remplacements, IC 90 % contient 0, P>0 83-87 %) ; témoin au hasard −0,10 à −0,46. Non
   activé (règle de fermeture) : refaire à la revue du 14/10 avec le plancher 12 % en place.
+
+## 49. 07/10 — WATCH ET DÉCOUVERTE ALIGNÉES SUR LE PLANCHER 12 % (GO user)
+- **Constat (06/10 ~22 h 50, plancher 12 % en place)** : tout Meteora ne compte que **43 pools à ≥ 12 %** (TVL ≥ 5 k$), soit
+  **28 tokens** ; 2 en position, 15 en watch, 11 absents dont **9 refusés à raison** (volume < 1 M$ ou MC < 250 k$) et 2 (phubber,
+  CHONK) juste sortis pour pattern-KO / âge < 10 h. La découverte ne rate donc rien d'achetable. En face, **12 des 25 tokens de la
+  watch dont on connaissait le ratio étaient sous 12 %** (swordcat, baton, BINDER, ZCAT, BP, LOOT 0 %, PAID 6 %…) : ils ne peuvent
+  pas entrer mais prennent des places et le budget bougies (« budget-fetch-épuisé » vu sur SI, token à 12 %+).
+- **Seuls les tokens de Met-fees peuvent entrer** : l'entrée exige `feeTvlMap` ≥ `FEE_TVL_FLOOR` et la map vient de cet appel
+  datapi. Or Met-fees passait EN DERNIER (après GT et DexBoost) et le scan ne lit que les **60 premiers candidats** : le 06/10,
+  **64 % de ses candidats ont été coupés** (13 262 / 20 738 sur 595 scans, 222 scans où elle l'a été en entier).
+- **Déployé** :
+  1. Met-fees **en tête de liste**, tokens rangés par volume 24 h décroissant (même appel, aucun appel en plus). Testé sur la vraie
+     fonction : les 27 tokens ≥ 12 % occupent les 27 premières places, 0 au-delà du 60e.
+  2. **Purge watch** d'un token sous le plancher depuis > 30 min (testé à chaque scan, lecture de map seulement) : log
+     `🧹 Purge watch: X (fees<12% depuis >30min — rotation)`. Exemptés : positions, fenêtre de réouverture (elle passe outre le
+     plancher), map pas encore chargée. Un token ainsi sorti **n'est pas ré-admis tant qu'il reste sous le plancher** (24 h max,
+     `state.feesPurgedAt`), sinon GT le ramène 30 min plus tard.
+- **Pas fait, volontairement** : (a) un 2e appel datapi « trié par volume » — il aurait rendu les mêmes 43 pools, toutes déjà
+  sur la page 1 de Met-fees ; (b) le réessai GeckoTerminal sur 429 — au plancher 12 %, aucun token venu seulement de GT ne peut
+  entrer (fees 0 % hors map), réessayer n'ajouterait que de la latence au scan. À reconsidérer si le plancher redescend sous ~5 %
+  (80 pools à 5 % : là, Met-fees seule dépasse la limite de 60 et GT redevient utile).
+- **Coût en données** : les tokens sous 12 % ne produiront presque plus de lignes near-miss `fees<12%` ; pour juger le plancher au
+  14/10, s'appuyer sur le wallet, `pnlWalletSol` et le nombre de trades/jour, pas sur ces lignes.

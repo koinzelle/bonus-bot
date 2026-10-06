@@ -738,6 +738,39 @@ async function gtTrending() {
     const out = [];
     const seen = new Set();
     const srcStats = [];   // santé PAR source (repère une source down directement dans les logs — cas bot 1)
+    // SOURCE FEES/TVL (2026-08-10, cas FOMO) : les MEILLEURES pools LP (fort rendement fees/TVL) sont souvent
+    // PETITES (FOMO $13k TVL, 43% fees/TVL) → invisibles au tri par volume absolu (elles ne rentrent pas dans
+    // le top 40). On les capte via l'API Meteora datapi triée par fee_tvl_ratio_24h. Le token passe ENSUITE
+    // tous les filtres normaux (dexInfo, volume, qualité GMGN, pattern, dump, RSI, pool viable).
+    // EN TÊTE DE LISTE (07/10, GO user « réparer la découverte ») : avec le plancher à 12 %, SEULS les
+    // tokens de cette liste peuvent entrer — l'entrée exige `feeTvlMap` ≥ FEE_TVL_FLOOR et la map vient
+    // de cet appel. Or elle passait en DERNIER, derrière GT et DexBoost, et le scan ne lit que les 60
+    // premiers candidats : le 06/10, 64 % de ses candidats ont été coupés (13 262 sur 20 738, 595 scans,
+    // dont 222 où elle l'a été en entier). Un 2e appel « trié par volume » n'aurait rien ajouté : ce
+    // soir-là Meteora ne compte que 43 pools à ≥ 12 % (TVL ≥ 5 k$), toutes sur la page 1 de celui-ci.
+    // On garde donc l'appel, on le passe en tête et on range ses tokens par volume 24 h décroissant.
+    try {
+        const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', SOLM = 'So11111111111111111111111111111111111111112';
+        const mr = await axios.get('https://dlmm.datapi.meteora.ag/pools', {
+            params: { page: 1, page_size: 100, sort_by: 'fee_tvl_ratio_24h:desc', filter_by: `fee_tvl_ratio_24h>=${FEE_TVL_FLOOR} && tvl>=5000 && is_blacklisted=false` },
+            headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000,
+        });
+        const nm = new Map(), volTok = new Map(); let added = 0;
+        for (const p of mr.data?.data || []) {
+            const ratio = (p.fee_tvl_ratio && p.fee_tvl_ratio['24h']) || 0;
+            const xm = p.token_x && p.token_x.address, ym = p.token_y && p.token_y.address;
+            const tok = (xm === SOLM || xm === USDC) ? ym : (ym === SOLM || ym === USDC) ? xm : xm; // côté non-SOL/USDC
+            if (!tok || tok === SOLM || tok === USDC) continue;
+            const prev = nm.get(tok);
+            if (!prev || ratio > prev.ratio) nm.set(tok, { ratio, pool: p.address || null }); // meilleur fees/TVL + SA pool
+            volTok.set(tok, Math.max(volTok.get(tok) || 0, (p.volume && p.volume['24h']) || 0));
+        }
+        if (nm.size) feeTvlMap = nm; // remplace seulement si succès (persiste sur un hoquet datapi → pas de faux blocage)
+        for (const [tok] of [...volTok].sort((a, b) => b[1] - a[1])) {   // ces coins = les vraies machines à fees
+            if (!seen.has(tok)) { seen.add(tok); out.push({ tok, gtPool: null }); added++; }
+        }
+        srcStats.push(`Met-fees:${added}`);
+    } catch (_) { srcStats.push('Met-fees:KO⚠️'); }
     for (const { label, url } of urls) {
         let added = 0, ko = false;
         try {
@@ -778,29 +811,6 @@ async function gtTrending() {
         }
         srcStats.push(`DexBoost:${ko ? 'KO⚠️' : added}`);
     }
-    // SOURCE FEES/TVL (2026-08-10, cas FOMO) : les MEILLEURES pools LP (fort rendement fees/TVL) sont souvent
-    // PETITES (FOMO $13k TVL, 43% fees/TVL) → invisibles au tri par volume absolu (elles ne rentrent pas dans
-    // le top 40). On les capte via l'API Meteora datapi triée par fee_tvl_ratio_24h. Le token passe ENSUITE
-    // tous les filtres normaux (dexInfo, volume, qualité GMGN, pattern, dump, RSI, pool viable).
-    try {
-        const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', SOLM = 'So11111111111111111111111111111111111111112';
-        const mr = await axios.get('https://dlmm.datapi.meteora.ag/pools', {
-            params: { page: 1, page_size: 100, sort_by: 'fee_tvl_ratio_24h:desc', filter_by: `fee_tvl_ratio_24h>=${FEE_TVL_FLOOR} && tvl>=5000 && is_blacklisted=false` },
-            headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000,
-        });
-        const nm = new Map(); let added = 0;
-        for (const p of mr.data?.data || []) {
-            const ratio = (p.fee_tvl_ratio && p.fee_tvl_ratio['24h']) || 0;
-            const xm = p.token_x && p.token_x.address, ym = p.token_y && p.token_y.address;
-            const tok = (xm === SOLM || xm === USDC) ? ym : (ym === SOLM || ym === USDC) ? xm : xm; // côté non-SOL/USDC
-            if (!tok || tok === SOLM || tok === USDC) continue;
-            const prev = nm.get(tok);
-            if (!prev || ratio > prev.ratio) nm.set(tok, { ratio, pool: p.address || null }); // meilleur fees/TVL + SA pool
-            if (!seen.has(tok)) { seen.add(tok); out.push({ tok, gtPool: null }); added++; } // ces coins = les vraies machines à fees
-        }
-        if (nm.size) feeTvlMap = nm; // remplace seulement si succès (persiste sur un hoquet datapi → pas de faux blocage)
-        srcStats.push(`Met-fees:${added}`);
-    } catch (_) { srcStats.push('Met-fees:KO⚠️'); }
     console.log(`📡 Sources découverte: ${srcStats.join(' · ')} → ${out.length} candidats uniques`);
     gtScan++;
     return out;
@@ -1821,6 +1831,8 @@ async function scan() {
         // (2026-08-27) purgedAt n'était JAMAIS élagué → il grossissait indéfiniment dans le JSON réécrit en
         // synchrone à chaque scan. Le cooldown de re-add est de 30 min : au-delà de 2h l'entrée est inutile.
         for (const k in state.purgedAt) if (now - state.purgedAt[k] > 2 * 3600e3) delete state.purgedAt[k];
+        if (!state.feesPurgedAt) state.feesPurgedAt = {};   // (07/10) sortis pour frais/TVL sous le plancher — voir la boucle watch
+        for (const k in state.feesPurgedAt) if (now - state.feesPurgedAt[k] > 24 * 3600e3) delete state.feesPurgedAt[k];
         // PERSISTANCE PATTERN PAR MINT (2026-08-15) : le pattern EP est "collant" (ruggers sortis = acquis à vie)
         // mais il était perdu à chaque purge→re-add ET quand le fetch 1H retombait sur 15m (pattern hors champ
         // sur 48h → faux pattern-KO sur les vieux coins déjà validés, cas CATE/STONK). On mémorise la validation
@@ -1844,10 +1856,13 @@ async function scan() {
         let discovered = [];
         { const _a = Date.now(); if (!hotOnly) { try { discovered = await gtTrending(); } catch (e) { console.log('GT indisponible:', e.message); } } _tDisc = Date.now() - _a; }
         let replaceBudget = 3; // remplacements watch max/scan (2026-08-14) : la watch se rafraîchit progressivement, pas de thrashing
-        for (const { tok, gtPool } of discovered.slice(0, 60)) { // 4-6 sources fusionnées (GT p1-3 + 1h + new + DexScreener) — trending d'abord
+        for (const { tok, gtPool } of discovered.slice(0, 60)) { // sources fusionnées — Met-fees (les seuls qui peuvent entrer) d'abord, puis GT et DexBoost
             if (state.watch[tok] || state.positions[tok]) continue;
             // cooldown re-add 30min après purge (sinon cycle purge→re-add sur les tokens trending morts)
             if (state.purgedAt[tok] && now - state.purgedAt[tok] < 30 * 60 * 1000) continue;
+            // (07/10) sorti pour frais/TVL sous le plancher → pas de retour tant qu'il y reste (24 h max) :
+            // sinon GT le ramène 30 min plus tard et il reprend une place qu'il ne peut pas utiliser.
+            if (state.feesPurgedAt[tok] && feeTvlMap.size > 0 && ((feeTvlMap.get(tok) || {}).ratio || 0) < FEE_TVL_FLOOR) continue;
             if (Object.keys(state.watch).length >= MAX_WATCH && replaceBudget <= 0) break; // pleine + plus de remplacement ce scan → stop
             try {
                 const d = await dexInfo(tok);
@@ -1920,6 +1935,21 @@ async function scan() {
         _tWatch0 = Date.now();
         for (const [tok, w] of rotated) {
             const inPos = !!state.positions[tok];
+            // (07/10, GO user) FRAIS/TVL SOUS LE PLANCHER DEPUIS > 30 MIN → SORTIE DE LA WATCH, comme le
+            // pattern-KO. Le 06/10 au soir, 12 des 25 tokens de la watch dont on connaissait le ratio étaient
+            // sous 12 % (swordcat, baton, BINDER, ZCAT, BP, LOOT à 0 %, PAID 6 %…) : ils ne peuvent pas entrer
+            // mais prennent des places et le budget bougies (« budget-fetch-épuisé » sur des tokens à 12 %+).
+            // Testé à chaque scan, avant le saut « pas dû » (lecture de la map, aucun appel). Exemptés :
+            // positions, fenêtre de réouverture (elle passe outre le plancher), map pas encore chargée.
+            if (!inPos && feeTvlMap.size > 0) {
+                const sousPlancher = ((feeTvlMap.get(tok) || {}).ratio || 0) < FEE_TVL_FLOOR && !(w.reopenUntil && now < w.reopenUntil);
+                if (!sousPlancher) w.feesKoDepuis = 0;
+                else if (!w.feesKoDepuis) w.feesKoDepuis = now;
+                else if (now - w.feesKoDepuis > 30 * 60e3) {
+                    console.log(`🧹 Purge watch: ${w.symbol} (fees<${FEE_TVL_FLOOR}% depuis >30min — rotation)`);
+                    state.purgedAt[tok] = now; state.feesPurgedAt[tok] = now; delete state.watch[tok]; continue;
+                }
+            }
             // FRÉQUENCE ADAPTATIVE (2026-07-27, idée user) : un token LOIN de l'entrée (-35%) n'a pas besoin
             // d'être checké souvent → on concentre les appels GT là où ça compte (proche entrée / positions).
             // dd<20% → 10min ; 20-30% → 3min ; ≥30% → 1min ; position → chaque tick (pour la sortie).
