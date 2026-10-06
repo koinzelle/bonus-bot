@@ -2638,3 +2638,15 @@ Relecture des 1 246 transactions du wallet (28/09 22:55 → 06/10, RPC public) e
   Sortie au 1er RSI2>90 EN ROUGE (question user) : depuis le 27/09, 45 positions sur 51 auraient fait PIRE (−0,43 SOL).
   Journalisé : 1er croisement 4 h / 1 h sous zéro / 15 min sous zéro pendant chaque position (LP du moment) + état MACD
   30 min / 2 h / 4 h à l'entrée (`macdEntree`, `macdSorties`). Verdict après ~30 déclenchements du 4 h (3-4 semaines).
+
+## 48. 07/10 — LE RATIO FRAIS/TVL À L'ENTRÉE SÉPARE PERDANTS ET GAGNANTS (proposé : FEE_TVL_FLOOR 5 → 12)
+Question user : « on retrade PAID qui n'a quasiment pas de frais ? » — PAID ré-ouverte le 06/10 22:00 avec frais/TVL 6,4 %
+(plancher 5 %), volume 1,01 M$ (plancher 1 M$), pool bs80 à 1 % de frais de base → 0,03 mSOL/h. Le bot prend le PREMIER
+qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place.
+- Rendement net (taxe + ~1 % de swaps) par tranche de frais/TVL à l'entrée, 26/08 → 06/10 : 0-8 % −1,2 % · 8-15 % −1,8 % ·
+  15-30 % +0,9 % · > 30 % +1,5 % ; depuis le 27/09 : −1,5 / −0,6 / +2,2 / +2,9 %. Semaine par semaine (5/5) : < 15 % fait
+  1,2 à 3,8 pts de moins que ≥ 15 %. Pas porté par quelques tokens (460 trades, 93 tokens, −2,06 SOL ; −1,26 sans les 3 pires).
+- Plancher : 10 % → +1,27 SOL / 42 j · **12 % → +2,11 SOL / 42 j (+0,05 SOL/jour, 34 % des trades refusés) ; +0,51 / 10 j
+  depuis le 27/09** · 15 % → +2,06 / +0,27 · 20 % → +1,88 / +0,39. Volume 24 h : aucun gradient.
+- Réglage : variable Railway `FEE_TVL_FLOOR` (défaut code 3, actuel 5) ; elle filtre aussi la source de découverte Met-fees.
+  Revert instantané. À mesurer au wallet et avec `pnlWalletSol`.
