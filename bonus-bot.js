@@ -1746,9 +1746,9 @@ async function batchedPositionValues() {
         // déjà −56,06 %. Les 9 coupes sur la LP depuis le 28/09 sont sorties à −57,2 % en moyenne au lieu de −55 %
         // (≈ 0,006 SOL de trop par coupe). Coût mesuré : les positions ne passent que ~2 h/jour entre −50 et −55 % (0,6 h
         // entre −53 et −55) → ~1 400 lectures de plus par jour, négligeable.
-        if (g <= -RANGE_DOWN + 0.02) t = Math.min(t, 10000);        // à moins de 2 points de la coupe : à chaque contrôle
-        else if (g <= -RANGE_DOWN + 0.05) t = Math.min(t, 20000);   // à moins de 5 points
-        else if (g <= -RANGE_DOWN + 0.10) t = Math.min(t, 45000);   // à moins de 10 points (au lieu de 180 s hors fourchette)
+        // Paliers choisis par le user (07/10) : 30 s à moins de 2 points, 2 min à moins de 10 points.
+        if (g <= -RANGE_DOWN + 0.02) t = Math.min(t, 30000);        // à moins de 2 points de la coupe
+        else if (g <= -RANGE_DOWN + 0.10) t = Math.min(t, 120000);  // à moins de 10 points (au lieu de 180 s hors fourchette)
         // (2026-09-02) On CONSERVE le palier de chaque position au lieu de le jeter. Le `ttl` global reste
         // le minimum — il décide seulement s'il faut lire QUELQUE CHOSE ce cycle ; le palier individuel
         // décide QUI est lu. Avant, une seule position chaude à 8s faisait relire les six autres à 8s

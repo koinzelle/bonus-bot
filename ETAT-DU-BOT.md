@@ -2625,8 +2625,8 @@ Relecture des 1 246 transactions du wallet (28/09 22:55 → 06/10, RPC public) e
 ## 47. 07/10 — LECTURE RAPIDE PRÈS DE LA COUPE + OMBRE « FLUX D'ORDRES » (GO user)
 - **Cadence de lecture près de la coupe** : une position sortie de sa fourchette par le bas était relue toutes les 180 s,
   même à 0,1 pt de −55 % (Agency 06/10 22:00 : −54,94 % lu, −56,06 % chez Meteora, coupée à 22:04 à −55,4 %). Les 9 coupes
-  LP depuis le 28/09 sont sorties à −57,2 % en moyenne. Désormais : à moins de 2 pts de la coupe → à chaque contrôle (10 s),
-  à moins de 5 pts → 20 s, à moins de 10 pts → 45 s. Coût : ~2 h/jour de positions dans −50/−55 → ~1 400 lectures/jour.
+  LP depuis le 28/09 sont sorties à −57,2 % en moyenne. Désormais (paliers choisis par le user) : à moins de 2 pts de la coupe →
+  30 s, à moins de 10 pts → 2 min. Coût : ~2 h/jour de positions dans −50/−55 → ~1 400 lectures/jour.
 - **Ombre `sbFlux`** (mesure seulement) : instantané DexScreener de la pool (achats/ventes et volume 5 min / 1 h / 6 h / 24 h,
   variations de prix, liquidité, MC) à chaque creux refusé (1 par token et par 6 h) et à chaque entrée (`fluxEntree` dans le
   trade). Motif : étude du 06/10 — 2 564 creux + 978 entrées, aucune des 15 mesures disponibles ne prédit le rebond (AUC
