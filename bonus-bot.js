@@ -1741,6 +1741,14 @@ async function batchedPositionValues() {
         // encaissée, et la seule issue est le CUT lent à -55%. Cas CATE : sondée toutes les 45s pendant 50h.
         const outBottom = bin != null && p.live.lowerBinId != null && bin < p.live.lowerBinId;
         if (outBottom && t === 45000) t = OUT_BOTTOM_MS;
+        // (2026-10-07, GO user) PROCHE DE LA COUPE : LECTURE RAPIDE. « La profondeur est une variable lente » est vrai loin
+        // du seuil, faux à côté : Agency (06/10 22:00) était relue toutes les 180 s à −54,94 % pendant que Meteora montrait
+        // déjà −56,06 %. Les 9 coupes sur la LP depuis le 28/09 sont sorties à −57,2 % en moyenne au lieu de −55 %
+        // (≈ 0,006 SOL de trop par coupe). Coût mesuré : les positions ne passent que ~2 h/jour entre −50 et −55 % (0,6 h
+        // entre −53 et −55) → ~1 400 lectures de plus par jour, négligeable.
+        if (g <= -RANGE_DOWN + 0.02) t = Math.min(t, 10000);        // à moins de 2 points de la coupe : à chaque contrôle
+        else if (g <= -RANGE_DOWN + 0.05) t = Math.min(t, 20000);   // à moins de 5 points
+        else if (g <= -RANGE_DOWN + 0.10) t = Math.min(t, 45000);   // à moins de 10 points (au lieu de 180 s hors fourchette)
         // (2026-09-02) On CONSERVE le palier de chaque position au lieu de le jeter. Le `ttl` global reste
         // le minimum — il décide seulement s'il faut lire QUELQUE CHOSE ce cycle ; le palier individuel
         // décide QUI est lu. Avant, une seule position chaude à 8s faisait relire les six autres à 8s
@@ -2840,6 +2848,7 @@ async function scan() {
             // "AU CREUX mais bloqué → ENTRÉE" se déclenchait sur les vraies entrées. On l'exclut.
             if (atDip && block && block !== 'ENTRÉE' && !state.positions[tok] && (!w.lastNearMissAt || now - w.lastNearMissAt > 5 * 60e3)) {
                 w.lastNearMissAt = now;
+                ombre('sbFlux', () => ombreFlux(tok, w.symbol, 'creux', { dump: +(dumpedFromHigh * 100).toFixed(0), rsi2: rsiEntry != null ? +rsiEntry.toFixed(0) : null, bloque: String(block).slice(0, 40) }));
                 console.log(`🎯 DIAG near-miss: ${w.symbol} AU CREUX (dump -${(dumpedFromHigh * 100).toFixed(0)}% ≥ ${(dumpThr * 100).toFixed(0)}%) mais bloqué → ${block} | RSI2=${rsiEntry != null ? rsiEntry.toFixed(0) : '?'} recovered=${!!w.recovered} athBreaks=${w.athBreaks || 0} cooldown=${!!onCooldown} feeTvl=${feeTvl.toFixed(0)}%`);
             }
             // SHADOW ATH-ÉPUISÉ (2026-08-19, demande user) : le cap bloque ces coins → 0 trade → impossible d'évaluer
@@ -3115,6 +3124,7 @@ async function scan() {
                     })();
                 });
                 const msg = `🎯 ENTRÉE ${w.symbol} (chop-cycle${downtrend ? ' ⚠️downtrend' : ''})\nprix: $${entry.toFixed(8)} | chop ${(cr * 100).toFixed(0)}% | dumpé -${(dumpedFromHigh * 100).toFixed(0)}% sous le haut récent\nâge token: ${ageH.toFixed(1)}h | MC: $${Math.round(curMc / 1000)}k\nSortie: TP +6% OU RSI(2)>90 | cut hors-range -35% | on cycle`;
+                ombre('sbFlux', () => { const f = ombreFlux(tok, w.symbol, 'entrée', { dump: +(dumpedFromHigh * 100).toFixed(0) }); if (f && state.positions[tok]) state.positions[tok].fluxEntree = f; });
                 console.log(msg.replace(/\n/g, ' | '));   // Telegram RÉEL uniquement (2026-08-11) : la notif part seulement si l'ouverture live réussit (voir plus bas)
                 // ── LIVE : ouverture réelle en miroir de l'entrée papier ──
                 // Cap MAX_LIVE_POSITIONS (défaut 1, 2026-07-22) : limite le blast radius en dry-run —
@@ -3498,6 +3508,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         tvlPoints: (pos._tvlHist || []).length,
         tok, symbol: pos.symbol, entry: pos.entry, exit: exitPrice,
         reopenTest: pos._reopenTest || null,
+        fluxEntree: pos.fluxEntree || null,   // (07/10) ombre flux d'ordres à l'entrée
         // (2026-10-06, GO user) PnL WALLET RÉEL : somme des SOL entrés/sortis du wallet dans les transactions du trade
         // (achat et revente Jupiter, dépôt, retrait, cautions, frais). `pnlSolLive` ne mesure que la valeur DANS la pool :
         // mesuré on-chain sur 155 trades (28/09→06/10), il surestime le réel de ~0,0026 SOL par trade (swaps ≈ 1 % à
@@ -3847,6 +3858,20 @@ const safeScan = () => scan().catch(e => console.log('⚠️ scan tick (survécu
 const dsc = require('./ds-candles');
 const _dsSuivis = () => [...new Set([...Object.keys(state.watch || {}), ...Object.keys(state.positions || {})])];
 dsc.demarrer(_dsSuivis, 15000, mint => { const c = _gtPoolCache.get(mint); return c && c.pool ? c.pool : null; });   // (06/10) même pool que les bougies officielles
+// ── (2026-10-07, GO user) OMBRE « FLUX D'ORDRES » — n'agit sur rien ───────────────────────────────────────────
+// Étude du 06/10 : sur 2 564 creux de tokens surveillés et 978 entrées, AUCUNE des 15 mesures disponibles (âge, chute,
+// RSI2, ATH, frais/TVL, tendance 24-72 h, volatilité, volume…) ne prédit le rebond (AUC 0,45-0,57). Il faut une information
+// nouvelle : le FLUX D'ORDRES au moment du creux (achats/ventes et volume sur 5 min / 1 h, liquidité), gratuit via les
+// lectures DexScreener déjà faites toutes les 15 s. Journalisé à chaque creux (pris ou refusé, 1 par token et par 6 h) et à
+// chaque entrée (aussi dans le trade : `fluxEntree`). Verdict après ~2 semaines : sépare-t-il les rebonds des effondrements ?
+const _fluxVu = new Map();
+function ombreFlux(tok, sym, type, extra) {
+    const f = dsc.flux(tok);
+    if (!f) return null;
+    if (type === 'creux') { const last = _fluxVu.get(tok) || 0; if (Date.now() - last < 6 * 3600e3) return f; _fluxVu.set(tok, Date.now()); }
+    recordShadow('sbFlux', { symbol: sym, tok, type, ...extra, ...f });
+    return f;
+}
 function comparerBougiesDs() {
     try {
         const ec = { close: [], high: [], low: [] }, rsiEc = [];

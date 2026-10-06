@@ -16,6 +16,19 @@ const series = new Map();      // mint -> { '5m': [[t,o,h,l,c,0]], '15m': [...],
 const stats = { appels: 0, echecs: 0, lectures: 0, memePool: 0, autrePool: 0, depuis: Date.now() };
 let enCours = false;
 let _getPool = null;   // (06/10) mint -> pool des bougies officielles (GeckoTerminal), si connue
+// (2026-10-07, GO user) OMBRE « FLUX D'ORDRES » : dernier instantané DexScreener de la pool lue (achats/ventes et volume sur
+// 5 min / 1 h / 6 h / 24 h, variations de prix, liquidité, capitalisation). Gratuit : il vient des appels déjà faits ici.
+const fluxSnap = new Map();   // mint -> instantané
+function _snap(p, now) {
+    const t = p.txns || {}, v = p.volume || {}, c = p.priceChange || {}, l = p.liquidity || {};
+    const n = x => (x == null || !isFinite(+x)) ? null : +x;
+    return { t: now, pool: (p.pairAddress || '').slice(0, 8), dex: p.dexId || null,
+        b5: n(t.m5 && t.m5.buys), s5: n(t.m5 && t.m5.sells), b1h: n(t.h1 && t.h1.buys), s1h: n(t.h1 && t.h1.sells),
+        b6h: n(t.h6 && t.h6.buys), s6h: n(t.h6 && t.h6.sells), b24: n(t.h24 && t.h24.buys), s24: n(t.h24 && t.h24.sells),
+        v5: n(v.m5), v1h: n(v.h1), v6h: n(v.h6), v24: n(v.h24), pc5: n(c.m5), pc1h: n(c.h1), pc6h: n(c.h6), pc24: n(c.h24),
+        liq: n(l.usd), liqB: n(l.base), liqQ: n(l.quote), mc: n(p.marketCap != null ? p.marketCap : p.fdv) };
+}
+function flux(mint, maxAgeMs = 60000) { const f = fluxSnap.get(mint); return f && Date.now() - f.t <= maxAgeMs ? f : null; }
 
 function enregistre(mint, px, tsMs) {
     let s = series.get(mint);
@@ -58,7 +71,7 @@ async function lecture(mints) {
                 for (const [m, pool] of lot) {
                     const p = pairs.find(z => z && z.pairAddress === pool);
                     const px = p && (p.baseToken && p.baseToken.address === m ? parseFloat(p.priceUsd) : null);
-                    if (px > 0) { enregistre(m, px, now); stats.memePool++; } else parToken.push(m);   // repli : par token
+                    if (px > 0) { enregistre(m, px, now); stats.memePool++; fluxSnap.set(m, _snap(p, now)); } else parToken.push(m);   // repli : par token
                 }
             } catch (_) { stats.echecs++; for (const [m] of lot) parToken.push(m); }
         }
@@ -73,7 +86,7 @@ async function lecture(mints) {
                     const b = best.get(mint);
                     if (!b || ((p.liquidity && p.liquidity.usd) || 0) > ((b.liquidity && b.liquidity.usd) || 0)) best.set(mint, p);   // la plus liquide
                 }
-                for (const [mint, p] of best) { enregistre(mint, parseFloat(p.priceUsd), now); stats.autrePool++; }
+                for (const [mint, p] of best) { enregistre(mint, parseFloat(p.priceUsd), now); stats.autrePool++; fluxSnap.set(mint, _snap(p, now)); }
             } catch (_) { stats.echecs++; }
         }
     } finally { enCours = false; }
@@ -90,7 +103,7 @@ function demarrer(getMints, intervalMs = 15000, getPool = null) {
     _getPool = getPool;
     setInterval(() => { lecture(getMints()).catch(() => {}); }, intervalMs);
     // ménage : on oublie les tokens qui ne sont plus suivis
-    setInterval(() => { const vivants = new Set(getMints()); for (const m of series.keys()) if (!vivants.has(m)) series.delete(m); }, 3600e3);
+    setInterval(() => { const vivants = new Set(getMints()); for (const m of series.keys()) if (!vivants.has(m)) series.delete(m); for (const m of fluxSnap.keys()) if (!vivants.has(m)) fluxSnap.delete(m); }, 3600e3);
 }
 
-module.exports = { demarrer, bougiesCloturees, stats, series };
+module.exports = { demarrer, bougiesCloturees, stats, series, flux };
