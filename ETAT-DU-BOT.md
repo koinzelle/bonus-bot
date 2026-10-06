@@ -2653,3 +2653,10 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
 - **Vérifié sur les seuls tokens NON TAXÉS** (question user : on ne trade plus les taxés) — 710 trades, net des seuls swaps
   (~1 %) : < 8 % −1,2 % · 8-12 % −2,5 % · 12-15 % +1,4 % · 15-30 % +1,8 % · > 30 % +2,1 % (depuis le 27/09 : −2,1 / −3,9 / +4,8 /
   +2,4 / +3,3 %) ; < 12 % moins bon 5 semaines sur 5. Plancher 12 % : +1,35 SOL / 42 j (+0,03/j), +0,45 / 10 j depuis le 27/09.
+- **Robustesse du plancher 12 % (07/10)** : gagnant dans CHAQUE sous-groupe (établis −2,5/+1,2 %, non établis −1,7/+2,6, MC < 2 M$
+  −1,6/+2,3, MC ≥ 2 M$ −2,2/+1,2, âgés −1,6/+2,0, volume < 3 M$ −0,5/+1,7, ≥ 3 M$ −4,6/+1,8) et quel que soit le coût de swap
+  retenu (0 % : +0,70 SOL / 42 j ; 2 % : +2,0). → recommandé au user : `FEE_TVL_FLOOR=12`.
+- **Backtest rotation (07/10, `/tmp/cc/mkt/rotation.js`, 345 refus sbRefusPlein 25/09 → 06/10)** : fermer la position la plus
+  « molle » (frais < 0,1-0,5 mSOL/h) = −0,08 à +0,23 SOL, pas mieux que le hasard ; fermer la plus VIEILLE non armée ≥ 5 h =
+  +0,35 à +0,45 SOL / 12 j (27-29 remplacements, IC 90 % contient 0, P>0 83-87 %) ; témoin au hasard −0,10 à −0,46. Non
+  activé (règle de fermeture) : refaire à la revue du 14/10 avec le plancher 12 % en place.
