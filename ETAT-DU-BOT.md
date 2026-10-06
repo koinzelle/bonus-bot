@@ -2735,3 +2735,17 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   (sur ~−2,6 SOL de coupes en 2 semaines). Sur les tokens gardés aujourd'hui (≥ 12 %, non taxés) : 16 ré-entrées, +0,016 SOL →
   neutre. Pas la cause ; le plancher couvre déjà les 2 cas. Option fidèle à EP : MOU_LOCK_MIN_POS=0 (≈ 0 SOL, ~8 trades/sem.
   en moins). `/tmp/cc/q/mou_list.js`.
+- **Verrou des sorties molles sur TOUT l'historique (07/10, demande user)** — 1 272 trades 10/08 → 06/10 (mint connu), coupes au
+  sens large (CUT hors-range bas, REBOND RSI2 d'avant le 21/09, PLANCHER, valeur, SEC = 68, −6,44 SOL net), net estimé = PnL de
+  position − 1 % de swaps − taxe (1 % → 3 % de la mise, ≥ 3 % → 2 × le taux) ; `/tmp/cc/q/lock_all.js [h] [lp] [tenue]`.
+  · Il n'évite PAS les coupes : coupées 4,9 % des ré-entrées après sortie molle, 5,1 % des autres ré-entrées, 6,6 % des
+    premières entrées ; 6 coupes sur 68 seulement (Plumber, XST, OTC, baton, JEANPHIL, PAID ; −0,67 SOL).
+  · Il retire des trades qui ne rapportent rien : 123 ré-entrées molles, PnL de position +0,19 SOL → **−0,40 SOL net**
+    (−3,2 mSOL/trade contre +0,5/+0,6 ailleurs). Verrou complet = +0,40 SOL / 2 mois (+ ≤ 1,41 si chaque heure libérée
+    resservait) ; bat 90 % des placebos appariés ; +0,27 avant le 14/09, +0,13 après ; 8 variantes +0,11 à +0,46.
+  · Par type : taxés → tout perd après taxe (premières −3,3, ré-entrées −2,8, molles −4,5 mSOL/trade) ; non taxés < 12 % →
+    molles −7,2 mSOL/trade (les pires) ; **non taxés ≥ 12 % (gardés aujourd'hui) → molles +2,3 mSOL/trade (39 trades,
+    +0,08 SOL, 205 h de place)**, positives dans 7 variantes sur 8 → le verrou y retirerait des gagnants.
+  · Depuis le 27/09 le bot a ≥ 6 positions 80 % du temps (7/7 : 46 %) → le verrou conditionnel joue déjà presque toujours.
+  → Le verrou servait surtout contre les tokens taxés et à frais faibles, désormais filtrés en amont (taxe, plancher 12 %).
+  Garder le réglage actuel ; MOU_LOCK_MIN_POS=0 ≈ neutre (−0,08 + ≤ 0,12 de place sur 2 mois).
