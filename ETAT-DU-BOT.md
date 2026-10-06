@@ -2683,3 +2683,48 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   (80 pools à 5 % : là, Met-fees seule dépasse la limite de 60 et GT redevient utile).
 - **Coût en données** : les tokens sous 12 % ne produiront presque plus de lignes near-miss `fees<12%` ; pour juger le plancher au
   14/10, s'appuyer sur le wallet, `pnlWalletSol` et le nombre de trades/jour, pas sur ces lignes.
+- **La coupure n'explique PAS la baisse de qualité (question user, 07/10)** — Met-fees coupée par semaine (part de ses
+  candidats au-delà du 60e), mêmes semaines que §46 : 01-07/09 54 % · 08-14/09 74 % · 15-21/09 70 % · 22-28/09 78 % · 29/09-05/10 55 %. Aussi
+  forte quand nos entrées chutaient le moins (24 %, début septembre) que quand elles chutaient le plus (51 %, semaine du 29/09).
+  Et elle tombait sur la QUEUE : la liste était triée par frais/TVL décroissant, le top 1 / 5 / 10 passait dans 65 / 60 / 54 %
+  des scans, sinon il attendait un scan (médiane 2 min, pire 28 min sur 24 573 scans) → retard de minutes, pas de token raté.
+- **Frais/TVL et chutes, tokens NON taxés, 588 trades 01/09 → 06/10** (`/tmp/cc/q/fee_week.js`, coupure : `/tmp/cc/q/trunc_q.js`, `topk.js`) : part
+  des entrées < 12 % 44 · 29 · 29 · 36 · 26 % (elle n'a PAS augmenté) ; chute ≥ 60 % en 48 h : < 12 % 28 %, ≥ 12 % **45 %** (19 →
+  63 % sur la période) ; net/trade (~1 % de swaps) : < 12 % −2,1 % (négatif 5 semaines sur 6, −1,28 SOL), ≥ 12 % +2,3 % (positif
+  6 semaines sur 6, +2,27 SOL). → Les tokens à frais élevés chutent PLUS (plus volatils = plus de frais) et rapportent quand même.
+  Le plancher 12 % rend les trades plus RENTABLES (~×3,4 par trade, +1,28 SOL / 5 semaines), pas moins risqués : s'attendre à
+  autant de coupes −55 %, juger au wallet. La hausse des chutes touche les deux groupes (marché + re-trades en boucle, §46).
+- **« On va doubler les coupes ? » (question user, 07/10) — NON, elles baissent.** Coupes −55 % réelles, non taxés 01/09 → 06/10 :
+  < 12 % 8 / 193 trades (4,1 %, −1,33 SOL) · ≥ 12 % 9 / 394 (2,3 %, −1,35 SOL) · mélange passé 2,9 %. Sorties ≤ −40 % LP : 6,7 %
+  contre 3,0 %, plus élevé sous 12 % 5 semaines sur 5. Les « chutes ≥ 60 % en 48 h » mesurent le prix APRÈS l'entrée, pas la
+  position : sur les ≥ 12 % suivies d'une chute, 96 % étaient déjà sorties avant le plus bas (89 % en gain, 4 % coupées, durée
+  médiane 1,7 h, net +0,08 SOL) ; sur les < 12 % : 89 % / 77 % / 9 % coupées, 2,6 h, net −1,22 SOL (`/tmp/cc/q/cutrate.js`,
+  `crashcut.js`). Retirer les < 12 % retire ~la moitié des coupes passées (8 sur 17).
+- **RECOMPTE COMPLET DES COUPES (07/10, doute du user sur « 17 coupes » — à juste titre)** : le 17 ne couvrait que les non taxés
+  à frais/TVL connu, ouverts depuis le 01/09, raison CUT seule. Tous tokens, 1 080 trades fermés depuis le 26/08 : **21 coupes
+  (règle −55 % / plancher, −3,21 SOL) et 35 sorties à −40 % LP ou pire toutes raisons (−4,50 SOL)**. Par semaine : coupes
+  0 · 0 · 1 · 2 · **9 · 9** ; sorties ≤ −40 % : 2,1 · 2,3 · 2,4 · 3,2 · 4,1 · 5,6 % des trades → **18 des 21 coupes depuis le
+  22/09**. Sur ces 2 semaines (332 trades) : < 12 % 7 coupes (9,1 % de grosses pertes, −1,13 SOL), taxés 3, non taxés ≥ 12 %
+  **8 coupes** (familiars ×2, GO, SI, SAPLING, OCTO, SPLICE ; 4,1 %, −1,05 SOL). Avec les règles d'aujourd'hui : ~4 coupes par
+  semaine au lieu de 9 (et non « ~2 » comme dit trop vite). Cause du bond depuis le 22/09 pas encore isolée (marché +10 pts de
+  chutes à la même date, fourchette élargie le 27/09).
+- **Comparaison EP (question user)** : septembre en PnL de position (= ses cartes) : nous +2,93 %/position (829), EP ≈ +3 %
+  (184 SOL / 730 positions de ~8 SOL) — l'écart en SOL est la taille (×30). Notre wallet n'en garde qu'une partie : 19-30/09
+  positions +1,94 SOL → wallet +0,68 ; 01-06/10 positions +0,30 → wallet −0,29. 41 % des positions de septembre étaient taxées
+  (gain de carte repris par la taxe), 20 % sous 12 % (−1,35 %/position avant coûts), + ~1 % de swaps. Règles d'aujourd'hui
+  rejouées sur 19/09 → 06/10 : ≈ +1,06 SOL (≈ 11 trades/j) au lieu de +0,39 (≈ 22/j) (`/tmp/cc/q/regles.js`, `cuts_all.js`,
+  `cuts_recent.js`).
+- **« Après l'élargissement, plus de coupes 3-4 jours puis tout s'est dégradé » (user, 07/10) — vérifié** : 27-30/09 1 coupe
+  (CALI), 01-06/10 9 coupes ; PnL de position +0,25 SOL/j puis +0,05 SOL/j. Pas le marché : 29/09 = pire jour de la période
+  (46 % des creux surveillés à −60 % en 24 h, `/tmp/cc/q/market_daily.js`). Ce n'était pas une amélioration mais un retard :
+  3 des 9 coupes d'octobre étaient des positions déjà ouvertes qui ont glissé des jours (JEANPHIL ouverte 25/09 → 141 h, PAID
+  28/09 → 147 h, COLLECT 29/09 → 50 h), toutes à 6-8 % de frais/TVL. Les 9 coupes d'octobre : 5 sous 12 % (COLLECT ×2,
+  JEANPHIL, PAID, Agency) → bloquées par le plancher ; SI (ATH ×8, 7,6 M$) → bloquée par ATH usé depuis le 04/10 ; restent
+  SAPLING, OCTO, SPLICE (frais élevés, ré-entrées 0,5-2 h après une sortie) → 3 coupes au lieu de 9 (−0,48 au lieu de −1,48).
+- Le saut « 0-2 coupes/semaine → 9 » du 22/09 est en partie un changement d'étiquette : AWAIT_BOUNCE=0 le 21/09 (coupe sèche
+  −55 %) ; avant, les positions profondes sortaient en « REBOND RSI2 (LP −xx %) » — 13 entre le 01/09 et le 21/09, absentes du
+  compte des coupes. Écartés : sorties 5 min (actives seulement 21/09 21 h → 24/09, ombre tf15), cooldown 10 min (1 cas : CALI),
+  ré-entrées en général (sur ≥ 12 % non taxés, 27/09 → 06/10 : après TRAIL 59 trades +4,8 %/trade, après RSI 20 trades
+  +2,3 %, après sortie molle 10 trades −0,1 % ; `/tmp/cc/q/mou12.js`, `reentry.js`, `cutlist.js`). Rien de nouveau à changer.
+- **Purge watch vérifiée (06/10 23:29 UTC)** : 18 tokens sous 12 % sortis d'un coup (JEANPHIL, ANTFUN, CATE, ZCAT, MET, HYPE,
+  MASK, HOOKED, SAPLING, swordcat…), watch 41 → 24, aucune erreur ; CHONK admis via Met-fees.
