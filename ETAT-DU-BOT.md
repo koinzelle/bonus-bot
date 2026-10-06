@@ -2728,3 +2728,10 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   +2,3 %, après sortie molle 10 trades −0,1 % ; `/tmp/cc/q/mou12.js`, `reentry.js`, `cutlist.js`). Rien de nouveau à changer.
 - **Purge watch vérifiée (06/10 23:29 UTC)** : 18 tokens sous 12 % sortis d'un coup (JEANPHIL, ANTFUN, CATE, ZCAT, MET, HYPE,
   MASK, HOOKED, SAPLING, swordcat…), watch 41 → 24, aucune erreur ; CHONK admis via Met-fees.
+- **Verrou des sorties molles (question user : « EP en met un, l'avoir retiré explique nos pertes ? »)** — EP : « ennui » =
+  fermer au 1er petit gain et NE PAS rouvrir ; chez nous verrou 48 h après sortie RSI2 > 3 h à < 3 % de LP (14/09), retiré
+  21/09 → 27/09, depuis conditionnel (≥ 6 positions, MOU_LOCK_MIN_POS). Depuis le 21/09, 43 ré-entrées qu'un verrou complet
+  aurait bloquées : 2 coupes (JEANPHIL et PAID, 6 % de frais/TVL, −0,364 SOL), les 41 autres +0,21 → −0,15 SOL au total
+  (sur ~−2,6 SOL de coupes en 2 semaines). Sur les tokens gardés aujourd'hui (≥ 12 %, non taxés) : 16 ré-entrées, +0,016 SOL →
+  neutre. Pas la cause ; le plancher couvre déjà les 2 cas. Option fidèle à EP : MOU_LOCK_MIN_POS=0 (≈ 0 SOL, ~8 trades/sem.
+  en moins). `/tmp/cc/q/mou_list.js`.
