@@ -2749,3 +2749,23 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   · Depuis le 27/09 le bot a ≥ 6 positions 80 % du temps (7/7 : 46 %) → le verrou conditionnel joue déjà presque toujours.
   → Le verrou servait surtout contre les tokens taxés et à frais faibles, désormais filtrés en amont (taxe, plancher 12 %).
   Garder le réglage actuel ; MOU_LOCK_MIN_POS=0 ≈ neutre (−0,08 + ≤ 0,12 de place sur 2 mois).
+
+## 50. 07/10 — PLANCHER PAR POOL ET SIGNAL DE TENDANCE EN GRANDE UNITÉ (EP) : RIEN À BRANCHER
+- **Constat user** : positions encore sur des pools qui ne rapportent rien malgré le plancher 12 %. Cause : le plancher teste la
+  MEILLEURE pool du token (`feeTvlMap`), souvent une petite pool bs20/bs50 que `findMeteoraPool` écarte (bin step hors liste,
+  frais < 0,5 %, < 20 SOL) → repli sur une autre pool sans contrôle de ses frais/TVL (HOOKED : passé à 12,5 % via bs20 5 k$,
+  ouvert en bs200 à 2,4 % ; Agency : 24 % via bs50, ouvert en bs125 à 8,1 %). Aujourd'hui 26 tokens ≥ 12 %, dont 23 avec une
+  pool utilisable ≥ 12 %.
+- **Faut-il un plancher par pool ? Pas prouvé** (`/tmp/cc/q/poolyield24.js`, pool utilisée = dernière ligne « SHADOW rendement »
+  ≤ 24 h avant l'entrée, 676 trades) : frais encaissés 0,9 %/h en pool ≥ 12 %/j contre 0,4 %/h dessous (robuste, 2 moitiés) ;
+  mais net, sur tokens ≥ 12 % non taxés : pool ≥ 12 % +6,0 mSOL/trade (188), pool < 12 % +1,5 (95, +0,14 SOL) — avant le 24/09
+  −2,7 contre +6,1, depuis +7,5 contre +5,8. Le bloquer = ≈ 0 SOL et −25 % de trades. Non déployé.
+- **Signal de tendance en grande unité (règle « BAS » d'EP), grille complète** (`/tmp/cc/htf/grid.js`, `grid2.js garde`) :
+  12 indicateurs (ST 10/2 et 10/3, MACD, MACD sous zéro, EMA 9/21, close < EMA 50, RSI 14 < 50, close < BB milieu, cassure du
+  plus bas 12, PSAR, DMI/ADX, Heikin-Ashi) × 8 unités (15 min → 12 h), en SORTIE (bascule ou état, LP réel des logs 📊 au
+  signal vs LP final, placebo = sortie à un instant au hasard) et en ENTRÉE bloquée (net des refusés, placebo = refus au
+  hasard), 934 positions 30/08 → 05/10. Aucune config positive sur les 2 moitiés ET meilleure que le placebo à 90 % sur les
+  tokens gardés (≥ 12 % non taxés : 0/52, 0/62, 0/68). Petites unités en sortie : −1 à −4 SOL, 80 % des sorties auraient
+  coupé des positions qui finissaient mieux. Grandes unités : rares (15-60 positions), ±0,3 SOL, signe instable. En entrée
+  tous tokens, les « +1,3 SOL » des 15-30 min viennent des taxés / < 12 % et ne battent pas un refus au hasard.
+  → Confirme le 05/10 (44 variantes). Raison probable : EP tient des jours, nous 1,7 h en médiane. Ombre sbMacd maintenue.
