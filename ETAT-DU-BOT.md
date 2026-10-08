@@ -2769,3 +2769,12 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   coupé des positions qui finissaient mieux. Grandes unités : rares (15-60 positions), ±0,3 SOL, signe instable. En entrée
   tous tokens, les « +1,3 SOL » des 15-30 min viennent des taxés / < 12 % et ne battent pas un refus au hasard.
   → Confirme le 05/10 (44 variantes). Raison probable : EP tient des jours, nous 1,7 h en médiane. Ombre sbMacd maintenue.
+- **Premières 36 h avec le plancher 12 % (06/10 22:39 → 08/10 12:53 UTC)** : 24 fermetures, 4 coupes dont **3 positions ouvertes
+  AVANT le plancher** (ALLINU 02/10 à 11,4 %, MM 05/10 à 7,8 %, knightcat 05/10 ; −0,47 SOL déjà latents). Les 19 trades ouverts
+  après : 17 gagnants, 1 à plat (HOOKED), 1 coupe (GOMO −0,155) → +0,238 SOL de position, **+0,162 SOL au wallet réel**.
+- **Écart PnL de position → wallet réel décomposé on-chain (21 trades avec `pnlWalletSol`, `/tmp/cc/q/gap.js`, RPC public)** :
+  position +0,261 → wallet +0,181, soit −3,8 mSOL/trade (−1,36 % de la mise) = frais réseau 0,06 mSOL/trade (~8 300 lamports/tx,
+  négligeable) + rente des comptes token laissés ouverts 0,36 mSOL/trade (récupérable, fermés à la main sur Titan) + **reste
+  −3,4 mSOL/trade (−1,21 % de la mise) = achat de la moitié jeton à l'entrée + revente à la sortie + écart prix pool/marché**
+  (de −15,6 à +8,0 mSOL selon le trade). Plus que le « ~1 % » retenu dans les calculs nets → net des ≥ 12 % ≈ +2,1 %/trade.
+  Piste à étudier (rien de codé) : 85 % des trades sont des ré-entrées < 48 h sur le même token — on revend puis on rachète.
