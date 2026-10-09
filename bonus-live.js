@@ -560,6 +560,10 @@ async function sweepToken(mint) {
 // d'opens avortés. Sûr : la liquidité d'une position LIVE est verrouillée dans la position DLMM, pas en
 // solde SPL loose → seuls les résidus sont balayés.
 async function sweepOrphans() {
+    // (2026-10-09) jamais pendant une ouverture : les jetons tout juste achetés attendent leur dépôt.
+    // On attend qu'elle finisse (≤ 3 min) ; le sweep de secours interne à l'ouverture (`sweepToken`) n'est pas concerné.
+    for (let i = 0; i < 36 && _ouverturesEnVol > 0; i++) await new Promise(r => setTimeout(r, 5000));
+    if (_ouverturesEnVol > 0) { console.log('🧹 sweep reporté : ouverture toujours en cours après 3 min'); return; }
     try {
         const [a, a2] = await Promise.all([
             connection.getParsedTokenAccountsByOwner(keypair.publicKey, { programId: TOKEN_PROGRAM_ID }),
@@ -585,9 +589,24 @@ async function sweepOrphans() {
 // Le solde ne remonte que lorsqu'une position se ferme — on mémorise donc le manque pendant 5 minutes,
 // et `closeVerified` lève le verrou immédiatement puisque c'est le seul événement qui rend du SOL.
 let _cashShortUntil = 0;
+// (2026-10-09) OUVERTURES EN VOL. Le sweep et le filet orphelines tournent sur leur propre minuterie de
+// 30 min et ignoraient qu'une ouverture pouvait être à mi-chemin. Le 09/10 à 07:33:01, BORDR venait
+// d'acheter ses jetons : le sweep en a revendu 37 % avant le 2e dépôt (tombé en erreur faute de jetons),
+// la valeur d'ouverture a été jugée implausible, et le filet a signalé la position naissante comme
+// « orpheline » sur Telegram. Même accident le 01/10 (ALLINU : toute la partie jeton revendue) et le
+// 02/10 (backpack). On compte donc les ouvertures en cours (le sweep les attend), et on garde 10 min la
+// clé de chaque position créée, le temps que bonus-bot l'enregistre (le filet ne la signale pas avant).
+let _ouverturesEnVol = 0;
+const _clesRecentes = new Map();   // clé de position → horodatage de création
+const CLE_RECENTE_MS = 10 * 60 * 1000;
+async function openBidAsk(...args) {
+    _ouverturesEnVol++;
+    try { return await _openBidAsk(...args); }
+    finally { _ouverturesEnVol--; }
+}
 // (2026-09-11) `oneSided` : pose la position ENTIÈREMENT EN SOL sous le prix, sans swap ni dépôt
 // de token — réservé aux mints à frais de transfert (voir ONESIDED_FEE_BPS dans bonus-bot.js).
-async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlot = false) {
+async function _openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlot = false) {
     if (Date.now() < _cashShortUntil) return null;   // cash insuffisant récemment constaté : on ne retente pas
     const balBefore = await solBalance();
     const balSol = balBefore / LAMPORTS_PER_SOL;
@@ -709,6 +728,7 @@ async function openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSlo
     }
 
     const positionKeypair = Keypair.generate();
+    _clesRecentes.set(positionKeypair.publicKey.toString(), Date.now());   // le filet orphelines l'ignore 10 min
     if (nBins > 70) {
         // (27/09) POSITION ÉTENDUE : compte créé seul (sa caution est rendue au close par
         // removeLiquidity shouldClaimAndClose), puis liquidité Bid-Ask ajoutée en morceaux.
@@ -959,6 +979,8 @@ async function positionValuesByKeys(list) {
 async function findOrphanPositions(knownKeys) {
     const byPair = await DLMM.getAllLbPairPositionsByUser(connection, keypair.publicKey);
     const orphans = [];
+    const now = Date.now();
+    for (const [k, t] of _clesRecentes) if (now - t > CLE_RECENTE_MS) _clesRecentes.delete(k);
     for (const [poolAddr, info] of byPair) {
         let dlmm, ab, priceYperX, xDec, yDec;
         try {
@@ -971,6 +993,7 @@ async function findOrphanPositions(knownKeys) {
         for (const lp of info.lbPairPositionsData || []) {
             const key = lp.publicKey.toString();
             if (knownKeys.has(key)) continue;
+            if (_clesRecentes.has(key)) continue;   // (2026-10-09) ouverture en cours ou pas encore enregistrée par bonus-bot
             const d = lp.positionData;
             const xHuman = Number(d.totalXAmount?.toString() ?? 0) / 10 ** xDec;
             const yHuman = Number(d.totalYAmount?.toString() ?? 0) / 10 ** yDec;

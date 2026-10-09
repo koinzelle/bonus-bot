@@ -2778,3 +2778,19 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   −3,4 mSOL/trade (−1,21 % de la mise) = achat de la moitié jeton à l'entrée + revente à la sortie + écart prix pool/marché**
   (de −15,6 à +8,0 mSOL selon le trade). Plus que le « ~1 % » retenu dans les calculs nets → net des ≥ 12 % ≈ +2,1 %/trade.
   Piste à étudier (rien de codé) : 85 % des trades sont des ré-entrées < 48 h sur le même token — on revend puis on rachète.
+
+## 51. 09/10 — COURSE SWEEP / FILET ORPHELINES PENDANT UNE OUVERTURE (corrigé, GO user)
+- **Constat** : alerte Telegram « position orpheline 0,2227 SOL » à 07:33. Fausse alerte : c'était BORDR, en train de s'ouvrir
+  (même clé E7bdHAmu, même pool 5XQaJzF6). Le sweep (30 min) et le filet orphelines (30 min) ont tiré à 07:33:01, pendant le dépôt.
+- **Dégât réel** : le sweep a revendu 37 % des jetons achetés pour la position (4,82 G unités → 0,0497 SOL) avant le 2e dépôt
+  (`InstructionError Custom:1`, plus de jetons) → valeur d'ouverture 0,2227 pour une mise de 0,28 jugée implausible → base vide →
+  pilotage sur le PRIX ; l'auto-réparation (reconcile, 08:56) a pris la valeur DU MOMENT (0,2019, prix déjà −17 %) comme base →
+  LP affichée +7,4 %, trail « gagnant » à +5,9 % alors que le wallet fait **−0,0681 SOL** (prix −17,9 %). Trade compté TRAIL dans les stats.
+- **Déjà arrivé** : 01/10 13:18 ALLINU (toute la partie jeton revendue, position posée 100 % SOL), 02/10 14:28 backpack (partiel).
+  Fréquence attendue ≈ durée d'une ouverture (~50 s) / 30 min × ~14 ouvertures/j ≈ 1 tous les 3 jours — conforme.
+- **Correctif (bonus-live.js)** : compteur d'ouvertures en vol (wrapper `openBidAsk`) — `sweepOrphans` attend la fin de l'ouverture
+  (≤ 3 min, sinon reporté) ; clé de chaque position créée gardée 10 min (`_clesRecentes`) et ignorée par `findOrphanPositions`
+  (une vraie orpheline née d'une ouverture ratée est signalée au tour suivant). Le `sweepToken` de secours interne à l'ouverture
+  n'est pas touché.
+- **Non fait (à proposer)** : l'auto-réparation `openValueSol` depuis le lot prend une valeur postérieure à l'ouverture → base
+  fausse dès que le prix a bougé. Avec le correctif la cause principale disparaît, mais le chemin « implausible » reste possible.
