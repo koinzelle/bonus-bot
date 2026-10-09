@@ -2794,3 +2794,15 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   n'est pas touché.
 - **Non fait (à proposer)** : l'auto-réparation `openValueSol` depuis le lot prend une valeur postérieure à l'ouverture → base
   fausse dès que le prix a bougé. Avec le correctif la cause principale disparaît, mais le chemin « implausible » reste possible.
+
+## 52. 09/10 — OMBRE `sbTrailMarche` : TRAIL SUR LE PRIX DU MARCHÉ (mesure seule, GO user)
+- **Cas déclencheur, QI 09/10** (pool 5EStP…, 5 % de frais) : pic LP +19,3 % à 22:33:48 (prix pool 0,0000326173), plateau
+  +19,1 % jusqu'à 22:35:58 (0,0000322943), puis −5,8 % d'un bloc → +16,7 % à 22:36:08 → TRAIL, wallet +0,0405. Prix de la pool
+  vérifiés sur la datapi Meteora (5 min : haut 0,0000326173, bas 0,0000304227 = nos lectures) → recul réel −6,7 %. Le graphe 1 min
+  (prix d'exécution, frais de 5 % compris) affiche −12 % : un achat s'imprime au-dessus du prix de la pool, une vente en dessous.
+  Le marché (pool principale, 2 %) reculait dès 22:34:36 (+42,7 → +38,0 → +30,3 %) ; notre pool n'a suivi qu'en dépassant ses frais.
+- **Coût mesuré** : 121 sorties TRAIL depuis le 27/09 (hors Cadence et ELON, bases fausses) → rendu médian 1,4 pt sous le pic,
+  15 % > 2,5 pt, dépassement au-delà du point prévu ≈ 0,28 SOL. Pas plus fort en pool 5 % (1,25 pt moyen, n=8) qu'en 2 % (1,50, n=18).
+- **Ombre** (scan, position armée) : plus haut du prix de MARCHÉ (`px` des bougies) depuis l'armement ; au premier recul de 2 / 3 / 5 %
+  → `🕯️ SHADOW sbTrailMarche` (LP du moment, pic, recul) + champ `trailMarche` {2,3,5 → lp, peak, t} sur le trade.
+  Lecture : LP de l'ombre vs `lpPct` réel, sur ≥ 30 déclenchements, avec placebo (même délai au hasard). Ne ferme rien.

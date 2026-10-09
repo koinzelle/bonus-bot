@@ -2292,6 +2292,29 @@ async function scan() {
                     }
                 }
                 const armed = pos.peakGain >= TP_PCT;   // +6% LP atteint
+                // ── (2026-10-09, GO user) OMBRE « TRAIL SUR LE PRIX DU MARCHÉ » ─────────────────────────
+                // Cas QI du 09/10 : pic LP +19,3 % à 22:33:48, sortie TRAIL à +16,7 % à 22:36:08. Le marché
+                // (bougies de la pool principale) reculait déjà (+42,7 → +38,0 → +30,3 %), mais notre pool à
+                // 5 % ne suit que lorsque l'écart dépasse ses frais : elle a rattrapé d'un bloc (−5,8 % en
+                // 10 s), sous le seuil du trail. Sur 121 sorties TRAIL depuis le 27/09, ce qu'on rend au-delà
+                // du point prévu coûte ~0,28 SOL. Question : sortir quand le PRIX DU MARCHÉ recule depuis son
+                // plus haut (position armée) aurait-il encaissé mieux ? Mesure seule : la LP au moment où le
+                // marché recule de 2 / 3 / 5 % depuis son plus haut atteint après l'armement, à comparer à
+                // la vraie sortie (champ `trailMarche` du trade). Règle de FERMETURE → 30 déclenchements
+                // et un placebo (même délai au hasard) avant d'en parler.
+                ombre('sbTrailMarche', () => {
+                    if (!pos.live || !armed || !(px > 0)) return;
+                    pos._tmHaut = Math.max(pos._tmHaut || 0, px);
+                    const recul = 1 - px / pos._tmHaut;
+                    pos._tm = pos._tm || {};
+                    for (const s of [0.02, 0.03, 0.05]) {
+                        const k = String(Math.round(s * 100));
+                        if (pos._tm[k] || recul < s) continue;
+                        pos._tm[k] = { lp: +(realGain * 100).toFixed(2), peak: +((pos.peakGain || 0) * 100).toFixed(2), t: Date.now() };
+                        recordShadow('sbTrailMarche', { symbol: pos.symbol, tok, seuil: k, lp: pos._tm[k].lp, peak: pos._tm[k].peak,
+                            prixVsEntree: +(gain * 100).toFixed(1), reculPct: +(recul * 100).toFixed(1), src: lvSrc });
+                    }
+                });
 
                 // ── (2026-09-18, demande user) SÉRIE DE LIQUIDITÉ, ÉCHANTILLONNÉE EN COURS DE VIE ───────
                 // Avec seulement deux points (entrée/sortie), une TVL qui s'effondre au milieu de la vie
@@ -3557,6 +3580,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         chopInconnu: pos._chopInconnu || null, // (2026-09-21) le filtre chop de septembre l'aurait refusée
         sousVerrou48: pos._sousVerrou48 || null, // (2026-09-21) le verrou 48 h du 14/09 l'aurait refusée
         rebondRangeLp: pos._shRngLp ?? null,   // (2026-09-21) LP qu'aurait réalisé l'armement à la sortie de range
+        trailMarche: pos._tm || null,   // (2026-10-09) ombre sbTrailMarche : LP quand le marché reculait de 2/3/5 % depuis son haut (armé)
         pnlPct: closeRate ? null : +(pnlPct * 100).toFixed(2), pnlSol: closeRate ? null : +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         closeRate: closeRate || null,   // (2026-09-20) la fermeture n'a rien vendu : position déjà absente on-chain
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
