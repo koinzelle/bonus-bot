@@ -2806,3 +2806,15 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
 - **Ombre** (scan, position armée) : plus haut du prix de MARCHÉ (`px` des bougies) depuis l'armement ; au premier recul de 2 / 3 / 5 %
   → `🕯️ SHADOW sbTrailMarche` (LP du moment, pic, recul) + champ `trailMarche` {2,3,5 → lp, peak, t} sur le trade.
   Lecture : LP de l'ombre vs `lpPct` réel, sur ≥ 30 déclenchements, avec placebo (même délai au hasard). Ne ferme rien.
+
+## 53. 13/10 — DÉPÔT INCOMPLET : 4e ESSAI RECENTRÉ + REVENTE IMMÉDIATE DU RESTE (GO user)
+- **Constat (12/10)** : CALI (10/10 16:03) — essais 1 et 2 « not confirmed in 30 s » (le 1er a déposé 0,9 G jetons sur 26 G), essai 3
+  « Simulation failed » (prix glissé de 6 bins pendant les 90 s) → position gardée à 0,149 au lieu de 0,28 ; 23,9 G jetons laissés au
+  wallet, revendus 13 min plus tard par le sweep périodique (0,1366 SOL) sans être rattachés au trade → `pnlWalletSol` −0,1149 pour un
+  vrai ≈ +0,022. Depuis le 20/09 : 37 dépôts incomplets « gardés », 36 avec 6 à 18 % des jetons restés au wallet, CALI 92 %.
+- **Correctif (bonus-live.js, branche « position gardée »)** : (1) s'il reste > 20 % des jetons, 4e essai X seul sur
+  [bin actif + 1 → haut de fourchette], bin actif relu juste avant (impossible si le prix est au-dessus de la fourchette) ;
+  (2) le reste encore au wallet est revendu tout de suite via Jupiter et la TX ajoutée à `txOuv` → comptée dans le PnL wallet du trade.
+  La valeur d'ouverture est jugée plausible par rapport à la mise MOINS ce reste revendu (sinon base vide → auto-réparation à une
+  valeur postérieure, cf §51).
+- **À vérifier** : au prochain dépôt incomplet, lignes `essai 4` / `reste non déposé` / `reste revendu ≈ … rattaché au trade`.

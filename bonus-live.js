@@ -729,6 +729,7 @@ async function _openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSl
 
     const positionKeypair = Keypair.generate();
     _clesRecentes.set(positionKeypair.publicKey.toString(), Date.now());   // le filet orphelines l'ignore 10 min
+    let resteVenduSol = 0;   // (13/10) SOL rendu par la revente immédiate des jetons non déposés (voir plus bas)
     if (nBins > 70) {
         // (27/09) POSITION ÉTENDUE : compte créé seul (sa caution est rendue au close par
         // removeLiquidity shouldClaimAndClose), puis liquidité Bid-Ask ajoutée en morceaux.
@@ -784,6 +785,52 @@ async function _openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSl
             if (cree) { try { recup = await positionValueSol(posRef, dlmmPool); } catch (_) {} }
             if (recup != null && recup > 0.001) {
                 console.log(`  ✅ liquidité partiellement/entièrement déposée — position gardée (valeur ${recup.toFixed(4)} SOL)`);
+                // ── (2026-10-13, GO user) LE RESTE NON DÉPOSÉ ─────────────────────────────────────────
+                // Jusqu'ici les jetons restés au wallet après le 3e échec y attendaient le sweep périodique
+                // (≤ 30 min, exposés au prix) et leur SOL n'était jamais rattaché au trade. Cas CALI 10/10 :
+                // prix glissé de 6 bins pendant les 90 s d'essais, 3e essai refusé en simulation, 92 % des
+                // jetons non déposés → position à 0,149 au lieu de 0,28, revente 13 min plus tard (0,1366
+                // SOL) et trade compté −0,115 au wallet pour un vrai ≈ +0,022. Sur 37 dépôts incomplets
+                // depuis le 20/09, les 36 autres laissaient 6 à 18 % des jetons.
+                // 1) plus de 20 % des jetons restés au wallet → 4e essai sur la partie de la fourchette
+                //    AU-DESSUS du prix ACTUEL (le côté jeton d'une Bid-Ask), bin actif relu juste avant ;
+                // 2) ce qui reste ensuite est revendu tout de suite et la TX ajoutée à celles de l'ouverture,
+                //    donc comptée dans le PnL wallet du trade.
+                if (!oneSided) {
+                    let xWallet = 0n;
+                    try { xWallet = await tokenBalanceRaw(xMint); } catch (_) {}
+                    if (xWallet * 5n > tokenRaw) {
+                        try {
+                            await dlmmPool.refetchStates();
+                            const actif = (await dlmmPool.getActiveBin()).binId;
+                            const bas = Math.max(minBinId, actif + 1);
+                            if (bas <= maxBinId) {
+                                const addTxs = await dlmmPool.addLiquidityByStrategyChunkable({
+                                    positionPubKey: positionKeypair.publicKey, user: keypair.publicKey,
+                                    totalXAmount: new BN(xWallet.toString()), totalYAmount: new BN(0),
+                                    strategy: { minBinId: bas, maxBinId, strategyType: DLMM.StrategyType.BidAsk }, slippage: 100,
+                                });
+                                for (const t of Array.isArray(addTxs) ? addTxs : [addTxs]) {
+                                    const h = await connection.sendTransaction(t, [keypair]);
+                                    await confirmTx(h); txOuv.push(h);
+                                    console.log(`  ✅ TX liquidité (essai 4, recentré sur le prix : bins ${bas}→${maxBinId}): https://solscan.io/tx/${h}`);
+                                }
+                            } else console.log(`  · essai 4 impossible : prix au-dessus de la fourchette (bin ${actif} > ${maxBinId})`);
+                        } catch (e4) { console.log(`  ⚠️ liquidité essai 4 (recentré) : ${String(e4.message).slice(0, 70)}`); }
+                    }
+                    try {
+                        const raw = await tokenBalanceRaw(xMint);
+                        if (raw > DUST_RAW) {
+                            console.log(`  🧹 reste non déposé : ${raw} unités sur ${tokenRaw} → revente immédiate`);
+                            const hs = await jupSwap(xMint, SOL_MINT, raw, 3, 'balayage');
+                            if (hs) {
+                                txOuv.push(hs);
+                                resteVenduSol = Number((_dernierDevis.get(xMint) || {}).out || 0) / LAMPORTS_PER_SOL;
+                                console.log(`  ✅ reste revendu ≈ ${resteVenduSol.toFixed(4)} SOL — rattaché au trade`);
+                            }
+                        }
+                    } catch (ve) { console.log(`  ⚠️ revente du reste échouée (${String(ve.message).slice(0, 60)}) — le sweep périodique la rattrapera`); }
+                }
             } else {
                 if (cree) {   // compte vide : on le ferme pour RÉCUPÉRER la caution
                     try {
@@ -851,17 +898,19 @@ async function _openBidAsk(poolAddress, deployedSol, oneSided = false, dernierSl
     // est calculée par rapport à cette valeur : +93 % affichés dès la 1re minute, trail armé à tort, sortie notée +112 %
     // (+0,162 SOL) pour un vrai ≈ +9 %. On relit tant que la valeur n'est pas à ±20 % de la mise ; sinon on laisse null et
     // l'auto-réparation du scan la reprend sur la 1re lecture du lot (base PnL restaurée), position non évaluée d'ici là.
+    // (13/10) si une partie des jetons a été revendue faute de dépôt, la mise réellement en LP est la mise moins ce reste.
+    const miseLp = amountSol - resteVenduSol;
     for (let attempt = 0; attempt < 7; attempt++) {
         if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
         let v = null;
         try { v = await positionValueSol(posRef, dlmmPool); } catch (_) {}
         if (v == null) continue;
         openValueSol = v;
-        if (v >= 0.8 * amountSol && v <= 1.2 * amountSol) break;
-        console.log(`  ⏳ valeur d'ouverture lue ${v.toFixed(4)} SOL pour une mise de ${amountSol.toFixed(4)} — implausible, relecture (${attempt + 1}/7)`);
+        if (v >= 0.8 * miseLp && v <= 1.2 * miseLp) break;
+        console.log(`  ⏳ valeur d'ouverture lue ${v.toFixed(4)} SOL pour une mise de ${miseLp.toFixed(4)} — implausible, relecture (${attempt + 1}/7)`);
     }
-    if (openValueSol != null && (openValueSol < 0.8 * amountSol || openValueSol > 1.2 * amountSol)) {
-        console.log(`  ⚠️ valeur d'ouverture toujours implausible (${openValueSol.toFixed(4)} pour ${amountSol.toFixed(4)}) → base laissée vide, reprise à la 1re lecture du lot`);
+    if (openValueSol != null && (openValueSol < 0.8 * miseLp || openValueSol > 1.2 * miseLp)) {
+        console.log(`  ⚠️ valeur d'ouverture toujours implausible (${openValueSol.toFixed(4)} pour ${miseLp.toFixed(4)}) → base laissée vide, reprise à la 1re lecture du lot`);
         openValueSol = null;
     }
     console.log(`  💰 Déposé: ${depositedSol.toFixed(4)} SOL (rent+gas inclus) | valeur LP: ${openValueSol != null ? openValueSol.toFixed(4) : '?'} SOL | bins [${minBinId}→${maxBinId}] (${nBins} bins, bs${binStep}${wide ? ', LARGE' : ''})`);
