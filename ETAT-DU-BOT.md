@@ -2818,3 +2818,16 @@ qualifié : HIGGS, OCTO, swordcat ont été refusés juste après faute de place
   La valeur d'ouverture est jugée plausible par rapport à la mise MOINS ce reste revendu (sinon base vide → auto-réparation à une
   valeur postérieure, cf §51).
 - **À vérifier** : au prochain dépôt incomplet, lignes `essai 4` / `reste non déposé` / `reste revendu ≈ … rattaché au trade`.
+
+## 54. 13/10 — OMBRE `sbBleeder` (bleeder jamais monté) + MESURE AMÉLIORÉE DES BOUGIES DEXSCREENER (GO user, n'agit pas)
+- **Rejeu (957 positions 26/08→12/10, vraies lectures 📊)** : couper dès LP ≤ −15 % une position ouverte depuis ≥ 6 h qui n'a JAMAIS
+  dépassé +0,5 % → 52 cas, +0,64 SOL (pér. A 26/08-26/09 +0,27 / B +0,37), 23 h de place libérées par cas ; ≥ 12 h +0,55 (31) ;
+  ≥ 24 h +0,57 (19 cas, 14 mieux / 5 pire). Témoin SANS condition de pic : −0,5 à −1,8 SOL. Gain décroissant quand on relâche la
+  condition (+0,5 / +1 / +2 % : +0,64 / +0,36 / +0,02) — explique l'échec de STAGNATION (pic < 6 %). Plus profond (−35/−40/−45 %) :
+  faible, période A souvent négative. Asymétrie favorable à −15 % : bonne coupe ≈ +40 pts, mauvaise ≈ −15-20.
+- **Ombre** : 1er passage LP ≤ −15 % avec pic ≤ +0,5 % après 6 / 12 / 24 h (LP fiable seulement, pas `src:prix`) → `🕯️ SHADOW sbBleeder`
+  + champ `bleeder` du trade. Décision à 30 déclenchements (~1/jour).
+- **Bougies DexScreener (ds-candles.js)** : lecture toutes les 5 s (au lieu de 15 s) ; clôture = lecture la plus proche de la frontière
+  du créneau (avant ou après) ; série en SOL (`priceNative` si cotation SOL) en parallèle de celle en $. Nouvelle ligne horaire
+  `🧪 [OMBRE bougies DexScreener+]` : accord RSI2<50 sur TOUTES les bougies communes (l'ancien n'en comptait qu'une par token et par
+  heure, ~10 cas), accord sur les cas nets (RSI2 officiel < 40 ou > 60), écart de clôture $ vs SOL. Critère de bascule inchangé.

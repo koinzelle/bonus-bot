@@ -2302,6 +2302,25 @@ async function scan() {
                 // marché recule de 2 / 3 / 5 % depuis son plus haut atteint après l'armement, à comparer à
                 // la vraie sortie (champ `trailMarche` du trade). Règle de FERMETURE → 30 déclenchements
                 // et un placebo (même délai au hasard) avant d'en parler.
+                // ── (2026-10-13, GO user) OMBRE « BLEEDER JAMAIS MONTÉ » ───────────────────────────────────────
+                // Rejeu sur 957 positions (26/08→12/10, vraies lectures 📊) : couper dès LP ≤ −15 % une position ouverte
+                // depuis ≥ 6 h qui n'a JAMAIS dépassé +0,5 % = +0,64 SOL sur 52 cas, positif sur les deux périodes
+                // (+0,27 / +0,37), 23 h de place libérées par cas ; ≥ 12 h +0,55 (31 cas) ; ≥ 24 h +0,57 (19 cas). Le témoin
+                // SANS condition de pic perd −0,5 à −1,8 SOL (c'est la condition « jamais montée » qui porte le signal) et
+                // le gain baisse quand on la relâche (+0,5 → +2 % : +0,64 → +0,02) — d'où l'échec de STAGNATION (pic < 6 %).
+                // Règle de FERMETURE → ombre seulement, 30 déclenchements avant d'en parler. Champ `bleeder` du trade.
+                ombre('sbBleeder', () => {
+                    if (!pos.live || !pos.live.openValueSol || lvSrc === 'prix') return;   // LP fiable uniquement
+                    const ageH = (Date.now() - pos.openedAt) / 3600e3, pic = pos.peakGain;
+                    if (pic == null || pic > 0.005 || realGain > -0.15) return;
+                    pos._bl = pos._bl || {};
+                    for (const hh of [6, 12, 24]) {
+                        if (ageH < hh || pos._bl[hh]) continue;
+                        pos._bl[hh] = { lp: +(realGain * 100).toFixed(2), pic: +(pic * 100).toFixed(2), t: Date.now() };
+                        recordShadow('sbBleeder', { symbol: pos.symbol, tok, heures: hh, lp: pos._bl[hh].lp, pic: pos._bl[hh].pic,
+                            ageH: +ageH.toFixed(1), src: lvSrc });
+                    }
+                });
                 ombre('sbTrailMarche', () => {
                     if (!pos.live || !armed || !(px > 0)) return;
                     pos._tmHaut = Math.max(pos._tmHaut || 0, px);
@@ -3581,6 +3600,7 @@ async function closePaper(tok, pos, exitPrice, reason) {
         sousVerrou48: pos._sousVerrou48 || null, // (2026-09-21) le verrou 48 h du 14/09 l'aurait refusée
         rebondRangeLp: pos._shRngLp ?? null,   // (2026-09-21) LP qu'aurait réalisé l'armement à la sortie de range
         trailMarche: pos._tm || null,   // (2026-10-09) ombre sbTrailMarche : LP quand le marché reculait de 2/3/5 % depuis son haut (armé)
+        bleeder: pos._bl || null,       // (2026-10-13) ombre sbBleeder : LP au 1er passage ≤ −15 % sans jamais > +0,5 %, après 6 / 12 / 24 h
         pnlPct: closeRate ? null : +(pnlPct * 100).toFixed(2), pnlSol: closeRate ? null : +(pnlPct * POSITION_SIZE_SOL).toFixed(4),
         closeRate: closeRate || null,   // (2026-09-20) la fermeture n'a rien vendu : position déjà absente on-chain
         ageH: pos.ageH, athMc: pos.athMc, freshPct: pos.freshPct ?? null, athAgeH: pos.athAgeH ?? null, athStale48: pos.athStale48 ?? null, stochK: pos.stochK ?? null, stochBonus: pos.stochBonus ?? null, support: pos.support ?? null, patternOk: pos.patternOk ?? null, maxStackLevel: pos.maxStackLevel ?? 0, durMin: Math.round((Date.now() - pos.openedAt) / 60000),
@@ -3914,7 +3934,7 @@ const safeScan = () => scan().catch(e => console.log('⚠️ scan tick (survécu
 // Critère de bascule (à juger avec le user) : écart médian de clôture < 1 % et accord RSI2<50 ≥ 95 %.
 const dsc = require('./ds-candles');
 const _dsSuivis = () => [...new Set([...Object.keys(state.watch || {}), ...Object.keys(state.positions || {})])];
-dsc.demarrer(_dsSuivis, 15000, mint => { const c = _gtPoolCache.get(mint); return c && c.pool ? c.pool : null; });   // (06/10) même pool que les bougies officielles
+dsc.demarrer(_dsSuivis, 5000, mint => { const c = _gtPoolCache.get(mint); return c && c.pool ? c.pool : null; });   // (06/10) même pool que les bougies officielles · (13/10) 5 s au lieu de 15 s
 // ── (2026-10-07, GO user) OMBRE « FLUX D'ORDRES » — n'agit sur rien ───────────────────────────────────────────
 // Étude du 06/10 : sur 2 564 creux de tokens surveillés et 978 entrées, AUCUNE des 15 mesures disponibles (âge, chute,
 // RSI2, ATH, frais/TVL, tendance 24-72 h, volatilité, volume…) ne prédit le rebond (AUC 0,45-0,57). Il faut une information
@@ -4014,6 +4034,27 @@ function comparerBougiesDs() {
         const pc = (a, f) => { const v = q(a, f); return v === '-' ? '-' : (v * 100).toFixed(2) + '%'; };
         const st = dsc.stats, h = (Date.now() - st.depuis) / 3600e3;
         console.log(`  🧪 [OMBRE bougies DexScreener] ${tokens} tokens, ${ec.close.length} bougies 15m comparées | écart clôture méd ${pc(ec.close, .5)} (q90 ${pc(ec.close, .9)}) · haut ${pc(ec.high, .5)} · bas ${pc(ec.low, .5)} | RSI2 écart méd ${q(rsiEc, .5) === '-' ? '-' : q(rsiEc, .5).toFixed(1)} pt · accord RSI2<50 ${total ? Math.round(100 * accord / total) + '%' : '-'} (${total}) · accord RSI2>90 ${totSortie ? Math.round(100 * accSortie / totSortie) + '%' : '-'} | même pool que l'officielle ${st.memePool + st.autrePool ? Math.round(100 * st.memePool / (st.memePool + st.autrePool)) + '%' : '-'} des lectures | ${(st.appels / h).toFixed(0)} appels/h, ${st.echecs} échecs`);
+        // (2026-10-13, GO user) MESURES COMPLÉMENTAIRES. L'accord ci-dessus ne compte qu'UN RSI2 par token et par heure (~10
+        // comparaisons, très bruité). Ici : (a) accord sur CHAQUE bougie 15m clôturée commune, (b) le même hors zone 40-60
+        // (cas nets : un RSI2 à 49 contre 51 n'est pas un vrai désaccord), (c) écart de clôture de la série en SOL, pour savoir
+        // si les bougies officielles sont en dollars ou en SOL.
+        let tous = 0, accTous = 0, nets = 0, accNets = 0; const ecSol = [];
+        for (const mint of _dsSuivis()) {
+            const ref = candleCache.get(mint + '15m'); if (!ref || !ref.cs || !ref.cs.length) continue;
+            const refClos = ref.cs.filter(c => c[0] + 900 <= ref.ts / 1000), R = new Map(refClos.map(c => [c[0], c]));
+            for (const d of dsc.bougiesCloturees(mint, '15m', 'sol')) { const r = R.get(d[0]); if (r && r[4] > 0) ecSol.push(Math.abs(d[4] / r[4] - 1)); }
+            const dsMap = new Map(dsc.bougiesCloturees(mint, '15m').filter(c => R.has(c[0])).map(c => [c[0], c[4]]));
+            if (dsMap.size < 2) continue;
+            for (let i = 10; i < refClos.length; i++) {
+                if (!dsMap.has(refClos[i][0])) continue;
+                const base = refClos.slice(0, i + 1);
+                const a = calculateRSI(base.map(c => c[4]), 2), b = calculateRSI(base.map(c => dsMap.has(c[0]) ? dsMap.get(c[0]) : c[4]), 2);
+                if (a == null || b == null) continue;
+                tous++; if ((a < 50) === (b < 50)) accTous++;
+                if (a < 40 || a > 60) { nets++; if ((a < 50) === (b < 50)) accNets++; }
+            }
+        }
+        console.log(`  🧪 [OMBRE bougies DexScreener+] accord RSI2<50 sur toutes les bougies ${tous ? Math.round(100 * accTous / tous) + '%' : '-'} (${tous}) · cas nets (RSI2 officiel < 40 ou > 60) ${nets ? Math.round(100 * accNets / nets) + '%' : '-'} (${nets}) | écart clôture méd : prix $ ${pc(ec.close, .5)} · prix SOL ${pc(ecSol, .5)} (${ecSol.length})`);
     } catch (e) { console.log(`  ⚠️ OMBRE bougies DexScreener a levé : ${e && e.message}`); }
 }
 setInterval(comparerBougiesDs, 3600e3);

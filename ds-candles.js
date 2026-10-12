@@ -1,6 +1,6 @@
 // ── BOUGIES MAISON À PARTIR DE DEXSCREENER — OMBRE (2026-10-05, demande user) ──────────────────────
 // DexScreener n'a pas d'API de bougies, mais son endpoint `tokens/v1` rend le prix de 30 tokens par appel
-// (limite 300 appels/min, gratuit, sans clé). En relisant tout le watch toutes les 15 s (2 appels pour
+// (limite 300 appels/min, gratuit, sans clé). En relisant tout le watch toutes les 15 s — 5 s depuis le 13/10 (2 appels pour
 // ~55 tokens), on construit nous-mêmes des bougies 5m et 15m : ouverture = 1re lecture du créneau,
 // haut/bas = extrêmes lus, clôture = dernière lecture. Limite connue : une mèche plus courte que 15 s
 // n'est pas vue (hauts un peu bas, bas un peu hauts). Volume non construit (le bot ne l'utilise pas).
@@ -28,21 +28,36 @@ function _snap(p, now) {
         v5: n(v.m5), v1h: n(v.h1), v6h: n(v.h6), v24: n(v.h24), pc5: n(c.m5), pc1h: n(c.h1), pc6h: n(c.h6), pc24: n(c.h24),
         liq: n(l.usd), liqB: n(l.base), liqQ: n(l.quote), mc: n(p.marketCap != null ? p.marketCap : p.fdv) };
 }
+const _SOL = 'So11111111111111111111111111111111111111112';
+function _pxSol(p) { return p && p.quoteToken && p.quoteToken.address === _SOL ? parseFloat(p.priceNative) : null; }
 function flux(mint, maxAgeMs = 60000) { const f = fluxSnap.get(mint); return f && Date.now() - f.t <= maxAgeMs ? f : null; }
 
-function enregistre(mint, px, tsMs) {
+// (2026-10-13, GO user) DEUX AMÉLIORATIONS DE MESURE (n'agissent toujours sur rien) :
+// 1) clôture = lecture la plus PROCHE de la fin du créneau, avant OU après (avant : toujours la dernière d'avant, jusqu'à
+//    15 s trop tôt sur des tokens qui bougent de 1-2 %/min) ; 2) deux séries en parallèle, prix en dollars (`5m`, `15m`)
+//    et prix en SOL (`5m_sol`, `15m_sol`) : la comparaison horaire dira laquelle colle aux bougies officielles.
+function _maj(s, cle, sec, px, tsMs) {
+    const arr = s[cle] || (s[cle] = []), b = Math.floor(tsMs / 1000 / sec) * sec, last = arr[arr.length - 1];
+    const lastTs = s['_t' + cle];
+    if (!last || last[0] !== b) {
+        // nouveau créneau : si cette lecture est plus proche de la frontière que la dernière lecture du créneau
+        // précédent, elle devient la clôture de celui-ci (le prix à la frontière est mieux estimé par la plus proche)
+        if (last && last[0] === b - sec && lastTs != null && (tsMs / 1000 - b) < (b - lastTs / 1000)) last[4] = px;
+        arr.push([b, px, px, px, px, 0]);
+        if (arr.length > MAX_BOUGIES) arr.shift();
+    } else {
+        if (px > last[2]) last[2] = px;
+        if (px < last[3]) last[3] = px;
+        last[4] = px;
+    }
+    s['_t' + cle] = tsMs;
+}
+function enregistre(mint, px, tsMs, pxSol = null) {
     let s = series.get(mint);
     if (!s) { s = { '5m': [], '15m': [], debut: tsMs }; series.set(mint, s); }
     for (const [tf, sec] of Object.entries(TF)) {
-        const arr = s[tf], b = Math.floor(tsMs / 1000 / sec) * sec, last = arr[arr.length - 1];
-        if (!last || last[0] !== b) {
-            arr.push([b, px, px, px, px, 0]);
-            if (arr.length > MAX_BOUGIES) arr.shift();
-        } else {
-            if (px > last[2]) last[2] = px;
-            if (px < last[3]) last[3] = px;
-            last[4] = px;
-        }
+        _maj(s, tf, sec, px, tsMs);
+        if (pxSol > 0) _maj(s, tf + '_sol', sec, pxSol, tsMs);
     }
     stats.lectures++;
 }
@@ -71,7 +86,7 @@ async function lecture(mints) {
                 for (const [m, pool] of lot) {
                     const p = pairs.find(z => z && z.pairAddress === pool);
                     const px = p && (p.baseToken && p.baseToken.address === m ? parseFloat(p.priceUsd) : null);
-                    if (px > 0) { enregistre(m, px, now); stats.memePool++; fluxSnap.set(m, _snap(p, now)); } else parToken.push(m);   // repli : par token
+                    if (px > 0) { enregistre(m, px, now, _pxSol(p)); stats.memePool++; fluxSnap.set(m, _snap(p, now)); } else parToken.push(m);   // repli : par token
                 }
             } catch (_) { stats.echecs++; for (const [m] of lot) parToken.push(m); }
         }
@@ -86,17 +101,17 @@ async function lecture(mints) {
                     const b = best.get(mint);
                     if (!b || ((p.liquidity && p.liquidity.usd) || 0) > ((b.liquidity && b.liquidity.usd) || 0)) best.set(mint, p);   // la plus liquide
                 }
-                for (const [mint, p] of best) { enregistre(mint, parseFloat(p.priceUsd), now); stats.autrePool++; fluxSnap.set(mint, _snap(p, now)); }
+                for (const [mint, p] of best) { enregistre(mint, parseFloat(p.priceUsd), now, _pxSol(p)); stats.autrePool++; fluxSnap.set(mint, _snap(p, now)); }
             } catch (_) { stats.echecs++; }
         }
     } finally { enCours = false; }
 }
 
 // Bougies CLÔTURÉES et COMPLÈTES : on écarte le créneau en cours et le 1er créneau (commencé en cours de route).
-function bougiesCloturees(mint, tf) {
+function bougiesCloturees(mint, tf, devise = 'usd') {
     const s = series.get(mint); if (!s) return [];
     const sec = TF[tf], courant = Math.floor(Date.now() / 1000 / sec) * sec, debut = Math.floor(s.debut / 1000 / sec) * sec;
-    return s[tf].filter(c => c[0] > debut && c[0] < courant);
+    return (s[devise === 'sol' ? tf + '_sol' : tf] || []).filter(c => c[0] > debut && c[0] < courant);
 }
 
 function demarrer(getMints, intervalMs = 15000, getPool = null) {
